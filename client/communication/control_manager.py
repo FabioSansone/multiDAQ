@@ -134,9 +134,10 @@ class ControlPlaneManager:
             self.logger.error("Cannot send message: client socket not initialized")
             return False
         
-        if threading.current_thread() != self.listener_thread:
-            self.logger.error("send_message called outside IO thread")
-            return False
+        if self.listener_thread is not None and self.listener_thread.is_alive():
+            if threading.current_thread() != self.listener_thread:
+                self.logger.error("send_message called outside IO thread")
+                return False
 
         try:
             message_raw = self.message_handler.serialize(message)
