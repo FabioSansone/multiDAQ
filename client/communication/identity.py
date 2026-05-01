@@ -1,5 +1,5 @@
 import json
-from experimental.client.utils.logger import get_logger
+from client.utils.logger import get_logger
 from pathlib import Path
 from typing import Optional
 import socket

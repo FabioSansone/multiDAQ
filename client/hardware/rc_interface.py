@@ -1,5 +1,5 @@
-from experimental.client.utils.logger import get_logger
-from experimental.client.utils.channels import channels_definition
+from client.utils.logger import get_logger
+from client.utils.channels import channels_definition
 import mmap
 from typing import Optional
 import datetime

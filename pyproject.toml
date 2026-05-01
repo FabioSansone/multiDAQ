@@ -1,0 +1,16 @@
+[project]
+name = "multidaq"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pyzmq",
+    "cmd2",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["server*", "client*", "common*"]
+
+[project.scripts]
+multidaq-server = "server.main:main"
+multidaq-client = "client.main:main"

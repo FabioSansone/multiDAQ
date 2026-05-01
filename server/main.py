@@ -5,9 +5,9 @@ import argparse
 import cmd2
 import zmq
 
-from experimental.server.utils.logger import get_logger, LoggerManager
-from experimental.server.commands import app_commands
-from experimental.server.communication.control_manager import ControlPlaneManager
+from server.utils.logger import get_logger, LoggerManager
+from server.commands import app_commands
+from server.communication.control_manager import ControlPlaneManager
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
 
@@ -32,9 +32,8 @@ class Server(cmd2.Cmd):
         self.logger.info(f"Server started in {self.mode} mode")
 
 
+def main() -> int:
 
-
-if __name__ == '__main__':
     LoggerManager.initialize(log_level="INFO", log_to_console=True)
 
     server_parser = argparse.ArgumentParser()
@@ -70,3 +69,10 @@ if __name__ == '__main__':
             control_manager.socket.setsockopt(zmq.LINGER, 0)
             control_manager.socket.close()
         context.term()
+
+    return 0
+
+
+if __name__ == '__main__':
+    
+    raise SystemExit(main())

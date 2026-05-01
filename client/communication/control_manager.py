@@ -1,10 +1,12 @@
 import zmq
 from typing import Optional
-from experimental.client.utils.logger import get_logger
-from experimental.client.communication.identity import ClientIdentity
-from experimental.common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType
+from client.utils.logger import get_logger
+from client.communication.identity import ClientIdentity
+from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType
+from client.communication.handlers.system_handlers import handle_server_shutdown
 import time
-from threading import Thread
+import threading
+import queue
 
 MAX_RETRIES = 10
 
@@ -17,6 +19,16 @@ class ControlPlaneManager:
         
         self.server_ip = server_ip
         self.identity = identity
+
+        self.stop_listening = threading.Event()
+        self.incoming_queue = queue.Queue()
+        self.outgoing_queue = queue.Queue()
+        self.listener_thread: Optional[threading.Thread] = None
+        self.reconnect_requested = threading.Event()
+
+        self.command_map = {
+            "server_shutdown": handle_server_shutdown,
+        }
     
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
 
@@ -121,6 +133,10 @@ class ControlPlaneManager:
         if self.socket is None:
             self.logger.error("Cannot send message: client socket not initialized")
             return False
+        
+        if threading.current_thread() != self.listener_thread:
+            self.logger.error("send_message called outside IO thread")
+            return False
 
         try:
             message_raw = self.message_handler.serialize(message)
@@ -148,7 +164,7 @@ class ControlPlaneManager:
             self.logger.error(f"Unexpected error while sending message to server: {e}")
             return False
         
-    
+
     def handshake_core(self, timeout_ms: int = 20000) -> bool:
         if self.socket is None:
             self.logger.error("Communication not yet established. Cannot perform handshake.")
@@ -247,13 +263,136 @@ class ControlPlaneManager:
         return False
 
 
-    def start_listener(self) -> None:
+    def _control_io_loop(self) -> None:
+        """
+        Owns the control socket after the handshake.
+        Receives messages and sends queued outgoing messages.
+        """
 
-        while True:
-            message, reason = self.receive_message(timeout_ms=0)
+        while not self.stop_listening.is_set():
+
+            message, reason = self.receive_message(timeout_ms=100)
+
+            if message is not None:
+                self.incoming_queue.put((message, reason))
+            elif reason != "timeout elapsed":
+                self.logger.warning(f"Receive problem: {reason}")
+
+            while True:
+                try:
+                    outgoing_message = self.outgoing_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                if not self.send_message(outgoing_message):
+                    self.logger.error(
+                        f"Failed to send queued message: request_id={outgoing_message.request_id}"
+                    )
+    
+
+    def start_listener(self) -> bool:
+        if self.socket is None:
+            self.logger.error("Cannot start listener: socket not initialized")
+            return False
+
+        if self.listener_thread and self.listener_thread.is_alive():
+            self.logger.warning("Control listener already running")
+            return True
+
+        self.stop_listening.clear()
+
+        self.listener_thread = threading.Thread(
+            target=self._control_io_loop,
+            daemon=True
+        )
+        self.listener_thread.start()
+
+        self.logger.info("Control listener started")
+        return True
+    
+
+    def stop_listener(self) -> None:
+        self.stop_listening.set()
+
+        if self.listener_thread and self.listener_thread.is_alive():
+            self.listener_thread.join(timeout=2.0)
+
+        self.logger.info("Control listener stopped")
+
+    
+    def handle_commands(self) -> None:
+        """
+        Main command dispatcher.
+        Reads messages from incoming_queue and handles server commands.
+        """
+
+        while not self.stop_listening.is_set():
+            try:
+                message, reason = self.incoming_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if message is None:
+                self.logger.warning(f"Invalid queued message: {reason}")
+                continue
+
+            if message.msg_type != MessageType.COMMAND:
+                self.logger.warning(
+                    f"Unexpected message type in command handler: {message.msg_type}"
+                )
+                continue
+
+            handler = self.command_map.get(message.command)
+
+            if handler is None:
+                self.logger.warning(f"Unknown command: {message.command}")
+                continue
+
+            try:
+                handler(self, message)
+            except Exception as e:
+                self.logger.error(f"Error handling command {message.command}: {e}")
+
+    
+    def clear_queues(self) -> None:
+        while not self.incoming_queue.empty():
+            try:
+                self.incoming_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        while not self.outgoing_queue.empty():
+            try:
+                self.outgoing_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def close_connection(self) -> None:
+        """Close only the current control socket connection."""
+
+        self.stop_listener()
+
+        if self.socket is not None:
+            try:
+                self.recv_poller.unregister(self.socket)
+            except Exception:
+                pass
+
+            try:
+                self.socket.setsockopt(zmq.LINGER, 0)
+                self.socket.close()
+            except Exception as e:
+                self.logger.warning(f"Error while closing socket: {e}")
+            finally:
+                self.socket = None
+                self.server_endpoint = None
+
+        self.logger.info("Control connection closed")
 
 
-
+    def close(self) -> None:
+        self.close_connection()
+        self.logger.info("ControlPlaneManager closed")
                     
                     
                     

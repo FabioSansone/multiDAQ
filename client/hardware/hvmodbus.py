@@ -1,7 +1,7 @@
 import pymodbus.client as ModbusClient
 from pymodbus import FramerType, ModbusException
 import struct
-from experimental.client.utils.logger import get_logger
+from client.utils.logger import get_logger
 
 
 class HVModBus:

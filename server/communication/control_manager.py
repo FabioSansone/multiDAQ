@@ -1,7 +1,7 @@
 import zmq
 from typing import Optional, List
-from experimental.common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
-from experimental.server.utils.logger import get_logger
+from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
+from server.utils.logger import get_logger
 
 MAX_RETRIES = 5
 
@@ -283,8 +283,8 @@ class ControlPlaneManager:
     def notify_shutdown_to_all_clients(self,) -> bool:
 
         if self.socket is None:
-            self.logger.error("Communication not yet established. Cannot send shutdown command.")
-            return False
+            self.logger.error("Communication not yet established with any clients. Standard server shutdown.")
+            return True
         
         connected_clients = self.list_connected_clients()
         if not connected_clients:

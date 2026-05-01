@@ -1,6 +1,6 @@
 import argparse
 import cmd2
-from experimental.server.utils.logger import get_logger
+from server.utils.logger import get_logger
 
 
 
@@ -48,7 +48,7 @@ def do_change_mode(self, args: argparse.Namespace) -> None:
 
 
 @cmd2.with_category("Generic Commands")
-def do_quit(self,) -> None:
+def do_quit(self,_) -> None:
     """Send quit command to all connected clients"""
 
     success = self.control_manager.notify_shutdown_to_all_clients()
@@ -56,7 +56,11 @@ def do_quit(self,) -> None:
         self.poutput("Failed to sendo quit command to all the clients")
         return False
     
-    self.poutput("Sent quit command to all connected clients.")
+    list_connected_clients = self.control_manager.connected_clients
+    if list_connected_clients:
+        self.poutput("Sent quit command to all connected clients.\n Quitting server.")
+    else:
+        self.poutput("Server shutting down ...")
     return True
 
 

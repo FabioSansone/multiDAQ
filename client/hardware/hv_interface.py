@@ -1,4 +1,4 @@
-from experimental.client.utils.channels import channels_definition
+from client.utils.channels import channels_definition
 from hvmodbus import HVModBus
 from utils.logger import get_logger
 import time

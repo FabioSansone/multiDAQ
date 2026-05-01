@@ -5,9 +5,9 @@ import argparse
 import time
 import zmq
 
-from experimental.client.utils.logger import get_logger, LoggerManager
-from experimental.client.communication.identity import ClientIdentity
-from experimental.client.communication.control_manager import ControlPlaneManager
+from client.utils.logger import get_logger, LoggerManager
+from client.communication.identity import ClientIdentity
+from client.communication.control_manager import ControlPlaneManager
 
 
 def main() -> int:
@@ -20,7 +20,6 @@ def main() -> int:
     args = parser.parse_args()
 
     context = zmq.Context()
-
     identity = ClientIdentity()
 
     control_manager = ControlPlaneManager(
@@ -29,32 +28,44 @@ def main() -> int:
         identity=identity,
     )
 
-    if not control_manager.start_connection(port=args.control_port):
-        logger.error("Failed to connect control socket")
-        context.term()
-        return 1
-
-    success = control_manager.handshake()
-
-    if success:
-        logger.info("Client control-plane handshake completed successfully")
-    else:
-        logger.error("Client control-plane handshake failed")
-        if control_manager.socket is not None:
-            control_manager.socket.setsockopt(zmq.LINGER, 0)
-            control_manager.socket.close()
-        context.term()
-        return 1
-
     try:
         while True:
-            time.sleep(1)
+            control_manager.reconnect_requested.clear()
+            control_manager.stop_listening.clear()
+            control_manager.clear_queues()
+
+            if not control_manager.start_connection(port=args.control_port):
+                logger.error("Failed to connect control socket")
+                time.sleep(1)
+                continue
+
+            if not control_manager.handshake(max_retries=None):
+                logger.error("Handshake failed")
+                time.sleep(1)
+                continue
+
+            logger.info("Client control-plane handshake completed successfully")
+
+            if not control_manager.start_listener():
+                logger.error("Failed to start control listener")
+                time.sleep(1)
+                continue
+
+            control_manager.handle_commands()
+
+            if control_manager.reconnect_requested.is_set():
+                control_manager.close()
+                logger.info("Reconnecting after server shutdown...")
+                time.sleep(1)
+                continue
+
+            break
+
     except KeyboardInterrupt:
         logger.info("Client interrupted, shutting down")
+
     finally:
-        if control_manager.socket is not None:
-            control_manager.socket.setsockopt(zmq.LINGER, 0)
-            control_manager.socket.close()
+        control_manager.close()
         context.term()
 
     return 0
