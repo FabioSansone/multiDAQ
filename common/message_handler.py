@@ -32,7 +32,7 @@ class MessageStatus(str, Enum):
     
 
 
-@dataclass
+@dataclass(slots=True)
 class ProtocolMessage:
     protocol_version: int
     msg_type: MessageType
