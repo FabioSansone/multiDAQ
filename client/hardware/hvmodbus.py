@@ -41,7 +41,7 @@ class HVModBus:
     
     def _safe_write(self, addr, value, slave, desc="unknown"):
         try:
-            rr = self.client.write_register(address=addr, value=value, slave=slave)
+            rr = self.client.write_register(address=addr, value=value, device_id=slave)
             if rr is None or rr.isError():
                 self.logger.error(f"Invalid response when writing for {desc} at {hex(addr)}")
                 return 
@@ -51,7 +51,7 @@ class HVModBus:
 
     def _safe_write_multiple(self, addr, values, slave, desc="unknown"):
         try:
-            rr = self.client.write_registers(address=addr, values=values, slave=slave)
+            rr = self.client.write_registers(address=addr, values=values, device_id=slave)
             if rr is None or rr.isError():
                 raise self.logger.error(f"Invalid response when writing for {desc} at {hex(addr)}")
         except ModbusException as e:

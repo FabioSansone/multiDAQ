@@ -299,6 +299,16 @@ class ControlPlaneManager:
         if not connected_clients:
             self.logger.warning("No connected clients to notify about shutdown.")
             return True
+        
+        listener_was_running = (
+            self.listener_thread is not None
+            and self.listener_thread.is_alive()
+        )
+
+        if listener_was_running:
+            self.stop_listener()
+            
+        success = True
 
         for client_id in connected_clients:
             shutdown_message = self.message_handler.create_command(
@@ -308,9 +318,11 @@ class ControlPlaneManager:
                 sender="server"
             )
 
-            self.queue_message(client_id=client_id, message=shutdown_message)
-
-        return True
+            if not self.send_message(client_id=client_id, message=shutdown_message):
+                self.logger.error(f"Failed to send shutdown command to connected clients")
+                success = False
+                
+        return success
     
     def queue_message(self, client_id: bytes, message: ProtocolMessage) -> None:
         self.outgoing_queue.put((client_id, message))
