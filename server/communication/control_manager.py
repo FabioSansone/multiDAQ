@@ -376,8 +376,7 @@ class ControlPlaneManager:
         if self.socket is None:
             self.logger.error("Cannot start listener: socket not initialized")
             return False
-        
-        self.hv_service.start()
+    
 
         if self.listener_thread and self.listener_thread.is_alive():
             self.logger.warning("Control listener already running")
