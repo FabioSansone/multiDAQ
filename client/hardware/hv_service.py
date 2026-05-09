@@ -2,7 +2,7 @@ from dataclasses import dataclass, field, asdict
 from enum import IntEnum
 from typing import Optional, Any
 import queue
-from utils.logger import get_logger
+from client.utils.logger import get_logger
 from hv_interface import HV
 import threading
 import time
