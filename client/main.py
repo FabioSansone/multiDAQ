@@ -17,6 +17,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-ip", type=str, default="127.0.0.1", help="Server IP")
     parser.add_argument("--control-port", type=int, default=8888, help="Control plane port")
+    parser.add_argument("--hv-port", type=str, default="/dev/ttyPS1", help="HV port")
     args = parser.parse_args()
 
     context = zmq.Context()
@@ -26,6 +27,7 @@ def main() -> int:
         context=context,
         server_ip=args.server_ip,
         identity=identity,
+        hv_port=args.hv_port,
     )
 
     try:
