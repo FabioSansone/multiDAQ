@@ -31,7 +31,7 @@ class HVModBus:
     def _safe_read(self, addr, count, slave, desc="unknown"):
         rr = None
         try:
-            rr = self.client.read_holding_registers(address=addr, count=count, slave=slave)
+            rr = self.client.read_holding_registers(address=addr, count=count, device_id=slave)
             if rr is None or rr.isError():
                 self.logger.error(f"Invalid response when reading for {desc} at {hex(addr)}")
             return rr.registers
@@ -229,15 +229,15 @@ class HVModBus:
         slave = self.ch_addr if slave==None else slave
         l = None
         try:
-            l = self.client.read_holding_registers(address=0x02, count=1, slave=slave).registers
+            l = self.client.read_holding_registers(address=0x02, count=1, device_id=slave).registers
             fwver = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x08, count=6, slave=slave).registers
+            l = self.client.read_holding_registers(address=0x08, count=6, device_id=slave).registers
             pmtsn = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x0E, count=6, slave=slave).registers
+            l = self.client.read_holding_registers(address=0x0E, count=6, device_id=slave).registers
             hvsn = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x14, count=6, slave=slave).registers
+            l = self.client.read_holding_registers(address=0x14, count=6, device_id=slave).registers
             febsn = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x04, count=2, slave=slave).registers
+            l = self.client.read_holding_registers(address=0x04, count=2, device_id=slave).registers
             devid = (l[1] << 16) + l[0]
             return (fwver, pmtsn, hvsn, febsn, devid)
         except ModbusException as e:
@@ -249,7 +249,7 @@ class HVModBus:
         rr = None
         monData = {}
         try:
-            rr = self.client.read_holding_registers(address=0, count=48, slave=slave)
+            rr = self.client.read_holding_registers(address=0, count=48, device_id=slave)
             monData['status'] = rr.registers[0x0006]
             monData['Vset'] = rr.registers[0x0026]
             monData['V'] = ((rr.registers[0x002B] << 16) + rr.registers[0x002A]) / 1000
