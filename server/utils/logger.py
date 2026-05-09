@@ -14,6 +14,7 @@ LOGGER_NAMES = {
 
     #Commands
     'generic_commands': 'server.commands.generic',
+    'hv_commands': 'server.commands.hv',
 
     #Main Application
     'app': 'server.app'

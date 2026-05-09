@@ -1,6 +1,7 @@
 import argparse
 import cmd2
 from server.utils.logger import get_logger
+import time
 
 
 
@@ -48,12 +49,12 @@ def do_change_mode(self, args: argparse.Namespace) -> None:
 
 
 @cmd2.with_category("Generic Commands")
-def do_quit(self,_) -> None:
+def do_quit(self,_) -> bool:
     """Send quit command to all connected clients"""
 
     success = self.control_manager.notify_shutdown_to_all_clients()
     if not success:
-        self.poutput("Failed to sendo quit command to all the clients")
+        self.poutput("Failed to send quit command to all the clients")
         return False
     
     list_connected_clients = self.control_manager.connected_clients
@@ -77,42 +78,67 @@ connect_parser.add_argument("--port", type=int, help="Selects the port to establ
 def do_connect(self, args: argparse.Namespace) -> None:
     """Wait for one or more clients to connect through the control plane."""
 
-    num_clients = args.num_clients
+    requested_clients = args.num_clients
 
-    logger.info(
-        f"Connect command received: num_clients={num_clients}"
+    logger.info(f"Connect command received: num_clients={requested_clients}")
+
+    if requested_clients <= 0:
+        self.poutput("num_clients must be greater than 0")
+        logger.warning(f"Invalid num_clients value: {requested_clients}")
+        return
+
+    listener_was_running = (
+        self.control_manager.listener_thread is not None
+        and self.control_manager.listener_thread.is_alive()
     )
 
-    if num_clients <= 0:
-        self.poutput("num_clients must be greater than 0")
-        logger.warning(f"Invalid num_clients value: {num_clients}")
-        return
-    
-    started = self.control_manager.start_connection(port=args.port)
-    if not started:
-        self.poutput("Failed to start control connection.")
-        logger.error(f"Failed to start control connection on port {args.port}")
-        return
+    if listener_was_running:
+        self.poutput("Stopping control listener temporarily to accept new handshakes...")
+        self.control_manager.stop_listener()
+
+    if self.control_manager.socket is None:
+        started = self.control_manager.start_connection(port=args.port)
+        if not started:
+            self.poutput("Failed to start control connection.")
+            logger.error(f"Failed to start control connection on port {args.port}")
+
+            if listener_was_running:
+                self.control_manager.start_listener()
+
+            return
+
+    already_connected = len(self.control_manager.list_connected_clients())
+    target_total = max(requested_clients, already_connected)
+
+    self.control_manager.num_multi_clients = target_total
+    self.control_manager.clear_queues()
 
     self.poutput(
-        f"Waiting for {num_clients} client(s) to connect..."
+        f"Trying to reach {target_total} connected client(s). "
+        f"Currently connected: {already_connected}."
     )
 
-    
-    self.control_manager.num_multi_clients = num_clients
+    self.control_manager.handshake()
 
-    success = self.control_manager.handshake()
+    connected = self.control_manager.list_connected_clients()
+    decoded_clients = [cid.decode(errors="ignore") for cid in connected]
 
-    if success:
-        connected = self.control_manager.list_connected_clients()
-        decoded_clients = [cid.decode(errors="ignore") for cid in connected]
-
-        self.poutput("Handshake completed successfully.")
+    if connected:
+        self.poutput(
+            f"Control plane ready with {len(connected)}/{target_total} client(s)."
+        )
         self.poutput(f"Connected clients: {decoded_clients}")
-
         logger.info(
-            f"Handshake completed successfully. Connected clients: {decoded_clients}"
+            f"Control plane ready with {len(connected)}/{target_total} clients: {decoded_clients}"
         )
     else:
-        self.poutput("Handshake failed.")
-        logger.error("Handshake failed during connect command")
+        self.poutput("No clients connected.")
+        logger.warning("No clients connected after connect command.")
+
+    self.control_manager.clear_queues()
+
+    if not self.control_manager.start_listener():
+        logger.error("Failed to start control listener")
+        self.poutput("Failed to start control listener")
+        return
+            

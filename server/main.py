@@ -6,7 +6,7 @@ import cmd2
 import zmq
 
 from server.utils.logger import get_logger, LoggerManager
-from server.commands import app_commands
+from server.commands import app_commands, hv_commands
 from server.communication.control_manager import ControlPlaneManager
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
@@ -25,9 +25,14 @@ class Server(cmd2.Cmd):
 
         self.prompt = f"Server[{self.mode}]> "
 
+        
+        #GENERIC COMMANDS#
         self.do_change_mode = app_commands.do_change_mode.__get__(self, Server)
         self.do_connect = app_commands.do_connect.__get__(self, Server)
         self.do_quit = app_commands.do_quit.__get__(self, Server)
+        
+        #HV COMMANDS#
+        self.do_set_common = hv_commands.do_set_common.__get__(self, Server)
 
         self.logger.info(f"Server started in {self.mode} mode")
 
@@ -66,8 +71,8 @@ def main() -> int:
         app.poutput("\nShutting down...")
     finally:
         if control_manager.socket is not None:
-            control_manager.socket.setsockopt(zmq.LINGER, 0)
-            control_manager.socket.close()
+            control_manager.clear_queues()
+            control_manager.close_connection()
         context.term()
 
     return 0

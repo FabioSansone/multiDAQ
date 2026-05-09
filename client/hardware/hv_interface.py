@@ -2,6 +2,7 @@ from client.utils.channels import channels_definition
 from hvmodbus import HVModBus
 from utils.logger import get_logger
 import time
+from typing import List
 
 
 class HV:
@@ -10,6 +11,8 @@ class HV:
         self.logger = get_logger('hv')
         self.hv = HVModBus(hv_port)
         
+        self.ok_ch, self.bad_ch = self.checkChannel(channels="all")
+   
     def _normalize_channels(self, channels):
         channel_list = channels_definition(
             channels=channels,
@@ -39,11 +42,64 @@ class HV:
             ok.append(ch)
 
         return ok, bad
-    
+        
     def checkChannel(self, channels):
         ok_channels, bad_channels = self._normalize_channels(channels)
         return ok_channels, bad_channels
     
+
+    def set_common_voltage(self, channels: List[int] | str | int, common_voltage: int):
+
+        list_channels_selected = channels_definition(channels=channels, hv_channels=True)
+        
+        ok_ch_set = set(self.ok_ch)
+        bad_ch_set = set(self.bad_ch)
+        
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+        
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+        
+        for ch in channels_good_selected:
+            try:
+                self.hv.open(channel=ch)
+                self.hv.setVoltageSet(value=common_voltage)
+                
+                successful.append(ch)
+                ok_ch_set.add(ch)
+                bad_ch_set.discard(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem setting common voltage on channel {ch}: {e}")
+                
+                failed.append(ch)
+                ok_ch_set.discard(ch)
+                bad_ch_set.add(ch)
+        
+        self.ok_ch = sorted(ok_ch_set)
+        self.bad_ch = sorted(bad_ch_set)
+        
+        return {
+        "requested_channels": list_channels_selected,
+        "used_channels": channels_good_selected,
+        "skipped_channels": channels_skipped,
+        "successful_channels": successful,
+        "failed_channels": failed,
+        "common_voltage": common_voltage,
+    }
+
+
+
+
+
+
+
     def waitUntilStatus(self, channels, end_status='UP'):
         """
         Waits until the channels reach the specified end_status (e.g., 'UP' or 'DOWN').

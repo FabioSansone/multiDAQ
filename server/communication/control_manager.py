@@ -2,6 +2,8 @@ import zmq
 from typing import Optional, List
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
 from server.utils.logger import get_logger
+import threading
+import queue
 
 MAX_RETRIES = 5
 
@@ -17,6 +19,11 @@ class ControlPlaneManager:
         
         self.connected_clients: List[bytes] = []
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
+        
+        self.stop_listening = threading.Event()
+        self.incoming_queue = queue.Queue()
+        self.outgoing_queue = queue.Queue()
+        self.listener_thread: Optional[threading.Thread] = None
         
         self.logger = get_logger("control_manager")
         self.logger.debug("ZMQ Control Server Manager initialized")
@@ -247,12 +254,9 @@ class ControlPlaneManager:
 
     
     def handshake(self) -> bool:
-        """
-        Loops through handshake attempts until num_clients clients connect.
-        Up to MAX_RETRIES attempts are made for each handshake.
-        """
-
         self.logger.info(f"Waiting for {self.num_multi_clients} clients to connect...")
+
+        initial_count = len(self.list_connected_clients())
 
         while len(self.list_connected_clients()) < self.num_multi_clients:
             retries = 0
@@ -261,53 +265,178 @@ class ControlPlaneManager:
             while retries < MAX_RETRIES and not success:
                 self.logger.info(f"Trying handshake with a client (attempt {retries+1}/{MAX_RETRIES})")
                 success = self.handshake_core(timeout_ms=20000)
+
                 if not success:
                     retries += 1
                     self.logger.warning("Handshake attempt failed, retrying...")
 
             if not success:
-                self.logger.error("Handshake failed after the maximum number of attempts. Procedure aborted.")
+                self.logger.warning(
+                    "No more clients connected after maximum attempts. "
+                    "Server will remain operative with currently connected clients."
+                )
                 break
 
-        if len(self.list_connected_clients()) == self.num_multi_clients:
-            self.logger.info("All clients connected successfully!")
-            return True
-        else:
-            self.logger.error(
-                f"Connected clients: {len(self.list_connected_clients())} "
-                f"(expected {self.num_multi_clients})"
-            )
-            return False
-        
-    
-    def notify_shutdown_to_all_clients(self,) -> bool:
+        final_count = len(self.list_connected_clients())
+        new_clients = final_count - initial_count
 
+        if final_count > 0:
+            self.logger.info(
+                f"Control plane ready. Connected clients: {final_count}/{self.num_multi_clients}. "
+                f"New clients in this connect call: {new_clients}"
+            )
+            return True
+
+        self.logger.error("No clients connected.")
+        return False
+    
+    def notify_shutdown_to_all_clients(self) -> bool:
         if self.socket is None:
             self.logger.error("Communication not yet established with any clients. Standard server shutdown.")
             return True
-        
+
         connected_clients = self.list_connected_clients()
         if not connected_clients:
             self.logger.warning("No connected clients to notify about shutdown.")
             return True
-        
-        success = True
 
         for client_id in connected_clients:
             shutdown_message = self.message_handler.create_command(
-                channel= Channel.SYSTEM,
+                channel=Channel.SYSTEM,
                 command="server_shutdown",
                 payload={"message": "Server is shutting down"},
                 sender="server"
             )
 
-            sent = self.send_message(client_id=client_id, message=shutdown_message)
-            if not sent:
-                self.logger.error(
-                    f"Failed to send shutdown message to client {client_id!r}"
-                )
-                success = False
+            self.queue_message(client_id=client_id, message=shutdown_message)
+
+        return True
+    
+    def queue_message(self, client_id: bytes, message: ProtocolMessage) -> None:
+        self.outgoing_queue.put((client_id, message))
         
-        return success
+    def wait_for_reply(
+        self,
+        *,
+        client_id: bytes,
+        in_reply_to: str,
+        timeout_s: float = 10.0,
+    ) -> tuple[Optional[ProtocolMessage], str]:
+
+        try:
+            while True:
+                reply_client_id, message, reason = self.incoming_queue.get(timeout=timeout_s)
+
+                if message is None:
+                    return None, reason
+
+                if reply_client_id != client_id:
+                    self.incoming_queue.put((reply_client_id, message, reason))
+                    continue
+
+                if message.in_reply_to != in_reply_to:
+                    self.incoming_queue.put((reply_client_id, message, reason))
+                    continue
+
+                return message, "ok"
+
+        except queue.Empty:
+            return None, "timeout waiting for reply"
+        
+    def _control_io_loop(self) -> None:
+        """
+        Owns the ROUTER socket after the handshake.
+        Receives messages and sends queued outgoing messages.
+        """
+
+        while not self.stop_listening.is_set():
+
+            client_id, message, reason = self.receive_message(timeout_ms=100)
+
+            if message is not None:
+                self.incoming_queue.put((client_id, message, reason))
+            elif reason != "timeout elapsed":
+                self.logger.warning(f"Receive problem: {reason}")
+
+            while True:
+                try:
+                    client_id_out, outgoing_message = self.outgoing_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                if not self.send_message(client_id=client_id_out, message=outgoing_message):
+                    self.logger.error(
+                        f"Failed to send queued message to {client_id_out!r}: "
+                        f"request_id={outgoing_message.request_id}"
+                    )
+    
+
+    def start_listener(self) -> bool:
+        
+        if self.socket is None:
+            self.logger.error("Cannot start listener: socket not initialized")
+            return False
+        
+        self.hv_service.start()
+
+        if self.listener_thread and self.listener_thread.is_alive():
+            self.logger.warning("Control listener already running")
+            return True
+
+        self.stop_listening.clear()
+
+        self.listener_thread = threading.Thread(
+            target=self._control_io_loop,
+            daemon=True
+        )
+        self.listener_thread.start()
+
+        self.logger.info("Control listener started")
+        return True
+    
+
+    def stop_listener(self) -> None:
+        self.stop_listening.set()
+
+        if self.listener_thread and self.listener_thread.is_alive():
+            self.listener_thread.join(timeout=2.0)
+
+        self.logger.info("Control listener stopped")
+        
+        
+    def clear_queues(self) -> None:
+        while not self.incoming_queue.empty():
+            try:
+                self.incoming_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        while not self.outgoing_queue.empty():
+            try:
+                self.outgoing_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def close_connection(self) -> None:
+        """Close only the current control socket connection."""
+
+        self.stop_listener()
+
+        if self.socket is not None:
+            try:
+                self.recv_poller.unregister(self.socket)
+            except Exception:
+                pass
+
+            try:
+                self.socket.setsockopt(zmq.LINGER, 0)
+                self.socket.close()
+            except Exception as e:
+                self.logger.warning(f"Error while closing socket: {e}")
+            finally:
+                self.socket = None
+                self.endpoint = None
+
+        self.logger.info("Control connection closed")
     
              

@@ -4,6 +4,8 @@ from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType
 from client.communication.handlers.system_handlers import handle_server_shutdown
+from client.communication.handlers.hv_handlers import handle_hv_set_common_voltage
+from client.hardware.hv_service import HVService
 import time
 import threading
 import queue
@@ -11,7 +13,7 @@ import queue
 MAX_RETRIES = 10
 
 class ControlPlaneManager:
-    def __init__(self, context: zmq.Context, server_ip: str, identity: ClientIdentity) -> None:
+    def __init__(self, context: zmq.Context, server_ip: str, identity: ClientIdentity, hv_port: str) -> None:
         self.context = context
         self.socket: Optional[zmq.Socket] = None
         self.recv_poller = zmq.Poller()
@@ -28,11 +30,12 @@ class ControlPlaneManager:
 
         self.command_map = {
             "server_shutdown": handle_server_shutdown,
+            "set_common_voltage": handle_hv_set_common_voltage,
         }
     
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
-
-
+        self.hv_service = HVService(hv_port=hv_port)
+        
         self.logger = get_logger("control_manager")
         self.logger.info("ZMQ Control Client Manager initialized")
 
@@ -263,6 +266,9 @@ class ControlPlaneManager:
         self.logger.error("Handshake failed after maximum number of attempts")
         return False
 
+    def queue_message(self, message: ProtocolMessage) -> None:
+        self.outgoing_queue.put(message)
+        
 
     def _control_io_loop(self) -> None:
         """
@@ -292,9 +298,12 @@ class ControlPlaneManager:
     
 
     def start_listener(self) -> bool:
+        
         if self.socket is None:
             self.logger.error("Cannot start listener: socket not initialized")
             return False
+        
+        self.hv_service.start()
 
         if self.listener_thread and self.listener_thread.is_alive():
             self.logger.warning("Control listener already running")
@@ -372,6 +381,7 @@ class ControlPlaneManager:
         """Close only the current control socket connection."""
 
         self.stop_listener()
+        self.hv_service.stop()
 
         if self.socket is not None:
             try:

@@ -20,6 +20,7 @@ LOGGER_NAMES = {
     'run_control': 'client.hardware.rc',
     'hvmodbus': 'client.hardware.hvmodbus',
     'hv': 'client.hardware.hv',
+    'hv_service': 'client.hardware.hv_service',
 
     #Main Application
     'app': 'client.app'
