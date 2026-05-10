@@ -16,10 +16,13 @@ from common.message_handler import MessageStatus
 from client.hardware.hv.hv_commands import COMMAND_HANDLERS
 
 
-PROTOCOL_VERSION = 1
-
 
 class HVService:
+    
+    CHECK_CHANNELS_PERIOD_S = 5.0
+    SAFETY_CHECK_DEADLINE_S = 5.0
+    RECOVERY_CHECK_PERIOD_S = 60.0
+    RECOVERY_CHECK_DEADLINE_S = 30.0
 
     def __init__(self, hv_port: str):
         self.logger = get_logger("hv_service")
@@ -82,6 +85,18 @@ class HVService:
                     self.logger.warning(
                         f"Skipping expired HV request: {hv_request.request_id}"
                     )
+
+                    if hv_request.response_queue is not None:
+                        hv_request.response_queue.put(
+                            HVResponse(
+                                protocol_version=PROTOCOL_VERSION,
+                                request_id=hv_request.request_id,
+                                in_reply_to=hv_request.request_id,
+                                status=MessageStatus.ERROR,
+                                error="HV request expired before execution",
+                            )
+                        )
+
                     continue
 
                 response = self._execute_response(hv_request)
@@ -168,7 +183,7 @@ class HVService:
                     command="check_channel_safety",
                     payload={"channels": channels_to_check},
                     sender="hv_safety_check",
-                    deadline_s=now + 5.0,
+                    deadline_s=now + self.SAFETY_CHECK_DEADLINE_S,
                 )
 
                 self.input_queue.put(
@@ -179,14 +194,17 @@ class HVService:
                     )
                 )
 
-            if bad_channels and (now - last_recovery_check) > 60.0:
+            if (
+                bad_channels
+                and (now - last_recovery_check) > self.RECOVERY_CHECK_PERIOD_S
+            ):
                 recovery_request = HVRequest(
                     protocol_version=PROTOCOL_VERSION,
                     request_id=f"recovery_bad_{now}",
                     command="check_recovery_bad",
                     payload={},
                     sender="hv_bad_recovery",
-                    deadline_s=now + 30.0,
+                    deadline_s=now + self.RECOVERY_CHECK_DEADLINE_S,
                 )
 
                 self.input_queue.put(
@@ -199,7 +217,7 @@ class HVService:
 
                 last_recovery_check = now
 
-            time.sleep(5.0)
+            self.stop_check_channels.wait(self.CHECK_CHANNELS_PERIOD_S)
             
 
 

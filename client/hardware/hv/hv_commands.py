@@ -11,17 +11,33 @@ def command_common_voltage(
     hv_interface: HV,
     hv_request: HVRequest,
 ) -> HVResponse:
+
     result = hv_interface.set_common_voltage(
         channels=hv_request.payload["channels"],
         common_voltage=hv_request.payload["common_voltage"],
     )
 
+    failed = result.get("failed_channels", [])
+    not_responding = result.get("not_responding_channels", [])
+    successful = result.get("successful_channels", [])
+
+    if failed or not_responding:
+        status = MessageStatus.ERROR
+        error = (
+            "Some HV channels failed or did not respond. "
+            f"Failed: {failed}, not responding: {not_responding}"
+        )
+    else:
+        status = MessageStatus.OK
+        error = None
+
     return HVResponse(
         protocol_version=protocol_version,
         request_id=hv_request.request_id,
         in_reply_to=hv_request.request_id,
-        status=MessageStatus.OK,
+        status=status,
         result=result or {},
+        error=error,
     )
 
 
@@ -63,11 +79,19 @@ def command_check_channel_safety(
         )
 
         if unsafe:
-            try:
-                hv_interface.reset(channels=ch)
-                hv_interface.off(channels=ch)
-            finally:
+            action = None
+
+            if read_failed:
                 hv_interface.moveToBad(channel=ch)
+                action = "moved_to_bad_read_failed"
+
+            else:
+                try:
+                    hv_interface.reset(channels=ch)
+                    hv_interface.off(channels=ch)
+                    action = "reset_off_moved_to_bad"
+                finally:
+                    hv_interface.moveToBad(channel=ch)
 
             unsafe_channels.append(
                 {
@@ -75,7 +99,7 @@ def command_check_channel_safety(
                     "status": status,
                     "alarm": alarm,
                     "read_failed": read_failed,
-                    "action": "reset_off_moved_to_bad",
+                    "action": action,
                 }
             )
 

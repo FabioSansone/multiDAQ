@@ -120,48 +120,67 @@ class HV:
 
     def set_common_voltage(self, channels: List[int] | str | int, common_voltage: int):
 
-        list_channels_selected = channels_definition(channels=channels, hv_channels=True)
-        
-        ok_ch_set = set(self.ok_ch)
-        bad_ch_set = set(self.bad_ch)
-        
-        channels_good_selected = [
-            ch for ch in list_channels_selected if ch in ok_ch_set
-        ]
-        
-        channels_skipped = [
-            ch for ch in list_channels_selected if ch not in ok_ch_set
-        ]
+        list_channels_selected = channels_definition(
+            channels=channels,
+            hv_channels=True,
+        )
 
         successful = []
         failed = []
-        
-        for ch in channels_good_selected:
+        skipped = []
+        not_responding = []
+
+        for ch in list_channels_selected:
+
+            if ch in self.bad_ch:
+                skipped.append(ch)
+                continue
+
             try:
-                self.hv.setVoltageSet(value=common_voltage, slave=ch)
-                
+                if not self.hv.open(ch):
+                    self.logger.error(f"Channel {ch} not open")
+                    not_responding.append(ch)
+                    self.moveToBad(ch)
+                    continue
+
+                if not self.hv.checkAddressBoundary(ch):
+                    self.logger.error(f"Channel {ch} out of boundary")
+                    not_responding.append(ch)
+                    self.moveToBad(ch)
+                    continue
+
+                if not self.hv.checkAddress(ch):
+                    self.logger.error(f"Channel {ch} not responding")
+                    not_responding.append(ch)
+                    self.moveToBad(ch)
+                    continue
+
+                self.hv.setVoltageSet(
+                    value=common_voltage,
+                    slave=ch,
+                )
+
                 successful.append(ch)
-                ok_ch_set.add(ch)
-                bad_ch_set.discard(ch)
+                self.moveToOk(ch)
 
             except Exception as e:
-                self.logger.error(f"Problem setting common voltage on channel {ch}: {e}")
-                
+                self.logger.error(
+                    f"Problem setting common voltage on channel {ch}: {e}"
+                )
+
                 failed.append(ch)
-                ok_ch_set.discard(ch)
-                bad_ch_set.add(ch)
-        
-        self.ok_ch = sorted(ok_ch_set)
-        self.bad_ch = sorted(bad_ch_set)
-        
+                self.moveToBad(ch)
+
         return {
-        "requested_channels": list_channels_selected,
-        "used_channels": channels_good_selected,
-        "skipped_channels": channels_skipped,
-        "successful_channels": successful,
-        "failed_channels": failed,
-        "common_voltage": common_voltage,
-    }
+            "requested_channels": list_channels_selected,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "skipped_channels": skipped,
+            "not_responding_channels": not_responding,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "common_voltage": common_voltage,
+        }
 
 
     def get_ch_status(self, channels: List[int] | str | int):
