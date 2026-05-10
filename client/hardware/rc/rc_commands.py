@@ -1,0 +1,251 @@
+from client.hardware.rc.rc_interface import RC
+from client.hardware.rc.rc_messages import RCRequest, RCResponse
+from common.message_handler import MessageStatus
+from client.hardware.hv.hv_interface import HV
+from client.utils.channels import channels_definition
+
+
+def _make_response(
+    protocol_version: int,
+    rc_request: RCRequest,
+    result: dict,
+    error_prefix: str,
+) -> RCResponse:
+
+    success = result.get("success", False)
+
+    if success:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.OK,
+            result=result or {},
+            error=None,
+        )
+
+    return RCResponse(
+        protocol_version=protocol_version,
+        request_id=rc_request.request_id,
+        in_reply_to=rc_request.request_id,
+        status=MessageStatus.ERROR,
+        result=result or {},
+        error=f"{error_prefix}: {result}",
+    )
+
+def _filter_monitoring_channels_by_hv_ok(
+    requested_channels,
+    rc_interface: RC,
+    hv_interface: HV,
+) -> dict:
+    requested_rc_channels = channels_definition(
+        channels=requested_channels,
+        n_channels=rc_interface.num_channels,
+    )
+
+    hv_ok_channels = set(hv_interface.getOkChannels())
+
+    used_rc_channels = []
+    skipped_rc_channels = []
+    used_hv_channels = []
+    skipped_hv_channels = []
+
+    for rc_ch in requested_rc_channels:
+        hv_ch = rc_ch + 1
+
+        if hv_ch in hv_ok_channels:
+            used_rc_channels.append(rc_ch)
+            used_hv_channels.append(hv_ch)
+        else:
+            skipped_rc_channels.append(rc_ch)
+            skipped_hv_channels.append(hv_ch)
+
+    return {
+        "requested_rc_channels": requested_rc_channels,
+        "used_rc_channels": used_rc_channels,
+        "skipped_rc_channels": skipped_rc_channels,
+        "used_hv_channels": used_hv_channels,
+        "skipped_hv_channels": skipped_hv_channels,
+        "hv_ok_channels": sorted(hv_ok_channels),
+    }
+
+
+def command_start_acquisition_mode(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    result = rc_interface.start(
+        channels=rc_request.payload["channels"],
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix="Failed to start acquisition mode",
+    )
+
+
+def command_boot_mode(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    result = rc_interface.boot(
+        channels=rc_request.payload["channels"],
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix="Failed to start boot mode",
+    )
+
+
+def command_reset(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    result = rc_interface.reset(
+        channels=rc_request.payload["channels"],
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix="Failed to reset channels",
+    )
+
+
+def command_free_rate_monitoring(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+    hv_interface: HV,
+) -> RCResponse:
+    filter_info = _filter_monitoring_channels_by_hv_ok(
+        requested_channels=rc_request.payload.get("channels", "all"),
+        rc_interface=rc_interface,
+        hv_interface=hv_interface,
+    )
+
+    if not filter_info["used_rc_channels"]:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result=filter_info,
+            error="No RC monitoring channels available after HV ok filtering",
+        )
+
+    result = rc_interface.free_rate_monitoring(
+        channels=filter_info["used_rc_channels"],
+    )
+
+    result.update(filter_info)
+
+    return RCResponse(
+        protocol_version=protocol_version,
+        request_id=rc_request.request_id,
+        in_reply_to=rc_request.request_id,
+        status=MessageStatus.OK,
+        result=result or {},
+        error=None,
+    )
+
+
+def command_trg_rate_monitoring(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+    hv_interface: HV,
+) -> RCResponse:
+    filter_info = _filter_monitoring_channels_by_hv_ok(
+        requested_channels=rc_request.payload.get("channels", "all"),
+        rc_interface=rc_interface,
+        hv_interface=hv_interface,
+    )
+
+    if not filter_info["used_rc_channels"]:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result=filter_info,
+            error="No RC monitoring channels available after HV ok filtering",
+        )
+
+    result = rc_interface.trg_rate_monitoring(
+        channels=filter_info["used_rc_channels"],
+    )
+
+    result.update(filter_info)
+
+    return RCResponse(
+        protocol_version=protocol_version,
+        request_id=rc_request.request_id,
+        in_reply_to=rc_request.request_id,
+        status=MessageStatus.OK,
+        result=result or {},
+        error=None,
+    )
+
+
+def command_all_rate_monitoring(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+    hv_interface: HV,
+) -> RCResponse:
+    filter_info = _filter_monitoring_channels_by_hv_ok(
+        requested_channels=rc_request.payload.get("channels", "all"),
+        rc_interface=rc_interface,
+        hv_interface=hv_interface,
+    )
+
+    if not filter_info["used_rc_channels"]:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result=filter_info,
+            error="No RC monitoring channels available after HV ok filtering",
+        )
+
+    result = {
+        "type": "data",
+        "data_type": "all_rates",
+        "free": rc_interface.free_rate_monitoring(filter_info["used_rc_channels"]),
+        "trigger": rc_interface.trg_rate_monitoring(filter_info["used_rc_channels"]),
+        **filter_info,
+    }
+
+    return RCResponse(
+        protocol_version=protocol_version,
+        request_id=rc_request.request_id,
+        in_reply_to=rc_request.request_id,
+        status=MessageStatus.OK,
+        result=result,
+        error=None,
+    )
+
+
+COMMAND_HANDLERS = {
+    "rc_acq_start": command_start_acquisition_mode,
+    "rc_boot": command_boot_mode,
+    "rc_reset": command_reset,
+    "rc_free_rate_monitoring": command_free_rate_monitoring,
+    "rc_trg_rate_monitoring": command_trg_rate_monitoring,
+    "rc_all_rate_monitoring": command_all_rate_monitoring,
+}
+    

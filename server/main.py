@@ -6,7 +6,7 @@ import cmd2
 import zmq
 
 from server.utils.logger import get_logger, LoggerManager
-from server.commands import app_commands, hv_commands
+from server.commands import app_commands, hv_commands, rc_commands
 from server.communication.control_manager import ControlPlaneManager
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
@@ -33,6 +33,9 @@ class Server(cmd2.Cmd):
         
         #HV COMMANDS#
         self.do_set_common = hv_commands.do_set_common.__get__(self, Server)
+        
+        #RC COMMANDS#
+        self.do_rc_start = rc_commands.do_rc_start.__get__(self, Server)
 
         self.logger.info(f"Server started in {self.mode} mode")
 

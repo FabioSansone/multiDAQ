@@ -17,10 +17,12 @@ LOGGER_NAMES = {
     'generic_commands': 'client.commands.generic',
 
     #Hardware
-    'run_control': 'client.hardware.rc',
-    'hvmodbus': 'client.hardware.hvmodbus',
-    'hv': 'client.hardware.hv',
-    'hv_service': 'client.hardware.hv_service',
+    'run_control': 'client.hardware.rc.rc_interface',
+    'rc_service': 'client.hardware.rc.rc_service',
+    'hvmodbus': 'client.hardware.hv.hvmodbus',
+    'hv': 'client.hardware.hv_interface',
+    'hv_service': 'client.hardware.hv.hv_service',
+    
 
     #Main Application
     'app': 'client.app'

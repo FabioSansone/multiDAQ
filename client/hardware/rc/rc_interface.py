@@ -304,7 +304,7 @@ class RC:
         
         return {
             'success': success_count > 0,
-            'boot_channels': boot_channels,
+            'started_channels': boot_channels,
             'failed_channels': failed_channels
         }
     

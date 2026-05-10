@@ -3,7 +3,8 @@ from typing import Union, List
 def channels_definition(
     channels: Union[List[int], str, int],
     n_channels: int = 7,
-    hv_channels: bool = False
+    hv_channels: bool = False,
+    rc_channels: bool = False
 ) -> List[int]:
     """
     Standardize channel input.
@@ -51,5 +52,8 @@ def channels_definition(
 
     if hv_channels:
         ch_list = [ch + 1 for ch in ch_list]
+    
+    if rc_channels:
+        ch_list = [ch + 20 for ch in ch_list]
 
     return ch_list
