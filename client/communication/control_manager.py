@@ -5,7 +5,7 @@ from client.communication.identity import ClientIdentity
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType
 from client.communication.handlers.system_handlers import handle_server_shutdown
 from client.communication.handlers.hv_handlers import handle_hv_set_common_voltage
-from client.hardware.hv_service import HVService
+from client.hardware.hv.hv_service import HVService
 import time
 import threading
 import queue

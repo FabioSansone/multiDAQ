@@ -1,5 +1,5 @@
 from client.utils.channels import channels_definition
-from client.hardware.hvmodbus import HVModBus
+from client.hardware.hv.hvmodbus import HVModBus
 from client.utils.logger import get_logger
 
 from typing import List
