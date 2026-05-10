@@ -7,6 +7,7 @@ from client.communication.handlers.system_handlers import handle_server_shutdown
 from client.communication.handlers.hv_handlers import handle_hv_set_common_voltage
 from client.communication.handlers.rc_handlers import handle_rc_start_acquisition_mode
 from client.hardware.hv.hv_service import HVService
+from client.hardware.rc.rc_service import RCService
 import time
 import threading
 import queue
@@ -37,6 +38,7 @@ class ControlPlaneManager:
     
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
         self.hv_service = HVService(hv_port=hv_port)
+        self.rc_service = RCService()
         
         self.logger = get_logger("control_manager")
         self.logger.info("ZMQ Control Client Manager initialized")

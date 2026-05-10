@@ -35,7 +35,7 @@ class Server(cmd2.Cmd):
         self.do_set_common = hv_commands.do_set_common.__get__(self, Server)
         
         #RC COMMANDS#
-        self.do_rc_start = rc_commands.do_rc_start.__get__(self, Server)
+        self.do_rc = rc_commands.do_rc.__get__(self, Server)
 
         self.logger.info(f"Server started in {self.mode} mode")
 
