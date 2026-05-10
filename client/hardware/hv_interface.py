@@ -1,8 +1,9 @@
 from client.utils.channels import channels_definition
 from client.hardware.hvmodbus import HVModBus
 from client.utils.logger import get_logger
-import time
+
 from typing import List
+
 
 
 class HV:
@@ -12,6 +13,75 @@ class HV:
         self.hv = HVModBus(hv_port)
         
         self.ok_ch, self.bad_ch = self.checkChannel(channels="all")
+        self.on_ch = []
+        self.off_ch = list(self.ok_ch)
+
+    def getOkChannels(self):
+        return list(self.ok_ch)
+
+    def getBadChannels(self):
+        return list(self.bad_ch)
+
+    def getOnChannels(self):
+        return list(self.on_ch)
+
+    def getOffChannels(self):
+        return list(self.off_ch)
+
+    def moveToOk(self, channel: int) -> None:
+        if channel in self.bad_ch:
+            self.bad_ch.remove(channel)
+
+        if channel not in self.ok_ch:
+            self.ok_ch.append(channel)
+
+        if channel not in self.off_ch and channel not in self.on_ch:
+            self.off_ch.append(channel)
+
+        self.ok_ch = sorted(self.ok_ch)
+        self.bad_ch = sorted(self.bad_ch)
+        self.off_ch = sorted(self.off_ch)
+
+    def moveToBad(self, channel: int) -> None:
+        if channel in self.ok_ch:
+            self.ok_ch.remove(channel)
+
+        if channel not in self.bad_ch:
+            self.bad_ch.append(channel)
+
+        if channel in self.on_ch:
+            self.on_ch.remove(channel)
+
+        if channel not in self.off_ch:
+            self.off_ch.append(channel)
+
+        self.ok_ch = sorted(self.ok_ch)
+        self.bad_ch = sorted(self.bad_ch)
+        self.on_ch = sorted(self.on_ch)
+        self.off_ch = sorted(self.off_ch)
+
+    def moveToOn(self, channel: int) -> None:
+        if channel not in self.ok_ch:
+            return
+
+        if channel in self.off_ch:
+            self.off_ch.remove(channel)
+
+        if channel not in self.on_ch:
+            self.on_ch.append(channel)
+
+        self.on_ch = sorted(self.on_ch)
+        self.off_ch = sorted(self.off_ch)
+
+    def moveToOff(self, channel: int) -> None:
+        if channel in self.on_ch:
+            self.on_ch.remove(channel)
+
+        if channel not in self.off_ch:
+            self.off_ch.append(channel)
+
+        self.on_ch = sorted(self.on_ch)
+        self.off_ch = sorted(self.off_ch)
    
     def _normalize_channels(self, channels):
         channel_list = channels_definition(
@@ -68,8 +138,7 @@ class HV:
         
         for ch in channels_good_selected:
             try:
-                self.hv.open(channel=ch)
-                self.hv.setVoltageSet(value=common_voltage)
+                self.hv.setVoltageSet(value=common_voltage, slave=ch)
                 
                 successful.append(ch)
                 ok_ch_set.add(ch)
@@ -95,59 +164,276 @@ class HV:
     }
 
 
+    def get_ch_status(self, channels: List[int] | str | int):
+
+        list_channels_selected = channels_definition(
+            channels=channels,
+            hv_channels=True
+        )
+
+        ok_ch_set = set(self.ok_ch)
+        bad_ch_set = set(self.bad_ch)
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+
+        status = {}
+
+        for ch in channels_good_selected:
+            try:
+
+                ch_status = self.hv.getStatus(slave=ch)
+
+                status[ch] = ch_status
+
+                successful.append(ch)
+
+                ok_ch_set.add(ch)
+                bad_ch_set.discard(ch)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Problem reading status from channel {ch}: {e}"
+                )
+
+                failed.append(ch)
+
+                ok_ch_set.discard(ch)
+                bad_ch_set.add(ch)
+
+        self.ok_ch = sorted(ok_ch_set)
+        self.bad_ch = sorted(bad_ch_set)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "status": status,
+        }
 
 
+    def get_ch_alarm(self, channels: List[int] | str | int):
 
+        list_channels_selected = channels_definition(
+            channels=channels,
+            hv_channels=True
+        )
 
+        ok_ch_set = set(self.ok_ch)
+        bad_ch_set = set(self.bad_ch)
 
-    def waitUntilStatus(self, channels, end_status='UP'):
-        """
-        Waits until the channels reach the specified end_status (e.g., 'UP' or 'DOWN').
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
 
-        Returns a tuple:
-            (channels_ok, channels_failed)
-        """
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
 
-        ok, bad = self._normalize_channels(channels)
-        if not ok:
-            self.logger.error("No valid channels to monitor.")
-            return [], bad
+        successful = []
+        failed = []
 
-        pending = ok.copy()
-        reached_status = []
+        alarm = {}
 
-        self.logger.warning(f"Monitoring {len(pending)} channels until status '{end_status}'")
+        for ch in channels_good_selected:
+            try:
 
-        while pending:
-            channels_to_remove = []
+                ch_status = self.hv.getAlarm(slave=ch)
 
-            for ch in pending:
+                alarm[ch] = ch_status
+
+                successful.append(ch)
+
+                ok_ch_set.add(ch)
+                bad_ch_set.discard(ch)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Problem reading alarm from channel {ch}: {e}"
+                )
+
+                failed.append(ch)
+
+                ok_ch_set.discard(ch)
+                bad_ch_set.add(ch)
+
+        self.ok_ch = sorted(ok_ch_set)
+        self.bad_ch = sorted(bad_ch_set)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "alarm": alarm,
+        }
+    
+    def on(self, channels: List[int] | str | int):
+        list_channels_selected = channels_definition(channels=channels, hv_channels=True)
+
+        ok_ch_set = set(self.ok_ch)
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+
+        for ch in channels_good_selected:
+            try:
+                self.hv.powerOn(slave=ch)
+
+                successful.append(ch)
+                self.moveToOn(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem powering on channel {ch}: {e}")
+
                 try:
-                    self.hv.open(ch)
-                    alarm = self.hv.alarmString(self.hv.getAlarm())
+                    self.hv.reset(slave=ch)
+                    self.hv.powerOff(slave=ch)
+                except Exception as shutdown_error:
+                    self.logger.error(
+                        f"Problem forcing channel {ch} off after power-on failure: {shutdown_error}"
+                    )
 
-                    if alarm != "none":
-                        self.logger.warning(f"Alarm on channel {ch}: {alarm}")
-                        channels_to_remove.append(ch)
-                        continue
+                failed.append(ch)
+                self.moveToBad(ch)
 
-                    status = self.hv.statusString(self.hv.getStatus())
-                    if status == end_status:
-                        self.logger.info(f"Channel {ch} reached status '{end_status}'")
-                        channels_to_remove.append(ch)
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+        }
 
-                except Exception as e:
-                    self.logger.error(f"Error monitoring channel {ch}: {e}")
-                    channels_to_remove.append(ch)
+    def off(self, channels: List[int] | str | int):
+        list_channels_selected = channels_definition(channels=channels, hv_channels=True)
 
-            for ch in channels_to_remove:
-                pending.remove(ch)
-                reached_status.append(ch)
+        successful = []
+        failed = []
 
-            time.sleep(1)
+        for ch in list_channels_selected:
+            try:
+                self.hv.powerOff(slave=ch)
 
-        failed = [ch for ch in ok if ch not in reached_status]
-        return reached_status, bad + failed
+                successful.append(ch)
+                self.moveToOff(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem powering off channel {ch}: {e}")
+
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "successful_channels": successful,
+            "failed_channels": failed,
+        }
+
+    def reset(self, channels: List[int] | str | int):
+
+        list_channels_selected = channels_definition(channels=channels, hv_channels=True)
+        
+        ok_ch_set = set(self.ok_ch)
+        bad_ch_set = set(self.bad_ch)
+        
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+        
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+        
+        for ch in channels_good_selected:
+            try:
+                self.hv.reset(slave=ch)
+                
+                successful.append(ch)
+                ok_ch_set.add(ch)
+                bad_ch_set.discard(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem powering off on channel {ch}: {e}")
+                
+                failed.append(ch)
+                ok_ch_set.discard(ch)
+                bad_ch_set.add(ch)
+        
+        self.ok_ch = sorted(ok_ch_set)
+        self.bad_ch = sorted(bad_ch_set)
+        
+        return {
+        "requested_channels": list_channels_selected,
+        "used_channels": channels_good_selected,
+        "skipped_channels": channels_skipped,
+        "successful_channels": successful,
+        "failed_channels": failed,
+    }
+
+    def recover_bad_channels(self):
+        bad_channels = self.getBadChannels()
+
+        recovered = []
+        still_bad = []
+
+        for ch in bad_channels:
+            try:
+                if not self.hv.open(ch):
+                    still_bad.append(ch)
+                    continue
+
+                if not self.hv.checkAddressBoundary(ch):
+                    still_bad.append(ch)
+                    continue
+
+                if not self.hv.checkAddress(ch):
+                    still_bad.append(ch)
+                    continue
+
+                self.moveToOk(ch)
+                self.moveToOff(ch)
+                recovered.append(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem recovering bad channel {ch}: {e}")
+                still_bad.append(ch)
+
+        return {
+            "checked_channels": bad_channels,
+            "recovered_channels": recovered,
+            "still_bad_channels": still_bad,
+        }
+
+
+
+
+
+
+
+    
                 
         
                 
