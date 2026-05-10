@@ -209,28 +209,53 @@ class RC:
         
     def boot(self, channels):
         """
-        Open all or a number of channels in boot mode
+        Set selected channels in boot mode.
+        Only selected channels remain active.
         """
-        channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
-        
-        results = []
+        channel_list = channels_definition(
+            channels=channels,
+            n_channels=self.num_channels,
+        )
+
+        if not channel_list:
+            return {
+                "success": False,
+                "boot_channels": [],
+                "failed_channels": [],
+                "message": "No valid channels selected",
+            }
+
+        mask = 0
         for ch in channel_list:
-            result = self.boot_channel(ch)
-            results.append(result)
-            if result['success']:
-                self.logger.info(result['message'])
-            else:
-                self.logger.warning(result['message'])
-        
-        success_count = sum(1 for r in results if r['success'])
-        
-        boot_channels = [r['channel'] for r in results if r['success']]
-        failed_channels = [r['channel'] for r in results if not r['success']]
-        
+            if not self.checkChannelsBoundary(ch):
+                return {
+                    "success": False,
+                    "boot_channels": [],
+                    "failed_channels": [ch],
+                    "message": f"Invalid channel {ch}",
+                }
+
+            mask |= 1 << ch
+
+        ok17 = self.write(17, mask)
+        ok0 = self.write(0, mask)
+        ok1 = self.write(1, mask)
+
+        if ok0 and ok1 and ok17:
+            return {
+                "success": True,
+                "boot_channels": channel_list,
+                "failed_channels": [],
+                "register_mask": mask,
+                "message": f"Channels {channel_list} in boot mode",
+            }
+
         return {
-            'success': success_count > 0,
-            'boot_channels': boot_channels,
-            'failed_channels': failed_channels
+            "success": False,
+            "boot_channels": [],
+            "failed_channels": channel_list,
+            "register_mask": mask,
+            "message": f"Write failed for channels {channel_list}",
         }
     
 
@@ -284,28 +309,52 @@ class RC:
         
     def start(self, channels):
         """
-        Open all or a number of channels in data mode
+        Set selected channels in data mode.
+        Only selected channels remain active.
         """
-        channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
-        
-        results = []
+        channel_list = channels_definition(
+            channels=channels,
+            n_channels=self.num_channels,
+        )
+
+        if not channel_list:
+            return {
+                "success": False,
+                "started_channels": [],
+                "failed_channels": [],
+                "message": "No valid channels selected",
+            }
+
+        mask = 0
         for ch in channel_list:
-            result = self.start_channel(ch)
-            results.append(result)
-            if result['success']:
-                self.logger.info(result['message'])
-            else:
-                self.logger.warning(result['message'])
-        
-        success_count = sum(1 for r in results if r['success'])
-        
-        boot_channels = [r['channel'] for r in results if r['success']]
-        failed_channels = [r['channel'] for r in results if not r['success']]
-        
+            if not self.checkChannelsBoundary(ch):
+                return {
+                    "success": False,
+                    "started_channels": [],
+                    "failed_channels": [ch],
+                    "message": f"Invalid channel {ch}",
+                }
+
+            mask |= 1 << ch
+
+        ok1 = self.write(1, mask)
+        ok0 = self.write(0, mask)
+
+        if ok0 and ok1:
+            return {
+                "success": True,
+                "started_channels": channel_list,
+                "failed_channels": [],
+                "register_mask": mask,
+                "message": f"Channels {channel_list} in data mode",
+            }
+
         return {
-            'success': success_count > 0,
-            'started_channels': boot_channels,
-            'failed_channels': failed_channels
+            "success": False,
+            "started_channels": [],
+            "failed_channels": channel_list,
+            "register_mask": mask,
+            "message": f"Write failed for channels {channel_list}",
         }
     
 
