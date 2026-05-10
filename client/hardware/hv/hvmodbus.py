@@ -22,7 +22,7 @@ class HVModBus:
             parity="N",
             stopbits=1,
             timeout=1,
-            retries=3,
+            retries=1,
         )
         
         if not self.client.connect():

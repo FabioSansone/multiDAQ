@@ -21,7 +21,7 @@ class HVService:
     
     CHECK_CHANNELS_PERIOD_S = 5.0
     SAFETY_CHECK_DEADLINE_S = 5.0
-    RECOVERY_CHECK_PERIOD_S = 60.0
+    RECOVERY_CHECK_PERIOD_S = 300.0
     RECOVERY_CHECK_DEADLINE_S = 30.0
 
     def __init__(self, hv_port: str):
@@ -168,7 +168,7 @@ class HVService:
 
 
     def _check_channels_loop(self) -> None:
-        last_recovery_check = 0.0
+        last_recovery_check = time.time()
 
         while not self.stop_check_channels.is_set():
             now = time.time()
