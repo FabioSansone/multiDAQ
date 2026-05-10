@@ -93,11 +93,6 @@ class HV:
         bad = []
 
         for ch in channel_list:
-            
-            if not self.hv.open(ch):
-                self.logger.error(f"Not possible to open channel {ch}")
-                bad.append(ch)
-                continue
 
             if not self.hv.checkAddressBoundary(ch):
                 self.logger.error(f"Channel {ch} out of boundary")
