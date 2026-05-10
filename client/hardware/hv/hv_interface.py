@@ -93,18 +93,22 @@ class HV:
         bad = []
 
         for ch in channel_list:
+            try:
+                if not self.hv.checkAddressBoundary(ch):
+                    self.logger.error(f"Channel {ch} out of boundary")
+                    bad.append(ch)
+                    continue
 
-            if not self.hv.checkAddressBoundary(ch):
-                self.logger.error(f"Channel {ch} out of boundary")
+                if not self.hv.checkAddress(ch):
+                    self.logger.error(f"Channel {ch} not responding")
+                    bad.append(ch)
+                    continue
+
+                ok.append(ch)
+
+            except Exception as e:
+                self.logger.error(f"Channel {ch} not responding during startup scan: {e}")
                 bad.append(ch)
-                continue
-
-            if not self.hv.checkAddress(ch):
-                self.logger.error(f"Channel {ch} not responding")
-                bad.append(ch)
-                continue
-
-            ok.append(ch)
 
         return ok, bad
         

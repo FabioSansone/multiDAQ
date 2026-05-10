@@ -124,9 +124,15 @@ class HVModBus:
     
     def open(self, channel):
         self.handleInterrupt()
-        self._safe_read(addr=0, count=1, slave=channel, desc="opening channel")
+
+        try:
+            self._safe_read(addr=0, count=1, slave=channel, desc="opening channel")
+        except Exception:
+            return False
+
         self.ch_addr = channel
         return True
+    
     
     def checkAddressBoundary(self, channel):
         if (channel < 0 or channel > self.num_channels):
@@ -148,14 +154,20 @@ class HVModBus:
     
     def checkAddress(self, ch_addr):
         if self.open(channel=ch_addr):
-            if self.getAddress() == ch_addr and self.isConnected() : #Address and channel as variables go from 1 to 7
+            if self.getAddress() == ch_addr and self.isConnected():
                 return True
-            else:
-                self.logger.warning(f"The HV board selected doesn't match the channel interested: {self.getAddress} != {ch_addr}")
-                return False
-        else:
-            self.logger.warning(f"It was not possible to check the address: error in opening the selected channel: {ch_addr}")
+
+            self.logger.warning(
+                f"The HV board selected doesn't match the channel interested: "
+                f"{self.getAddress()} != {ch_addr}"
+            )
             return False
+
+        self.ch_addr = None
+        self.logger.warning(
+            f"It was not possible to check the address: error in opening the selected channel: {ch_addr}"
+        )
+        return False
         
     def setModbusAddress(self, ch_addr, slave=None):
         slave = self.ch_addr if slave is None else slave
