@@ -25,6 +25,10 @@ class ControlPlaneManager:
         self.outgoing_queue = queue.Queue()
         self.listener_thread: Optional[threading.Thread] = None
         
+        self.event_queue = queue.Queue()
+        self.event_thread: Optional[threading.Thread] = None
+        self.event_callback = None
+        
         self.logger = get_logger("control_manager")
         self.logger.debug("ZMQ Control Server Manager initialized")
         
@@ -366,7 +370,10 @@ class ControlPlaneManager:
             client_id, message, reason = self.receive_message(timeout_ms=100)
 
             if message is not None:
-                self.incoming_queue.put((client_id, message, reason))
+                if message.msg_type == MessageType.EVENT:
+                    self.event_queue.put((client_id, message,))
+                else:
+                    self.incoming_queue.put((client_id, message, reason))
             elif reason != "timeout elapsed":
                 self.logger.warning(f"Receive problem: {reason}")
 
@@ -382,6 +389,37 @@ class ControlPlaneManager:
                         f"request_id={outgoing_message.request_id}"
                     )
     
+    def _event_loop(self) -> None:
+        while not self.stop_listening.is_set():
+            try:
+                client_id, message = self.event_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            
+            client_name = client_id.decode(errors="ignore")
+            payload = message.payload
+            
+            if message.channel == Channel.HV:
+                event = payload.get("event", "unknown_event")
+                severity = payload.get("severity", "info")
+                
+                if self.event_callback is not None:
+                    try:
+                        self.event_callback(message)
+                    except Exception as e:
+                        self.logger.error(f"Event callback failed: {e}")
+
+                if severity == "warning":
+                    self.logger.warning(
+                        f"HV warning from {client_name}: {event} - {payload}"
+                    )
+                else:
+                    self.logger.info(
+                        f"HV event from {client_name}: {event} - {payload}"
+                    )
+            
+            self.event_queue.task_done()
+        
 
     def start_listener(self) -> bool:
         
@@ -401,6 +439,13 @@ class ControlPlaneManager:
             daemon=True
         )
         self.listener_thread.start()
+        
+        if self.event_thread is None or not self.event_thread.is_alive():
+            self.event_thread = threading.Thread(
+                target=self._event_loop,
+                daemon=True,
+            )
+            self.event_thread.start()
 
         self.logger.info("Control listener started")
         return True
@@ -411,6 +456,9 @@ class ControlPlaneManager:
 
         if self.listener_thread and self.listener_thread.is_alive():
             self.listener_thread.join(timeout=2.0)
+        
+        if self.event_thread and self.event_thread.is_alive():
+            self.event_thread.join(timeout=2.0)
 
         self.logger.info("Control listener stopped")
         
@@ -425,6 +473,12 @@ class ControlPlaneManager:
         while not self.outgoing_queue.empty():
             try:
                 self.outgoing_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        while not self.event_queue.empty():
+            try:
+                self.event_queue.get_nowait()
             except queue.Empty:
                 break
 

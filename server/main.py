@@ -37,7 +37,9 @@ class Server(cmd2.Cmd):
         #RC COMMANDS#
         self.do_rc = rc_commands.do_rc.__get__(self, Server)
 
-        self.logger.info(f"Server started in {self.mode} mode")
+        #EVENT MESSAGES MANAGER#
+        self.handle_event = app_commands.handle_event.__get__(self, Server)
+        self.control_manager.event_callback = self.handle_event
 
 
 def main() -> int:

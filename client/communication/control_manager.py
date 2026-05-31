@@ -2,7 +2,7 @@ import zmq
 from typing import Optional
 from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
-from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType
+from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
 from client.communication.handlers.system_handlers import handle_server_shutdown
 from client.communication.handlers.hv_handlers import handle_hv_set_common_voltage
 from client.communication.handlers.rc_handlers import handle_rc_start_acquisition_mode
@@ -38,6 +38,7 @@ class ControlPlaneManager:
     
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
         self.hv_service = HVService(hv_port=hv_port)
+        self.hv_warning_thread: Optional[threading.Thread] = None
         self.rc_service = RCService()
         
         self.logger = get_logger("control_manager")
@@ -300,6 +301,21 @@ class ControlPlaneManager:
                         f"Failed to send queued message: request_id={outgoing_message.request_id}"
                     )
     
+    def _hv_warning_loop(self) -> None:
+        while not self.stop_listening.is_set():
+            try:
+                warning = self.hv_service.warning_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            
+            event_message = self.message_handler.create_event(
+                channel=Channel.HV,
+                payload=warning,
+                sender="client",
+                status=MessageStatus.ERROR,
+            )
+            
+            self.queue_message(event_message)
 
     def start_listener(self) -> bool:
         
@@ -320,6 +336,13 @@ class ControlPlaneManager:
             daemon=True
         )
         self.listener_thread.start()
+        
+        if self.hv_warning_thread is None or not self.hv_warning_thread.is_alive():
+            self.hv_warning_thread = threading.Thread(
+                target=self._hv_warning_loop,
+                daemon=True
+            )
+            self.hv_warning_thread.start()
 
         self.logger.info("Control listener started")
         return True
@@ -330,6 +353,9 @@ class ControlPlaneManager:
 
         if self.listener_thread and self.listener_thread.is_alive():
             self.listener_thread.join(timeout=2.0)
+        
+        if self.hv_warning_thread and self.hv_warning_thread.is_alive():
+            self.hv_warning_thread.join(timeout=2.0)
 
         self.logger.info("Control listener stopped")
 

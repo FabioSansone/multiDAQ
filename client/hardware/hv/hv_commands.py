@@ -87,8 +87,8 @@ def command_check_channel_safety(
 
             else:
                 try:
-                    hv_interface.reset(channels=ch)
-                    hv_interface.off(channels=ch)
+                    hv_interface.force_reset(channels=ch)
+                    hv_interface.force_off(channels=ch)
                     action = "reset_off_moved_to_bad"
                 finally:
                     hv_interface.moveToBad(channel=ch)
@@ -102,6 +102,13 @@ def command_check_channel_safety(
                     "action": action,
                 }
             )
+        else:
+            if ch not in hv_interface.getOkChannels():
+                hv_interface.moveToOk(channel=ch)
+            if status == "UP" and ch in hv_interface.getOffChannels():
+                hv_interface.moveToOn(channel=ch)
+            elif status == "DOWN" and ch in hv_interface.getOnChannels():
+                hv_interface.moveToOff(channel=ch)
 
     if unsafe_channels:
         return HVResponse(

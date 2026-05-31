@@ -1,7 +1,7 @@
 from client.utils.channels import channels_definition
 from client.hardware.hv.hvmodbus import HVModBus
 from client.utils.logger import get_logger
-
+import threading
 from typing import List
 
 
@@ -15,73 +15,83 @@ class HV:
         self.ok_ch, self.bad_ch = self.checkChannel(channels="all")
         self.on_ch = []
         self.off_ch = list(self.ok_ch)
+        
+        self.channels_lock = threading.Lock()
 
     def getOkChannels(self):
-        return list(self.ok_ch)
+        with self.channels_lock:
+            return list(self.ok_ch)
 
     def getBadChannels(self):
-        return list(self.bad_ch)
+        with self.channels_lock:
+            return list(self.bad_ch)
 
     def getOnChannels(self):
-        return list(self.on_ch)
+        with self.channels_lock:
+            return list(self.on_ch)
 
     def getOffChannels(self):
-        return list(self.off_ch)
+        with self.channels_lock:
+            return list(self.off_ch)
 
     def moveToOk(self, channel: int) -> None:
-        if channel in self.bad_ch:
-            self.bad_ch.remove(channel)
+        with self.channels_lock:
+            if channel in self.bad_ch:
+                self.bad_ch.remove(channel)
 
-        if channel not in self.ok_ch:
-            self.ok_ch.append(channel)
+            if channel not in self.ok_ch:
+                self.ok_ch.append(channel)
 
-        if channel not in self.off_ch and channel not in self.on_ch:
-            self.off_ch.append(channel)
+            if channel not in self.off_ch and channel not in self.on_ch:
+                self.off_ch.append(channel)
 
-        self.ok_ch = sorted(self.ok_ch)
-        self.bad_ch = sorted(self.bad_ch)
-        self.off_ch = sorted(self.off_ch)
+            self.ok_ch = sorted(self.ok_ch)
+            self.bad_ch = sorted(self.bad_ch)
+            self.off_ch = sorted(self.off_ch)
 
     def moveToBad(self, channel: int) -> None:
-        if channel in self.ok_ch:
-            self.ok_ch.remove(channel)
+        with self.channels_lock:
+            if channel in self.ok_ch:
+                self.ok_ch.remove(channel)
 
-        if channel not in self.bad_ch:
-            self.bad_ch.append(channel)
+            if channel not in self.bad_ch:
+                self.bad_ch.append(channel)
 
-        if channel in self.on_ch:
-            self.on_ch.remove(channel)
+            if channel in self.on_ch:
+                self.on_ch.remove(channel)
 
-        if channel in self.off_ch:
-            self.off_ch.remove(channel)
+            if channel not in self.off_ch:
+                self.off_ch.append(channel)
 
-        self.ok_ch = sorted(self.ok_ch)
-        self.bad_ch = sorted(self.bad_ch)
-        self.on_ch = sorted(self.on_ch)
-        self.off_ch = sorted(self.off_ch)
+            self.ok_ch = sorted(self.ok_ch)
+            self.bad_ch = sorted(self.bad_ch)
+            self.on_ch = sorted(self.on_ch)
+            self.off_ch = sorted(self.off_ch)
 
     def moveToOn(self, channel: int) -> None:
-        if channel not in self.ok_ch:
-            return
+        with self.channels_lock:
+            if channel not in self.ok_ch:
+                return
 
-        if channel in self.off_ch:
-            self.off_ch.remove(channel)
+            if channel in self.off_ch:
+                self.off_ch.remove(channel)
 
-        if channel not in self.on_ch:
-            self.on_ch.append(channel)
+            if channel not in self.on_ch:
+                self.on_ch.append(channel)
 
-        self.on_ch = sorted(self.on_ch)
-        self.off_ch = sorted(self.off_ch)
+            self.on_ch = sorted(self.on_ch)
+            self.off_ch = sorted(self.off_ch)
 
     def moveToOff(self, channel: int) -> None:
-        if channel in self.on_ch:
-            self.on_ch.remove(channel)
+        with self.channels_lock:
+            if channel in self.on_ch:
+                self.on_ch.remove(channel)
 
-        if channel not in self.off_ch:
-            self.off_ch.append(channel)
+            if channel not in self.off_ch:
+                self.off_ch.append(channel)
 
-        self.on_ch = sorted(self.on_ch)
-        self.off_ch = sorted(self.off_ch)
+            self.on_ch = sorted(self.on_ch)
+            self.off_ch = sorted(self.off_ch)
    
     def _normalize_channels(self, channels):
         channel_list = channels_definition(
@@ -124,7 +134,7 @@ class HV:
             hv_channels=True,
         )
 
-        ok_ch_set = set(self.ok_ch)
+        ok_ch_set = set(self.getOkChannels())
 
         channels_good_selected = [
             ch for ch in list_channels_selected if ch in ok_ch_set
@@ -174,8 +184,8 @@ class HV:
             hv_channels=True
         )
 
-        ok_ch_set = set(self.ok_ch)
-        bad_ch_set = set(self.bad_ch)
+        ok_ch_set = set(self.getOkChannels())
+        bad_ch_set = set(self.getBadChannels())
 
         channels_good_selected = [
             ch for ch in list_channels_selected if ch in ok_ch_set
@@ -228,7 +238,7 @@ class HV:
             hv_channels=True
         )
 
-        ok_ch_set = set(self.ok_ch)
+        ok_ch_set = set(self.getOkChannels())
 
         channels_good_selected = [
             ch for ch in list_channels_selected if ch in ok_ch_set
@@ -268,7 +278,7 @@ class HV:
     def on(self, channels: List[int] | str | int):
         list_channels_selected = channels_definition(channels=channels, hv_channels=True)
 
-        ok_ch_set = set(self.ok_ch)
+        ok_ch_set = set(self.getOkChannels())
 
         channels_good_selected = [
             ch for ch in list_channels_selected if ch in ok_ch_set
@@ -320,7 +330,7 @@ class HV:
             hv_channels=True
         )
 
-        ok_ch_set = set(self.ok_ch)
+        ok_ch_set = set(self.getOkChannels())
 
         channels_good_selected = [
             ch for ch in list_channels_selected if ch in ok_ch_set
@@ -357,6 +367,39 @@ class HV:
             "on_channels": self.getOnChannels(),
             "off_channels": self.getOffChannels(),
         }
+    
+    def force_off(self, channels: List[int] | str | int):
+        list_channels_selected = channels_definition(
+            channels=channels,
+            hv_channels=True
+        )
+
+
+        successful = []
+        failed = []
+
+        for ch in list_channels_selected:
+            try:
+                self.hv.powerOff(slave=ch)
+
+                successful.append(ch)
+                self.moveToOff(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem powering off channel {ch}: {e}")
+
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+        }
 
     def reset(self, channels: List[int] | str | int):
 
@@ -365,7 +408,7 @@ class HV:
             hv_channels=True
         )
 
-        ok_ch_set = set(self.ok_ch)
+        ok_ch_set = set(self.getOkChannels())
 
         channels_good_selected = [
             ch for ch in list_channels_selected if ch in ok_ch_set
@@ -394,6 +437,39 @@ class HV:
             "requested_channels": list_channels_selected,
             "used_channels": channels_good_selected,
             "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+        }
+    
+    def force_reset(self, channels: List[int] | str | int):
+
+        list_channels_selected = channels_definition(
+            channels=channels,
+            hv_channels=True
+        )
+
+
+        successful = []
+        failed = []
+
+        for ch in list_channels_selected:
+            try:
+                self.hv.reset(slave=ch)
+
+                successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem resetting channel {ch}: {e}")
+
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
             "successful_channels": successful,
             "failed_channels": failed,
             "bad_channels": self.getBadChannels(),

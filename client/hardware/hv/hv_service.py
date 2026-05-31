@@ -38,6 +38,12 @@ class HVService:
 
         self.stop_check_channels = threading.Event()
         self.check_thread: Optional[threading.Thread] = None
+        self.warning_queue: queue.Queue = queue.Queue()
+        
+        self.safety_check_pending = False
+        self.recovery_check_pending = False
+        self.pending_lock = threading.Lock()    
+        
     
     def _execute_response(self, hv_request: HVRequest) -> HVResponse:
         try:
@@ -68,6 +74,40 @@ class HVService:
                 status=MessageStatus.ERROR,
                 error=str(e),
             )
+    
+    def _hv_warnings(self, hv_request: HVRequest, hv_response: HVResponse) -> None:
+        if hv_request.sender not in {"hv_safety_check", "hv_bad_recovery"}:
+            return
+
+        if hv_request.command == "check_channel_safety":
+            unsafe = hv_response.result.get("unsafe_channels", [])
+
+            if unsafe:
+                self.warning_queue.put({
+                    "event": "hv_channels_became_bad",
+                    "severity": "warning",
+                    "source_request_id": hv_request.request_id,
+                    "channels": [item["channel"] for item in unsafe],
+                    "details": unsafe,
+                    "error": hv_response.error,
+                })
+
+            return
+
+        if hv_request.command == "check_recovery_bad":
+            recovered = hv_response.result.get("recovered_channels", [])
+
+            if recovered:
+                self.warning_queue.put({
+                    "event": "hv_channels_recovered",
+                    "severity": "info",
+                    "source_request_id": hv_request.request_id,
+                    "channels": recovered,
+                    "details": hv_response.result,
+                    "error": hv_response.error,
+                })
+
+            return
         
         
     def _worker_loop(self) -> None:
@@ -100,12 +140,21 @@ class HVService:
                     continue
 
                 response = self._execute_response(hv_request)
+                self._hv_warnings(hv_request, response)
 
                 if hv_request.response_queue is not None:
                     hv_request.response_queue.put(response)
 
             finally:
+                if hv_request.command == "check_channel_safety":
+                    with self.pending_lock:
+                        self.safety_check_pending = False
+
+                elif hv_request.command == "check_recovery_bad":
+                    with self.pending_lock:
+                        self.recovery_check_pending = False
                 self.input_queue.task_done()
+                
                 
                 
     def request(
@@ -175,47 +224,55 @@ class HVService:
 
             channels_to_check = self.hv.getOnChannels()
             bad_channels = self.hv.getBadChannels()
+            
 
             if channels_to_check:
-                safety_request = HVRequest(
-                    protocol_version=PROTOCOL_VERSION,
-                    request_id=f"safety_check_{now}",
-                    command="check_channel_safety",
-                    payload={"channels": channels_to_check},
-                    sender="hv_safety_check",
-                    deadline_s=now + self.SAFETY_CHECK_DEADLINE_S,
-                )
+                with self.pending_lock:
+                    if not self.safety_check_pending:
+                        self.safety_check_pending = True
+                        safety_request = HVRequest(
+                            protocol_version=PROTOCOL_VERSION,
+                            request_id=f"safety_check_{now}",
+                            command="check_channel_safety",
+                            payload={"channels": channels_to_check},
+                            sender="hv_safety_check",
+                            deadline_s=now + self.SAFETY_CHECK_DEADLINE_S,
+                        )
 
-                self.input_queue.put(
-                    (
-                        HVMessagePriority.EMERGENCY,
-                        next(self._counter),
-                        safety_request,
-                    )
-                )
+                        self.input_queue.put(
+                            (
+                                HVMessagePriority.EMERGENCY,
+                                next(self._counter),
+                                safety_request,
+                            )
+                        )
+            
 
             if (
                 bad_channels
                 and (now - last_recovery_check) > self.RECOVERY_CHECK_PERIOD_S
             ):
-                recovery_request = HVRequest(
-                    protocol_version=PROTOCOL_VERSION,
-                    request_id=f"recovery_bad_{now}",
-                    command="check_recovery_bad",
-                    payload={},
-                    sender="hv_bad_recovery",
-                    deadline_s=now + self.RECOVERY_CHECK_DEADLINE_S,
-                )
+                with self.pending_lock:
+                    if not self.recovery_check_pending:
+                        self.recovery_check_pending = True
+                        recovery_request = HVRequest(
+                            protocol_version=PROTOCOL_VERSION,
+                            request_id=f"recovery_bad_{now}",
+                            command="check_recovery_bad",
+                            payload={},
+                            sender="hv_bad_recovery",
+                            deadline_s=now + self.RECOVERY_CHECK_DEADLINE_S,
+                        )
 
-                self.input_queue.put(
-                    (
-                        HVMessagePriority.MONITORING,
-                        next(self._counter),
-                        recovery_request,
-                    )
-                )
+                        self.input_queue.put(
+                            (
+                                HVMessagePriority.MONITORING,
+                                next(self._counter),
+                                recovery_request,
+                            )
+                        )
 
-                last_recovery_check = now
+                        last_recovery_check = now
 
             self.stop_check_channels.wait(self.CHECK_CHANNELS_PERIOD_S)
             

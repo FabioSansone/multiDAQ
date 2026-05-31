@@ -141,4 +141,24 @@ def do_connect(self, args: argparse.Namespace) -> None:
         logger.error("Failed to start control listener")
         self.poutput("Failed to start control listener")
         return
+
+
+#########################
+#HANDLING EVENT MESSAGES#
+#########################
+
+def handle_event(self, message):
+    payload = message.payload
+
+    event = payload.get("event", "unknown")
+    severity = payload.get("severity", "info")
+
+    if severity == "warning":
+        self.poutput(
+            f"\n[WARNING] {event}: {payload}"
+        )
+    else:
+        self.poutput(
+            f"\n[INFO] {event}: {payload}"
+        )
             

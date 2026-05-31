@@ -125,4 +125,3 @@ def do_set_common(self, args: argparse.Namespace) -> None:
             self.poutput(
                 f"Client {client_name}: all selected channels were set to {args.value} V."
             )
-
