@@ -12,13 +12,14 @@ class HV:
         self.logger = get_logger('hv')
         self.hv = HVModBus(hv_port)
         
+        self.channels_lock = threading.Lock()
         self.ok_ch, self.bad_ch = self.checkChannel(channels="all")
         self.on_ch = []
         self.off_ch = []
         
         self.sync_power_state(channels=self.ok_ch)
         
-        self.channels_lock = threading.Lock()
+        
 
     def getOkChannels(self):
         with self.channels_lock:
