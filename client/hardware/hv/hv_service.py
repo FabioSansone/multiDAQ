@@ -20,7 +20,7 @@ from client.hardware.hv.hv_commands import COMMAND_HANDLERS
 class HVService:
     
     CHECK_CHANNELS_PERIOD_S = 5.0
-    SAFETY_CHECK_DEADLINE_S = 5.0
+    SAFETY_CHECK_DEADLINE_S = 30.0
     RECOVERY_CHECK_PERIOD_S = 300.0
     RECOVERY_CHECK_DEADLINE_S = 30.0
 
