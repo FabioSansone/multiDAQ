@@ -14,7 +14,9 @@ class HV:
         
         self.ok_ch, self.bad_ch = self.checkChannel(channels="all")
         self.on_ch = []
-        self.off_ch = list(self.ok_ch)
+        self.off_ch = []
+        
+        self.sync_power_state(channels=self.ok_ch)
         
         self.channels_lock = threading.Lock()
 
@@ -92,6 +94,22 @@ class HV:
 
             self.on_ch = sorted(self.on_ch)
             self.off_ch = sorted(self.off_ch)
+    
+    def sync_power_state(self, channels):
+        for ch in channels:
+            try:
+                status = self.hv.getStatus(slave=ch)
+
+                if status in {"ON", "UP"}:
+                    self.moveToOn(ch)
+                elif status in {"OFF", "DOWN"}:
+                    self.moveToOff(ch)
+                else:
+                    self.moveToOff(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem syncing power state on channel {ch}: {e}")
+                self.moveToBad(ch)
    
     def _normalize_channels(self, channels):
         channel_list = channels_definition(
