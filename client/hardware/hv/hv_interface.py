@@ -116,11 +116,29 @@ class HV:
             except Exception as e:
                 self.logger.error(f"Problem syncing power state on channel {ch}: {e}")
                 self.moveToBad(ch)
+    
+    def hv_channels_definition(self, channels, n_channels: int = 7):
+        if isinstance(channels, int):
+            ch_list = [channels]
+        elif isinstance(channels, list):
+            ch_list = channels
+        elif isinstance(channels, str):
+            if channels.lower() == "all":
+                ch_list = list(range(1, n_channels + 1))
+            else:
+                ch_list = [int(c) for c in channels.split(",")]
+        else:
+            raise TypeError(f"Invalid type for channels: {type(channels)}")
+
+        for ch in ch_list:
+            if ch < 1 or ch > n_channels:
+                raise ValueError(f"Invalid HV channel: {ch}")
+
+        return ch_list
    
     def _normalize_channels(self, channels):
-        channel_list = channels_definition(
+        channel_list = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True
         )
 
         ok = []
@@ -151,11 +169,13 @@ class HV:
         return ok_channels, bad_channels
     
 
+    
+    
+
     def set_common_voltage(self, channels: List[int] | str | int, common_voltage: int):
 
-        list_channels_selected = channels_definition(
+        list_channels_selected = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True,
         )
 
         ok_ch_set = set(self.getOkChannels())
@@ -203,9 +223,8 @@ class HV:
 
     def get_ch_status(self, channels: List[int] | str | int):
 
-        list_channels_selected = channels_definition(
+        list_channels_selected = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True
         )
 
         ok_ch_set = set(self.getOkChannels())
@@ -257,9 +276,8 @@ class HV:
 
     def get_ch_alarm(self, channels: List[int] | str | int):
 
-        list_channels_selected = channels_definition(
+        list_channels_selected = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True
         )
 
         ok_ch_set = set(self.getOkChannels())
@@ -300,7 +318,7 @@ class HV:
         }
     
     def on(self, channels: List[int] | str | int):
-        list_channels_selected = channels_definition(channels=channels, hv_channels=True)
+        list_channels_selected = self.hv_channels_definition(channels=channels)
 
         ok_ch_set = set(self.getOkChannels())
 
@@ -349,9 +367,8 @@ class HV:
         }
 
     def off(self, channels: List[int] | str | int):
-        list_channels_selected = channels_definition(
+        list_channels_selected = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True
         )
 
         ok_ch_set = set(self.getOkChannels())
@@ -393,9 +410,8 @@ class HV:
         }
     
     def force_off(self, channels: List[int] | str | int):
-        list_channels_selected = channels_definition(
+        list_channels_selected = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True
         )
 
 
@@ -427,9 +443,8 @@ class HV:
 
     def reset(self, channels: List[int] | str | int):
 
-        list_channels_selected = channels_definition(
+        list_channels_selected = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True
         )
 
         ok_ch_set = set(self.getOkChannels())
@@ -471,9 +486,8 @@ class HV:
     
     def force_reset(self, channels: List[int] | str | int):
 
-        list_channels_selected = channels_definition(
+        list_channels_selected = self.hv_channels_definition(
             channels=channels,
-            hv_channels=True
         )
 
 

@@ -2,17 +2,23 @@ import time
 
 from common.message_handler import Channel
 from client.hardware.hv.hv_messages import HVRequest, HVMessagePriority
-
+from client.utils.channels import channels_definition
 
 def handle_hv_set_common_voltage(manager, message):
     timeout_s = 30.0
+
+    payload = dict(message.payload)
+    payload["channels"] = channels_definition(
+        payload["channels"],
+        hv_channels=True,
+    )
 
     hv_request = HVRequest(
         protocol_version=message.protocol_version,
         request_id=message.request_id,
         sender="control_manager",
         command="set_common_voltage",
-        payload=message.payload,
+        payload=payload,
         status=message.status,
         deadline_s=time.time() + timeout_s,
     )
