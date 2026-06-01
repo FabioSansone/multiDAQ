@@ -119,7 +119,7 @@ class HVService:
                 _, _, hv_request = self.input_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-
+            self.logger.info("HV Request", hv_request)
             try:
                 if (
                     hv_request.deadline_s is not None
@@ -143,6 +143,7 @@ class HVService:
                     continue
 
                 response = self._execute_response(hv_request)
+                self.logger.info("HV Response", response)
                 self._hv_warnings(hv_request, response)
 
                 if hv_request.response_queue is not None:
@@ -228,7 +229,7 @@ class HVService:
             channels_to_check = self.hv.getOnChannels()
             bad_channels = self.hv.getBadChannels()
             
-
+            self.logger.info("Channels safety to check", channels_to_check)
             if channels_to_check:
                 with self.pending_lock:
                     if not self.safety_check_pending:
@@ -241,6 +242,7 @@ class HVService:
                             sender="hv_safety_check",
                             deadline_s=now + self.SAFETY_CHECK_DEADLINE_S,
                         )
+                        self.logger.info("Pre input")
 
                         self.input_queue.put(
                             (
@@ -249,6 +251,8 @@ class HVService:
                                 safety_request,
                             )
                         )
+
+                        self.logger.info("Post input")
             
 
             if (
