@@ -65,6 +65,56 @@ def do_quit(self,_) -> bool:
     return True
 
 
+
+force_parser = argparse.ArgumentParser()
+
+force_subparsers = force_parser.add_subparsers(
+    dest="command",
+    required=True,
+)
+
+force_subparsers.add_parser(
+    "quit",
+    help="Force server shutdown regardless of client response",
+)
+
+@cmd2.with_argparser(force_parser)
+@cmd2.with_category("Generic Commands")
+def do_force(self, args: argparse.Namespace) -> bool:
+    """
+    Force operations that do not depend on client replies.
+    """
+
+    if args.command == "quit":
+
+        try:
+            self.control_manager.notify_shutdown_to_all_clients()
+
+            connected_clients = self.control_manager.list_connected_clients()
+
+            if connected_clients:
+                self.poutput(
+                    "Force quit command sent to all connected clients."
+                )
+            else:
+                self.poutput(
+                    "No connected clients. Forcing server shutdown."
+                )
+
+        except Exception as e:
+            self.logger.warning(
+                f"Force quit: failed to notify clients: {e}"
+            )
+            self.poutput(
+                f"Warning: failed to notify clients: {e}"
+            )
+
+        self.poutput("Forcing server shutdown...")
+        return True
+
+    return False
+
+
 #####################
 #CONNECTION COMMANDS#
 #####################

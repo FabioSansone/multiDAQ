@@ -30,6 +30,7 @@ class Server(cmd2.Cmd):
         self.do_change_mode = app_commands.do_change_mode.__get__(self, Server)
         self.do_connect = app_commands.do_connect.__get__(self, Server)
         self.do_quit = app_commands.do_quit.__get__(self, Server)
+        self.do_force = app_commands.do_force.__get__(self, Server)
         
         #HV COMMANDS#
         self.do_set_common = hv_commands.do_set_common.__get__(self, Server)
