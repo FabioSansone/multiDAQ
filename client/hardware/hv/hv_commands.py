@@ -200,10 +200,78 @@ def command_check_recovery_bad(
         result=result or {},
     )
 
+def command_hv_sync(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    channels = hv_request.payload.get("channels", "all")
+
+    #NO INTERNAL REQUEST IS GENERATED SINCE THE FUNCTION DOES NOT NEED ALL THE INFORMATION (PAYLOAD) FROM ORIGINAL COMMAND
+    recovery_response = command_check_recovery_bad(
+        protocol_version=protocol_version,
+        hv_interface=hv_interface,
+        hv_request=hv_request,
+    )
+
+    power_request = HVRequest(
+        protocol_version=hv_request.protocol_version,
+        request_id=hv_request.request_id,
+        command="check_channel_power",
+        payload={"channels": channels},
+        sender=hv_request.sender,
+        status=hv_request.status,
+    )
+
+    power_response = command_check_channel_power(
+        protocol_version=protocol_version,
+        hv_interface=hv_interface,
+        hv_request=power_request,
+    )
+
+    result = {
+        "recovery": recovery_response.result,
+        "power_sync": power_response.result,
+        "ok_channels": hv_interface.getOkChannels(),
+        "bad_channels": hv_interface.getBadChannels(),
+        "on_channels": hv_interface.getOnChannels(),
+        "off_channels": hv_interface.getOffChannels(),
+    }
+
+    status = MessageStatus.OK
+    error = None
+
+    if recovery_response.status == MessageStatus.ERROR or power_response.status == MessageStatus.ERROR:
+        status = MessageStatus.ERROR
+        error = {
+            "recovery_error": recovery_response.error,
+            "power_sync_error": power_response.error,
+        }
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=status,
+        result=result,
+        error=error,
+    )
+
 
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
     "check_channel_safety": command_check_channel_safety,
     "check_channel_power": command_check_channel_power,
     "check_recovery_bad": command_check_recovery_bad,
+    "set_hv_sync": command_hv_sync,
 }
+
+COMMAND_HANDLERS = {
+    "set_common_voltage": command_common_voltage,
+    "set_hv_sync": command_hv_sync,
+    "check_channel_safety": command_check_channel_safety,
+    "check_channel_power": command_check_channel_power,
+    "check_recovery_bad": command_check_recovery_bad,
+}
+

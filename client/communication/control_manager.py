@@ -4,7 +4,7 @@ from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
 from client.communication.handlers.system_handlers import handle_server_shutdown
-from client.communication.handlers.hv_handlers import handle_hv_set_common_voltage
+from client.communication.handlers.hv_handlers import handle_hv_set_common_voltage, handle_hv_set_hv_sync
 from client.communication.handlers.rc_handlers import handle_rc_start_acquisition_mode
 from client.hardware.hv.hv_service import HVService
 from client.hardware.rc.rc_service import RCService
@@ -33,6 +33,7 @@ class ControlPlaneManager:
         self.command_map = {
             "server_shutdown": handle_server_shutdown,
             "set_common_voltage": handle_hv_set_common_voltage,
+            "set_hv_sync": handle_hv_set_hv_sync,
             "rc_acq_start": handle_rc_start_acquisition_mode,
         }
     

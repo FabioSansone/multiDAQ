@@ -1,8 +1,7 @@
 import argparse
 import cmd2
 from server.utils.logger import get_logger
-import time
-
+from common.message_handler import Channel
 
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
@@ -65,17 +64,28 @@ def do_quit(self,_) -> bool:
     return True
 
 
+def _hv_to_user(channels):
+    return [ch - 1 for ch in channels]
+
+
+def _print_hv_lists(self, client_name: str, result: dict):
+    self.poutput(f"\nClient {client_name}: HV sync completed.")
+    self.poutput(f"  OK  channels: {_hv_to_user(result.get('ok_channels', []))}")
+    self.poutput(f"  BAD channels: {_hv_to_user(result.get('bad_channels', []))}")
+    self.poutput(f"  ON  channels: {_hv_to_user(result.get('on_channels', []))}")
+    self.poutput(f"  OFF channels: {_hv_to_user(result.get('off_channels', []))}")
 
 force_parser = argparse.ArgumentParser()
-
-force_subparsers = force_parser.add_subparsers(
-    dest="command",
-    required=True,
-)
+force_subparsers = force_parser.add_subparsers(dest="command", required=True)
 
 force_subparsers.add_parser(
     "quit",
     help="Force server shutdown regardless of client response",
+)
+
+force_subparsers.add_parser(
+    "hv_sync",
+    help="Force HV bad recovery and power-state synchronization",
 )
 
 @cmd2.with_argparser(force_parser)
@@ -112,7 +122,52 @@ def do_force(self, args: argparse.Namespace) -> bool:
         self.poutput("Forcing server shutdown...")
         return True
 
-    return False
+
+
+    if args.command == "hv_sync":
+        client_ids = self.control_manager.list_connected_clients()
+
+        if not client_ids:
+            self.poutput("No connected clients.")
+            return False
+
+        for client_id in client_ids:
+            hv_sync_command = self.control_manager.message_handler.create_command(
+                channel=Channel.HV,
+                command="set_hv_sync",
+                payload={"channels": "all"},
+                sender="server",
+            )
+
+            self.control_manager.queue_message(client_id, hv_sync_command)
+
+            reply, reason = self.control_manager.wait_for_reply(
+                client_id=client_id,
+                in_reply_to=hv_sync_command.request_id,
+                timeout_s=90.0,
+            )
+
+            client_name = client_id.decode(errors="ignore")
+
+            if reply is None:
+                logger.error(
+                    f"HV sync failed for client {client_name}: {reason}"
+                )
+                self.poutput(f"No reply from client {client_name}. Reason: {reason}")
+                continue
+
+            payload = reply.payload
+            result = payload.get("result", {})
+            error = payload.get("error")
+
+            if error:
+                logger.error(f"HV sync error from client {client_name}: {error}")
+                self.poutput(f"Client {client_name}: HV sync error: {error}")
+
+            _print_hv_lists(self, client_name, result)
+
+        return False
+
 
 
 #####################

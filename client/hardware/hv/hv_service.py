@@ -247,11 +247,6 @@ class HVService:
             channels_to_check = self.hv.getOnChannels()
             channels_to_check_power = self.hv.getOkChannels()
             bad_channels = self.hv.getBadChannels()
-            
-            self.logger.info(f"OK CHANNELS: {self.hv.ok_ch}")
-            self.logger.info(f"BAD CHANNELS: {self.hv.bad_ch}")
-            self.logger.info(f"ON CHANNELS: {self.hv.on_ch}")
-            self.logger.info(f"OFF CHANNELS: {self.hv.off_ch}")
 
             if channels_to_check:
                 with self.pending_lock:

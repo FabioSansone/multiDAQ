@@ -103,8 +103,6 @@ class HV:
             try:
                 status = self.hv.getStatus(slave=ch)
                 alarm = self.hv.getAlarm(slave=ch)
-                self.logger.info(f"Channel: {ch}; Status: {status}")
-                self.logger.info(f"Channel: {ch}; Alarm: {alarm}")
 
                 if status in {"ON", "UP"}:
                     self.moveToOn(ch)
@@ -167,8 +165,6 @@ class HV:
     def checkChannel(self, channels):
         ok_channels, bad_channels = self._normalize_channels(channels)
         return ok_channels, bad_channels
-    
-
     
     
 
