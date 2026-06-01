@@ -147,18 +147,71 @@ def do_connect(self, args: argparse.Namespace) -> None:
 #HANDLING EVENT MESSAGES#
 #########################
 
+def _print_bad_channels_event(self, payload):
+    self.poutput("\n[WARNING] HV channels became BAD")
+
+    for item in payload.get("details", []):
+        ch = item.get("channel")
+        status = item.get("status")
+        alarm = item.get("alarm")
+        action = item.get("action")
+
+        self.poutput(
+            f"  CH {ch}: status={status}, alarm={alarm}, action={action}"
+        )
+
+def _print_recovered_channels_event(self, payload):
+    self.poutput("\n[INFO] HV channels recovered")
+
+    details = payload.get("details", {})
+
+    recovered = details.get("recovered_channels", [])
+    recovered_on = details.get("recovered_on_channels", [])
+    recovered_off = details.get("recovered_off_channels", [])
+
+    for ch in recovered:
+        state = "unknown"
+
+        if ch in recovered_on:
+            state = "ON"
+
+        elif ch in recovered_off:
+            state = "OFF"
+
+        self.poutput(
+            f"  CH {ch}: recovered and moved to OK ({state})"
+        )
+
+def _print_power_alignment_event(self, payload):
+    self.poutput("\n[INFO] HV power state aligned")
+
+    moved_to_on = payload.get("moved_to_on_channels", [])
+    moved_to_off = payload.get("moved_to_off_channels", [])
+
+    for ch in moved_to_on:
+        self.poutput(
+            f"  CH {ch}: software OFF -> hardware UP, moved to ON"
+        )
+
+    for ch in moved_to_off:
+        self.poutput(
+            f"  CH {ch}: software ON -> hardware DOWN, moved to OFF"
+        )
+
 def handle_event(self, message):
     payload = message.payload
 
     event = payload.get("event", "unknown")
-    severity = payload.get("severity", "info")
 
-    if severity == "warning":
-        self.poutput(
-            f"\n[WARNING] {event}: {payload}"
-        )
+    if event == "hv_channels_became_bad":
+        self._print_bad_channels_event(payload)
+
+    elif event == "hv_channels_recovered":
+        self._print_recovered_channels_event(payload)
+
+    elif event == "hv_power_state_aligned":
+        self._print_power_alignment_event(payload)
+
     else:
-        self.poutput(
-            f"\n[INFO] {event}: {payload}"
-        )
+        self.poutput(f"\n[INFO] {event}: {payload}")
             

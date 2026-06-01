@@ -23,6 +23,7 @@ class HVService:
     SAFETY_CHECK_DEADLINE_S = 30.0
     RECOVERY_CHECK_PERIOD_S = 300.0
     RECOVERY_CHECK_DEADLINE_S = 30.0
+    POWER_CHECK_PERIOD_S = 300.0
 
     def __init__(self, hv_port: str):
         self.logger = get_logger("hv_service")
@@ -42,6 +43,7 @@ class HVService:
         
         self.safety_check_pending = False
         self.recovery_check_pending = False
+        self.power_check_pending = False
         self.pending_lock = threading.Lock()    
         
     
@@ -76,7 +78,7 @@ class HVService:
             )
     
     def _hv_warnings(self, hv_request: HVRequest, hv_response: HVResponse) -> None:
-        if hv_request.sender not in {"hv_safety_check", "hv_bad_recovery"}:
+        if hv_request.sender not in {"hv_safety_check", "hv_bad_recovery", "hv_power_check"}:
             return
 
         if hv_request.command == "check_channel_safety":
@@ -89,6 +91,23 @@ class HVService:
                     "source_request_id": hv_request.request_id,
                     "channels": [item["channel"] for item in unsafe],
                     "details": unsafe,
+                    "error": hv_response.error,
+                })
+
+            return
+        
+        if hv_request.command == "check_channel_power":
+            moved_to_on = hv_response.result.get("moved_to_on_channels", [])
+            moved_to_off = hv_response.result.get("moved_to_off_channels", [])
+
+            if moved_to_on or moved_to_off:
+                self.warning_queue.put({
+                    "event": "hv_power_state_aligned",
+                    "severity": "info",
+                    "source_request_id": hv_request.request_id,
+                    "moved_to_on_channels": moved_to_on,
+                    "moved_to_off_channels": moved_to_off,
+                    "details": hv_response.result,
                     "error": hv_response.error,
                 })
 
@@ -152,6 +171,9 @@ class HVService:
                 elif hv_request.command == "check_recovery_bad":
                     with self.pending_lock:
                         self.recovery_check_pending = False
+                elif hv_request.command == "check_channel_power":
+                    with self.pending_lock:
+                        self.power_check_pending = False 
                 self.input_queue.task_done()
                 
                 
@@ -217,19 +239,20 @@ class HVService:
 
     def _check_channels_loop(self) -> None:
         last_recovery_check = time.time()
-
+        last_power_check = time.time()
 
         while not self.stop_check_channels.is_set():
             now = time.time()
 
             channels_to_check = self.hv.getOnChannels()
+            channels_to_check_power = self.hv.getOkChannels()
             bad_channels = self.hv.getBadChannels()
             
             self.logger.info(f"OK CHANNELS: {self.hv.ok_ch}")
             self.logger.info(f"BAD CHANNELS: {self.hv.bad_ch}")
             self.logger.info(f"ON CHANNELS: {self.hv.on_ch}")
             self.logger.info(f"OFF CHANNELS: {self.hv.off_ch}")
-            
+
             if channels_to_check:
                 with self.pending_lock:
                     if not self.safety_check_pending:
@@ -251,7 +274,26 @@ class HVService:
                             )
                         )
 
-            
+            if (channels_to_check_power and (now - last_power_check) > self.POWER_CHECK_PERIOD_S):
+                with self.pending_lock:
+                    if not self.power_check_pending:
+                        self.power_check_pending = True
+                        power_request = HVRequest(
+                            protocol_version=PROTOCOL_VERSION,
+                            request_id=f"power_check_{now}",
+                            command="check_channel_power",
+                            payload={"channels": channels_to_check_power},
+                            sender="hv_power_check",
+                            deadline_s=now + self.SAFETY_CHECK_DEADLINE_S,
+                        )
+
+                        self.input_queue.put(
+                            (
+                                HVMessagePriority.MONITORING,
+                                next(self._counter),
+                                power_request,
+                            )
+                        )
 
             if (
                 bad_channels

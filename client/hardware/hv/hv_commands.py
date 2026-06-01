@@ -102,13 +102,6 @@ def command_check_channel_safety(
                     "action": action,
                 }
             )
-        else:
-            if ch not in hv_interface.getOkChannels():
-                hv_interface.moveToOk(channel=ch)
-            if status == "UP" and ch in hv_interface.getOffChannels():
-                hv_interface.moveToOn(channel=ch)
-            elif status == "DOWN" and ch in hv_interface.getOnChannels():
-                hv_interface.moveToOff(channel=ch)
 
     if unsafe_channels:
         return HVResponse(
@@ -135,6 +128,111 @@ def command_check_channel_safety(
         },
     )
 
+def command_check_channel_power(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    chs = hv_request.payload["channels"]
+
+    status_result = hv_interface.get_ch_status(channels=chs)
+    alarm_result = hv_interface.get_ch_alarm(channels=chs)
+
+    failed_status = set(status_result.get("failed_channels", []))
+    failed_alarm = set(alarm_result.get("failed_channels", []))
+
+    checked_channels = []
+    unsafe_channels = []
+    moved_to_on = []
+    moved_to_off = []
+
+    for ch in chs:
+        status = status_result["status"].get(ch)
+        alarm = alarm_result["alarm"].get(ch)
+
+        read_failed = ch in failed_status or ch in failed_alarm
+
+        checked_channels.append({
+            "channel": ch,
+            "status": status,
+            "alarm": alarm,
+            "read_failed": read_failed,
+        })
+
+        unsafe = (
+            read_failed
+            or status == "TRIP"
+            or alarm in POSSIBLE_ALARMS
+        )
+
+        if unsafe:
+            if read_failed:
+                hv_interface.moveToBad(channel=ch)
+                action = "moved_to_bad_read_failed"
+            else:
+                try:
+                    hv_interface.force_reset(channels=ch)
+                    hv_interface.force_off(channels=ch)
+                    action = "reset_off_moved_to_bad"
+                finally:
+                    hv_interface.moveToBad(channel=ch)
+
+            unsafe_channels.append({
+                "channel": ch,
+                "status": status,
+                "alarm": alarm,
+                "read_failed": read_failed,
+                "action": action,
+            })
+
+            continue
+
+        if ch not in hv_interface.getOkChannels():
+            hv_interface.moveToOk(channel=ch)
+
+        if status == "UP" and ch in hv_interface.getOffChannels():
+            hv_interface.moveToOn(channel=ch)
+            moved_to_on.append(ch)
+
+        elif status == "DOWN" and ch in hv_interface.getOnChannels():
+            hv_interface.moveToOff(channel=ch)
+            moved_to_off.append(ch)
+
+    if unsafe_channels:
+        return HVResponse(
+            protocol_version=protocol_version,
+            request_id=hv_request.request_id,
+            in_reply_to=hv_request.request_id,
+            status=MessageStatus.ERROR,
+            result={
+                "checked_channels": checked_channels,
+                "unsafe_channels": unsafe_channels,
+                "moved_to_on_channels": moved_to_on,
+                "moved_to_off_channels": moved_to_off,
+                "ok_channels": hv_interface.getOkChannels(),
+                "bad_channels": hv_interface.getBadChannels(),
+                "on_channels": hv_interface.getOnChannels(),
+                "off_channels": hv_interface.getOffChannels(),
+            },
+            error=f"Unsafe HV channels detected during power check: {unsafe_channels}",
+        )
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.OK,
+        result={
+            "checked_channels": checked_channels,
+            "unsafe_channels": [],
+            "moved_to_on_channels": moved_to_on,
+            "moved_to_off_channels": moved_to_off,
+            "ok_channels": hv_interface.getOkChannels(),
+            "bad_channels": hv_interface.getBadChannels(),
+            "on_channels": hv_interface.getOnChannels(),
+            "off_channels": hv_interface.getOffChannels(),
+        },
+    )
 
 def command_check_recovery_bad(
     protocol_version: int,
@@ -155,5 +253,6 @@ def command_check_recovery_bad(
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
     "check_channel_safety": command_check_channel_safety,
+    "check_channel_power": command_check_channel_power,
     "check_recovery_bad": command_check_recovery_bad,
 }
