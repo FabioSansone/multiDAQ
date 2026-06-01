@@ -80,12 +80,9 @@ class HVService:
             return
 
         if hv_request.command == "check_channel_safety":
-            self.logger.info(f"HV_request: {hv_request}")
-            self.logger.info(f"HV_response: {hv_response}")
             unsafe = hv_response.result.get("unsafe_channels", [])
 
             if unsafe:
-                self.logger.info("Validated unsafe")
                 self.warning_queue.put({
                     "event": "hv_channels_became_bad",
                     "severity": "warning",
@@ -119,7 +116,6 @@ class HVService:
                 _, _, hv_request = self.input_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            self.logger.info(f"HV Request {hv_request}" )
             try:
                 if (
                     hv_request.deadline_s is not None
@@ -143,7 +139,6 @@ class HVService:
                     continue
 
                 response = self._execute_response(hv_request)
-                self.logger.info(f"HV Response {response}")
                 self._hv_warnings(hv_request, response)
 
                 if hv_request.response_queue is not None:
@@ -223,6 +218,11 @@ class HVService:
     def _check_channels_loop(self) -> None:
         last_recovery_check = time.time()
 
+        self.logger.info(f"OK CHANNELS: {self.hv.ok_ch}")
+        self.logger.info(f"BAD CHANNELS: {self.hv.bad_ch}")
+        self.logger.info(f"ON CHANNELS: {self.hv.on_ch}")
+        self.logger.info(f"OFF CHANNELS: {self.hv.off_ch}")
+
         while not self.stop_check_channels.is_set():
             now = time.time()
 
@@ -242,7 +242,6 @@ class HVService:
                             sender="hv_safety_check",
                             deadline_s=now + self.SAFETY_CHECK_DEADLINE_S,
                         )
-                        self.logger.info("Pre input")
 
                         self.input_queue.put(
                             (
@@ -252,7 +251,6 @@ class HVService:
                             )
                         )
 
-                        self.logger.info("Post input")
             
 
             if (
