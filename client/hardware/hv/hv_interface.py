@@ -102,7 +102,9 @@ class HV:
         for ch in channels:
             try:
                 status = self.hv.getStatus(slave=ch)
+                alarm = self.hv.getAlarm(slave=ch)
                 self.logger.info(f"Channel: {ch}; Status: {status}")
+                self.logger.info(f"Channel: {ch}; Alarm: {alarm}")
 
                 if status in {"ON", "UP"}:
                     self.moveToOn(ch)

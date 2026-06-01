@@ -173,10 +173,16 @@ class HVModBus:
         slave = self.ch_addr if slave is None else slave
         self._safe_write(addr=0x00, value=ch_addr, slave=slave, desc="address set")
 
-    def getStatus(self, slave=None):
+    def getStatusBasic(self, slave=None):
         slave = self.ch_addr if slave is None else slave
         rr = self._safe_read(addr=6, count=1, slave=slave, desc="get status")
         return rr[0]
+    
+    def getStatus(self, slave=None):
+        slave = self.ch_addr if slave is None else slave
+        rr = self._safe_read(addr=6, count=1, slave=slave, desc="get status")
+        status = self.statusString(rr[0])
+        return status
     
     def getVoltage(self, slave=None):
         slave = self.ch_addr if slave is None else slave
@@ -258,10 +264,16 @@ class HVModBus:
         rr = self._safe_read(addr=0x2D, count=1, slave=slave, desc="get threshold")
         return rr[0]
     
-    def getAlarm(self, slave=None):
+    def getAlarmBasic(self, slave=None):
         slave = self.ch_addr if slave is None else slave
         rr = self._safe_read(addr=0x2E, count=1, slave=slave, desc="get alarm")
         return rr[0]
+    
+    def getAlarm(self, slave=None):
+        slave = self.ch_addr if slave is None else slave
+        rr = self._safe_read(addr=0x2E, count=1, slave=slave, desc="get alarm")
+        alarm = self.alarmString(rr[0])
+        return alarm
     
     def getVref(self, slave=None):
         slave = self.ch_addr if slave is None else slave
