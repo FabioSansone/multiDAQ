@@ -80,12 +80,12 @@ class HVService:
             return
 
         if hv_request.command == "check_channel_safety":
-            print(f"HV_request: {hv_request}")
-            print(f"HV_response: {hv_response}")
+            self.logger.info(f"HV_request: {hv_request}")
+            self.logger.info(f"HV_response: {hv_response}")
             unsafe = hv_response.result.get("unsafe_channels", [])
 
             if unsafe:
-                print("Validated unsafe")
+                self.logger.info("Validated unsafe")
                 self.warning_queue.put({
                     "event": "hv_channels_became_bad",
                     "severity": "warning",
