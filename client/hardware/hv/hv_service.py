@@ -218,10 +218,6 @@ class HVService:
     def _check_channels_loop(self) -> None:
         last_recovery_check = time.time()
 
-        self.logger.info(f"OK CHANNELS: {self.hv.ok_ch}")
-        self.logger.info(f"BAD CHANNELS: {self.hv.bad_ch}")
-        self.logger.info(f"ON CHANNELS: {self.hv.on_ch}")
-        self.logger.info(f"OFF CHANNELS: {self.hv.off_ch}")
 
         while not self.stop_check_channels.is_set():
             now = time.time()
@@ -229,7 +225,11 @@ class HVService:
             channels_to_check = self.hv.getOnChannels()
             bad_channels = self.hv.getBadChannels()
             
-            self.logger.info(f"Channels safety to check: {channels_to_check}")
+            self.logger.info(f"OK CHANNELS: {self.hv.ok_ch}")
+            self.logger.info(f"BAD CHANNELS: {self.hv.bad_ch}")
+            self.logger.info(f"ON CHANNELS: {self.hv.on_ch}")
+            self.logger.info(f"OFF CHANNELS: {self.hv.off_ch}")
+            
             if channels_to_check:
                 with self.pending_lock:
                     if not self.safety_check_pending:
