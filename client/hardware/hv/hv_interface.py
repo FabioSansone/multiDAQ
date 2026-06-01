@@ -18,8 +18,6 @@ class HV:
         self.off_ch = []
         
         self.sync_power_state(channels=self.ok_ch)
-        self.logger.info(f"OK and BAD chs: {self.ok_ch}, {self.bad_ch}")
-        self.logger.info(f"ON and OFF chs: {self.on_ch}, {self.off_ch}")
         
         
 

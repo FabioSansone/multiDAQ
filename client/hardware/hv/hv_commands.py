@@ -200,6 +200,61 @@ def command_check_recovery_bad(
         result=result or {},
     )
 
+def command_check_channel_presence(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    chs = hv_request.payload["channels"]
+
+    checked_channels = []
+    became_bad = []
+
+    for ch in chs:
+        try:
+            if not hv_interface.hv.checkAddressBoundary(ch):
+                hv_interface.moveToBad(ch)
+                became_bad.append({
+                    "channel": ch,
+                    "reason": "out_of_boundary",
+                })
+                continue
+
+            if not hv_interface.hv.checkAddress(ch):
+                hv_interface.moveToBad(ch)
+                became_bad.append({
+                    "channel": ch,
+                    "reason": "not_responding",
+                })
+                continue
+
+            checked_channels.append({
+                "channel": ch,
+                "reachable": True,
+            })
+
+        except Exception as e:
+            hv_interface.moveToBad(ch)
+            became_bad.append({
+                "channel": ch,
+                "reason": str(e),
+            })
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.OK,
+        result={
+            "checked_channels": checked_channels,
+            "became_bad_channels": became_bad,
+            "ok_channels": hv_interface.getOkChannels(),
+            "bad_channels": hv_interface.getBadChannels(),
+            "on_channels": hv_interface.getOnChannels(),
+            "off_channels": hv_interface.getOffChannels(),
+        },
+    )
+
 def command_hv_sync(
     protocol_version: int,
     hv_interface: HV,
@@ -208,20 +263,43 @@ def command_hv_sync(
 
     channels = hv_request.payload.get("channels", "all")
 
-    #NO INTERNAL REQUEST IS GENERATED SINCE THE FUNCTION DOES NOT NEED ALL THE INFORMATION (PAYLOAD) FROM ORIGINAL COMMAND
-    recovery_response = command_check_recovery_bad(
-        protocol_version=protocol_version,
-        hv_interface=hv_interface,
-        hv_request=hv_request,
+    recovery_request = HVRequest(
+        protocol_version=hv_request.protocol_version,
+        request_id=f"{hv_request.request_id}:recovery",
+        command="check_recovery_bad",
+        payload={},
+        sender=hv_request.sender,
+        status=hv_request.status,
+    )
+
+    presence_request = HVRequest(
+        protocol_version=hv_request.protocol_version,
+        request_id=f"{hv_request.request_id}:presence",
+        command="check_channel_presence",
+        payload={"channels": channels},
+        sender=hv_request.sender,
+        status=hv_request.status,
     )
 
     power_request = HVRequest(
         protocol_version=hv_request.protocol_version,
-        request_id=hv_request.request_id,
+        request_id=f"{hv_request.request_id}:power",
         command="check_channel_power",
         payload={"channels": channels},
         sender=hv_request.sender,
         status=hv_request.status,
+    )
+
+    recovery_response = command_check_recovery_bad(
+        protocol_version=protocol_version,
+        hv_interface=hv_interface,
+        hv_request=recovery_request,
+    )
+
+    presence_response = command_check_channel_presence(
+        protocol_version=protocol_version,
+        hv_interface=hv_interface,
+        hv_request=presence_request,
     )
 
     power_response = command_check_channel_power(
@@ -230,42 +308,22 @@ def command_hv_sync(
         hv_request=power_request,
     )
 
-    result = {
-        "recovery": recovery_response.result,
-        "power_sync": power_response.result,
-        "ok_channels": hv_interface.getOkChannels(),
-        "bad_channels": hv_interface.getBadChannels(),
-        "on_channels": hv_interface.getOnChannels(),
-        "off_channels": hv_interface.getOffChannels(),
-    }
-
-    status = MessageStatus.OK
-    error = None
-
-    if recovery_response.status == MessageStatus.ERROR or power_response.status == MessageStatus.ERROR:
-        status = MessageStatus.ERROR
-        error = {
-            "recovery_error": recovery_response.error,
-            "power_sync_error": power_response.error,
-        }
-
     return HVResponse(
         protocol_version=protocol_version,
         request_id=hv_request.request_id,
         in_reply_to=hv_request.request_id,
-        status=status,
-        result=result,
-        error=error,
+        status=MessageStatus.OK,
+        result={
+            "recovery": recovery_response.result,
+            "presence": presence_response.result,
+            "power_sync": power_response.result,
+            "ok_channels": hv_interface.getOkChannels(),
+            "bad_channels": hv_interface.getBadChannels(),
+            "on_channels": hv_interface.getOnChannels(),
+            "off_channels": hv_interface.getOffChannels(),
+        },
     )
 
-
-COMMAND_HANDLERS = {
-    "set_common_voltage": command_common_voltage,
-    "check_channel_safety": command_check_channel_safety,
-    "check_channel_power": command_check_channel_power,
-    "check_recovery_bad": command_check_recovery_bad,
-    "set_hv_sync": command_hv_sync,
-}
 
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
