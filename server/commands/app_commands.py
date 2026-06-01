@@ -200,17 +200,16 @@ def _print_power_alignment_event(self, payload):
 
 def handle_event(self, message):
     payload = message.payload
-
     event = payload.get("event", "unknown")
 
     if event == "hv_channels_became_bad":
-        self._print_bad_channels_event(payload)
+        _print_bad_channels_event(self, payload)
 
     elif event == "hv_channels_recovered":
-        self._print_recovered_channels_event(payload)
+        _print_recovered_channels_event(self, payload)
 
     elif event == "hv_power_state_aligned":
-        self._print_power_alignment_event(payload)
+        _print_power_alignment_event(self, payload)
 
     else:
         self.poutput(f"\n[INFO] {event}: {payload}")
