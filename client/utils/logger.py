@@ -22,6 +22,7 @@ LOGGER_NAMES = {
     'hvmodbus': 'client.hardware.hv.hvmodbus',
     'hv': 'client.hardware.hv_interface',
     'hv_service': 'client.hardware.hv.hv_service',
+    'ev_service': 'client.hardware.evproducer.ev_service',
     
 
     #Main Application

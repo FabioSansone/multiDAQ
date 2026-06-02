@@ -9,6 +9,7 @@ from common.message_handler import MessageHandler, ProtocolMessage, MessageStatu
 from client.communication.client_command_map import COMMAND_MAP
 from client.hardware.hv.hv_service import HVService
 from client.hardware.rc.rc_service import RCService
+from client.hardware.evproducer.ev_service import EVService
 
 
 MAX_RETRIES = 10
@@ -35,6 +36,7 @@ class ControlPlaneManager:
         self.hv_service = HVService(hv_port=hv_port)
         self.hv_warning_thread: Optional[threading.Thread] = None
         self.rc_service = RCService()
+        self.evproducer = EVService()
         
         self.logger = get_logger("control_manager")
         self.logger.info("ZMQ Control Client Manager initialized")
@@ -258,6 +260,7 @@ class ControlPlaneManager:
 
             if self.handshake_core(timeout_ms=timeout_ms):
                 self.logger.info("Handshake completed successfully")
+                self.evproducer.start(self.server_ip)
                 return True
 
             self.logger.warning("Handshake attempt failed, retrying...")
@@ -407,6 +410,7 @@ class ControlPlaneManager:
 
         self.stop_listener()
         self.hv_service.stop()
+        self.evproducer.stop()
 
         if self.socket is not None:
             try:
