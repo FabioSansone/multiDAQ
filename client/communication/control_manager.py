@@ -1,16 +1,15 @@
 import zmq
 from typing import Optional
-from client.utils.logger import get_logger
-from client.communication.identity import ClientIdentity
-from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
-from client.communication.handlers.system_handlers import handle_server_shutdown
-from client.communication.handlers.hv_handlers import handle_hv_set_common_voltage, handle_hv_set_hv_sync
-from client.communication.handlers.rc_handlers import handle_rc_start_acquisition_mode
-from client.hardware.hv.hv_service import HVService
-from client.hardware.rc.rc_service import RCService
 import time
 import threading
 import queue
+from client.utils.logger import get_logger
+from client.communication.identity import ClientIdentity
+from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
+from client.communication.client_command_map import COMMAND_MAP
+from client.hardware.hv.hv_service import HVService
+from client.hardware.rc.rc_service import RCService
+
 
 MAX_RETRIES = 10
 
@@ -30,13 +29,8 @@ class ControlPlaneManager:
         self.listener_thread: Optional[threading.Thread] = None
         self.reconnect_requested = threading.Event()
 
-        self.command_map = {
-            "server_shutdown": handle_server_shutdown,
-            "set_common_voltage": handle_hv_set_common_voltage,
-            "set_hv_sync": handle_hv_set_hv_sync,
-            "rc_acq_start": handle_rc_start_acquisition_mode,
-        }
-    
+        self.command_map = COMMAND_MAP
+        
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
         self.hv_service = HVService(hv_port=hv_port)
         self.hv_warning_thread: Optional[threading.Thread] = None

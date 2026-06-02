@@ -1,12 +1,15 @@
 import time
-
 from common.message_handler import Channel
 from client.hardware.hv.hv_messages import HVRequest, HVMessagePriority
 from client.utils.channels import channels_definition
 
-def handle_hv_set_common_voltage(manager, message):
-    timeout_s = 35.0
-
+def _handle_hv_command(
+    manager,
+    message,
+    *,
+    hv_command: str,
+    timeout_s: float = 35.0,
+):
     payload = dict(message.payload)
     payload["channels"] = channels_definition(
         payload["channels"],
@@ -17,7 +20,7 @@ def handle_hv_set_common_voltage(manager, message):
         protocol_version=message.protocol_version,
         request_id=message.request_id,
         sender="control_manager",
-        command="set_common_voltage",
+        command=hv_command,
         payload=payload,
         status=message.status,
         deadline_s=time.time() + timeout_s,
@@ -43,6 +46,49 @@ def handle_hv_set_common_voltage(manager, message):
     )
 
     manager.queue_message(reply)
+
+def handle_hv_set_common_voltage(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="set_common_voltage",
+        timeout_s=35.0,
+    )
+
+
+def handle_hv_set_common_threshold(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="set_common_threshold",
+        timeout_s=35.0,
+    )
+
+
+def handle_hv_on(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="hv_on",
+        timeout_s=90.0,
+    )
+
+
+def handle_hv_off(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="hv_off",
+        timeout_s=90.0,
+    )
+    
+def handle_hv_set_hv_sync(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="set_hv_sync",
+        timeout_s=90,
+    )
 
 def handle_hv_set_hv_sync(manager, message):
     timeout_s = 90.0

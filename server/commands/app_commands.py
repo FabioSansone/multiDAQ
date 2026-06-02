@@ -63,7 +63,11 @@ def do_quit(self,_) -> bool:
         self.poutput("Server shutting down ...")
     return True
 
+##################
+#FORCE COMMANDS#
+##################
 
+########HELPERS###############
 def _hv_to_user(channels):
     return [ch - 1 for ch in channels]
 
@@ -74,6 +78,8 @@ def _print_hv_lists(self, client_name: str, result: dict):
     self.poutput(f"  BAD channels: {_hv_to_user(result.get('bad_channels', []))}")
     self.poutput(f"  ON  channels: {_hv_to_user(result.get('on_channels', []))}")
     self.poutput(f"  OFF channels: {_hv_to_user(result.get('off_channels', []))}")
+    
+########HELPERS###############
 
 force_parser = argparse.ArgumentParser()
 force_subparsers = force_parser.add_subparsers(dest="command", required=True)
@@ -248,9 +254,11 @@ def do_connect(self, args: argparse.Namespace) -> None:
         return
 
 
-#########################
-#HANDLING EVENT MESSAGES#
-#########################
+#####################################
+#HANDLING EVENT MESSAGES FROM CLIENT#
+#####################################
+
+########HELPERS###############
 
 def _print_bad_channels_event(self, payload):
     self.poutput("\n[WARNING] HV channels became BAD")
@@ -302,6 +310,8 @@ def _print_power_alignment_event(self, payload):
         self.poutput(
             f"  CH {ch}: software ON -> hardware DOWN, moved to OFF"
         )
+
+########HELPERS###############
 
 def handle_event(self, message):
     payload = message.payload

@@ -5,21 +5,13 @@ from common.message_handler import MessageStatus
 
 POSSIBLE_ALARMS = ["OV", "UV", "OC", "UC"]
 
-
-def command_common_voltage(
+def _wrap_hv_action(
     protocol_version: int,
-    hv_interface: HV,
     hv_request: HVRequest,
+    result: dict,
 ) -> HVResponse:
-
-    result = hv_interface.set_common_voltage(
-        channels=hv_request.payload["channels"],
-        common_voltage=hv_request.payload["common_voltage"],
-    )
-
     failed = result.get("failed_channels", [])
     not_responding = result.get("not_responding_channels", [])
-    successful = result.get("successful_channels", [])
 
     if failed or not_responding:
         status = MessageStatus.ERROR
@@ -39,6 +31,56 @@ def command_common_voltage(
         result=result or {},
         error=error,
     )
+    
+
+def command_common_threshold(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    result = hv_interface.set_common_threshold(
+        channels=hv_request.payload["channels"],
+        common_threshold=hv_request.payload["common_threshold"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
+def command_hv_on(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    result = hv_interface.on(
+        channels=hv_request.payload["channels"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
+def command_hv_off(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    result = hv_interface.off(
+        channels=hv_request.payload["channels"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
+def command_common_voltage(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    result = hv_interface.set_common_voltage(
+        channels=hv_request.payload["channels"],
+        common_voltage=hv_request.payload["common_voltage"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
 
 
 def command_check_channel_safety(
@@ -327,7 +369,13 @@ def command_hv_sync(
 
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
+    "set_common_threshold": command_common_threshold,
+    
+    "hv_on": command_hv_on,
+    "hv_off": command_hv_off,
+    
     "set_hv_sync": command_hv_sync,
+    
     "check_channel_safety": command_check_channel_safety,
     "check_channel_power": command_check_channel_power,
     "check_recovery_bad": command_check_recovery_bad,
