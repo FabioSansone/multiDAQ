@@ -33,7 +33,7 @@ class Server(cmd2.Cmd):
         self.do_force = app_commands.do_force.__get__(self, Server)
         
         #HV COMMANDS#
-        self.do_set_common = hv_commands.do_set_common.__get__(self, Server)
+        self.do_hv = hv_commands.do_hv.__get__(self, Server)
         
         #RC COMMANDS#
         self.do_rc = rc_commands.do_rc.__get__(self, Server)
