@@ -103,11 +103,15 @@ class ClientIdentity:
         self._save_to_file()
         print(f"\n Configuration saved. Please, restart the client.\n")
         
-    def to_dict_identity(self):
-        """Return a dictionary to be sent to the server"""
+    def to_dict_identity(self) -> dict:
+        if not self._is_configured():
+            raise RuntimeError(
+                "ClientIdentity is not configured: missing batch_id or multipmt_id"
+            )
+
         return {
-            'batch_id': self.batch_id,
-            'multipmt_id': self.multipmt_id,
-            'hostname': self.hostname,
-            'mac_address': self.mac
+            "batch_id": self.batch_id,
+            "multipmt_id": self.multipmt_id,
+            "hostname": self.hostname,
+            "mac_address": self.mac,
         }

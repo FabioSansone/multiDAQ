@@ -46,7 +46,21 @@ class HVService:
         self.power_check_pending = False
         self.pending_lock = threading.Lock()    
         
-    
+    def _submit_command(self, *, command: str, payload: dict, sender: str, priority: HVMessagePriority = HVMessagePriority.CONTROL, timeout_s: float = 35.0,) -> HVResponse:
+        hv_request = HVRequest(
+            protocol_version=PROTOCOL_VERSION,
+            request_id=f"{sender}_{command}_{time.time()}",
+            command=command,
+            payload=payload,
+            sender=sender,
+            deadline_s=time.time() + timeout_s,
+        )
+
+        return self.request(
+            hv_request=hv_request,
+            priority=priority,
+            timeout_s=timeout_s,
+        )
     def _execute_response(self, hv_request: HVRequest) -> HVResponse:
         try:
             handler = COMMAND_HANDLERS.get(hv_request.command)

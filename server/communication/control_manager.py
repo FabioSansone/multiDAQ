@@ -9,13 +9,18 @@ MAX_RETRIES = 5
 
 
 class ControlPlaneManager:
-    def __init__(self, context: zmq.Context, num_multi_clients:int):
+    def __init__(self, context: zmq.Context, num_multi_clients:int, acq_mode: str):
         self.context = context
         self.socket: Optional[zmq.Socket] = None
         self.endpoint: Optional[str] = None
         self.recv_poller = zmq.Poller()
         
         self.num_multi_clients = num_multi_clients
+        self.acq_mode = acq_mode
+        
+        self.clients_by_multipmt_id: dict[str, bytes] = {}
+        self.identity_by_client_id: dict[bytes, dict] = {}
+        self.client_id_by_multipmt_id: dict[str, bytes] = {}
         
         self.connected_clients: List[bytes] = []
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
@@ -251,11 +256,87 @@ class ControlPlaneManager:
                 f"{ready_message.in_reply_to} != {ping_response.request_id}"
             )
             return False
+        
+        identity_mode_message = self.message_handler.create_handshake(
+            phase="startup",
+            payload={
+                "message": "Startup",
+                "acq_mode": self.acq_mode,
+            },
+            in_reply_to=ready_message.request_id,
+            sender="server",
+            status=MessageStatus.OK,
+        )
+
+        if not self.send_message(client_id=client_id, message=identity_mode_message):
+            self.logger.error(f"Failed to send acquisition mode to client {client_id!r}")
+            return False
+
+
+        client_id_startup_message, startup_message, reason = self.receive_message(timeout_ms)
+
+        if startup_message is None:
+            self.logger.error(f"Handshake failed while waiting for client identity: {reason}")
+            return False
+
+        if client_id_startup_message != client_id:
+            self.logger.error("Received identity from a different client during handshake")
+            return False
+
+        if startup_message.msg_type != MessageType.HANDSHAKE:
+            self.logger.error("Expected handshake message for startup_ack phase")
+            return False
+
+        if startup_message.phase != "startup_ack":
+            self.logger.error(f"Unexpected handshake phase: {startup_message.phase}")
+            return False
+
+        if startup_message.payload.get("message") != "Identity":
+            self.logger.error(f"Unexpected identity payload: {startup_message.payload}")
+            return False
+
+        if startup_message.in_reply_to != identity_mode_message.request_id:
+            self.logger.error(
+                f"Identity message does not match expected reply target: "
+                f"{startup_message.in_reply_to} != {identity_mode_message.request_id}"
+            )
+            return False
+
+        identity_payload = startup_message.payload.get("identity")
+
+        if not isinstance(identity_payload, dict):
+            self.logger.error(f"Invalid identity payload: {startup_message.payload}")
+            return False
+
+        multipmt_id = identity_payload.get("multipmt_id")
+        batch_id = identity_payload.get("batch_id")
+
+        if not multipmt_id:
+            self.logger.error(f"Missing multipmt_id in identity payload: {identity_payload}")
+            return False
+
+        if not batch_id:
+            self.logger.error(f"Missing batch_id in identity payload: {identity_payload}")
+            return False
+
+        if multipmt_id in self.client_id_by_multipmt_id:
+            self.logger.error(
+                f"Duplicate multipmt_id received: {multipmt_id}. "
+                f"Already mapped to {self.client_id_by_multipmt_id[multipmt_id]!r}"
+            )
+            return False
+
+        self.client_id_by_multipmt_id[multipmt_id] = client_id
+        self.identity_by_client_id[client_id] = identity_payload
 
         self.add_client(client_id)
-        self.logger.info(f"Handshake completed successfully with client {client_id!r}")
-        return True
 
+        self.logger.info(
+            f"Handshake completed successfully with client {client_id!r}, "
+            f"multipmt_id={multipmt_id}, batch_id={batch_id}, acq_mode={self.acq_mode}"
+        )
+
+        return True
     
     def handshake(self) -> bool:
         self.logger.info(f"Waiting for {self.num_multi_clients} clients to connect...")

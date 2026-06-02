@@ -67,6 +67,7 @@ def main() -> int:
     control_manager = ControlPlaneManager(
         context=context,
         num_multi_clients=1,
+        acq_mode=mode_selected,
     )
 
     app = Server(acquisition_mode=mode_selected, control_manager=control_manager)

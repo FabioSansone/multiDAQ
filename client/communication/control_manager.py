@@ -230,7 +230,71 @@ class ControlPlaneManager:
             self.logger.error(f"Failed to send Ready response")
             return False
         
-        self.logger.info(f"Handshake completed successfully with server {self.server_endpoint}")
+        message, reason = self.receive_message(timeout_ms)
+
+        if message is None:
+            self.logger.error(f"Handshake failed while waiting for server startup: {reason}")
+            return False
+        
+        if message.msg_type != MessageType.HANDSHAKE:
+            self.logger.error(
+                f"Unexpected message type during handshake from server {self.server_endpoint}: {message.msg_type}"
+            )
+            return False
+        
+        if message.phase != "startup":
+            self.logger.error(
+                f"Unexpected handshake phase from server {self.server_endpoint}: {message.phase}"
+            )
+            return False
+
+        if message.payload.get("message") != "Startup":
+            self.logger.error(
+                f"Unexpected handshake payload from server {self.server_endpoint}: {message.payload}"
+            )
+            return False
+
+        if message.in_reply_to != ready_message.request_id:
+            self.logger.error(
+                f"Startup message does not match expected Ready request: "
+                f"{message.in_reply_to} != {ready_message.request_id}"
+            )
+            return False
+
+        acq_mode = message.payload.get("acq_mode")
+
+        if acq_mode not in {"test", "calibration", "multiPMT"}:
+            self.logger.error(f"Invalid acquisition mode received: {acq_mode}")
+            return False
+
+        self.acq_mode = acq_mode
+        
+        try:
+            identity_payload = self.identity.to_dict_identity()
+        except Exception as e:
+            self.logger.error(f"Cannot build client identity payload: {e}")
+            return False
+
+        identity_message = self.message_handler.create_handshake(
+            phase="startup_ack",
+            payload={
+                "message": "Identity",
+                "identity": identity_payload,
+            },
+            in_reply_to=message.request_id,
+            sender="client",
+            status=MessageStatus.OK,
+        )
+
+        if not self.send_message(identity_message):
+            self.logger.error("Failed to send client identity to server")
+            return False
+
+        self.logger.info(
+            f"Handshake completed successfully with server {self.server_endpoint}. "
+            f"Acquisition mode: {self.acq_mode}, identity: {self.identity.hostname}"
+        )
+
         return True
     
 
@@ -259,8 +323,21 @@ class ControlPlaneManager:
                 self.logger.info(f"Handshake attempt {attempt}/{max_retries}")
 
             if self.handshake_core(timeout_ms=timeout_ms):
-                self.logger.info("Handshake completed successfully")
-                self.evproducer.start(self.server_ip)
+                if self.acq_mode == "test":
+                    self.logger.info("Mode test: not starting HV")
+                    self.rc_service._submit_command(command="rc_acq_start", payload={"channels": "all",}, sender="client_control_manager_test_mode")
+                    self.evproducer.start(self.server_ip)
+
+                elif self.acq_mode == "calibration":
+                    self.logger.info("Mode calibration: starting HV only")
+                    self.rc_service._submit_command(command="rc_acq_start", payload={"channels": "all",}, sender="client_control_manager_test_mode")
+                    self.hv_service.start()
+                    self.evproducer.start(self.server_ip)
+
+                elif self.acq_mode == "multiPMT":
+                    self.logger.info("Mode multiPMT: starting HV and evproducer")
+                    self.hv_service.start()
+                    self.evproducer.start(self.server_ip)
                 return True
 
             self.logger.warning("Handshake attempt failed, retrying...")
@@ -321,7 +398,6 @@ class ControlPlaneManager:
             self.logger.error("Cannot start listener: socket not initialized")
             return False
         
-        self.hv_service.start()
 
         if self.listener_thread and self.listener_thread.is_alive():
             self.logger.warning("Control listener already running")

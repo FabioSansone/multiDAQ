@@ -1,5 +1,5 @@
-from typing import Optional
 import threading
+import time
 
 from client.utils.logger import get_logger
 from client.hardware.rc.rc_interface import RC
@@ -21,6 +21,22 @@ class RCService:
 
         self.rc = RC()
         self.rc_lock = threading.RLock()
+        
+    
+    def _submit_command(self, *, command: str, payload: dict, sender: str, priority: RCMessagePriority = RCMessagePriority.CONTROL, timeout_s: float = 35.0,) -> RCResponse:
+        rc_request = RCRequest(
+            protocol_version=PROTOCOL_VERSION,
+            request_id=f"{sender}_{command}_{time.time()}",
+            command=command,
+            payload=payload,
+            sender=sender,
+        )
+
+        return self.execute_response(
+            rc_request=rc_request,
+            priority=priority,
+            timeout_s=timeout_s,
+        )
 
     def execute_response(
         self,
