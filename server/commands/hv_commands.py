@@ -118,7 +118,7 @@ threshold_parser.add_argument(
 def do_hv(self, args: argparse.Namespace) -> None:
     """HV commands: hv on, hv off, hv set_common voltage, hv set_common threshold."""
 
-    if args.command_group == "hv_on":
+    if args.command_group == "on":
         command = "hv_on"
         value = None
         payload = {
@@ -126,7 +126,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
         }
         timeout_s = 35.0
 
-    elif args.command_group == "hv_off":
+    elif args.command_group == "off":
         command = "hv_off"
         value = None
         payload = {
