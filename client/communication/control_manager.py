@@ -6,6 +6,7 @@ import queue
 from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
+from common.constants import ACQUISITION_MODES
 from client.communication.client_command_map import COMMAND_MAP
 from client.hardware.hv.hv_service import HVService
 from client.hardware.rc.rc_service import RCService
@@ -23,6 +24,7 @@ class ControlPlaneManager:
         
         self.server_ip = server_ip
         self.identity = identity
+        self.hv_port = hv_port
 
         self.stop_listening = threading.Event()
         self.incoming_queue = queue.Queue()
@@ -33,10 +35,12 @@ class ControlPlaneManager:
         self.command_map = COMMAND_MAP
         
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
-        self.hv_service = HVService(hv_port=hv_port)
+        
         self.hv_warning_thread: Optional[threading.Thread] = None
+        self.hv_service = HVService(hv_port=self.hv_port)
         self.rc_service = RCService()
         self.evproducer = EVService()
+        
         
         self.logger = get_logger("control_manager")
         self.logger.info("ZMQ Control Client Manager initialized")
@@ -263,7 +267,7 @@ class ControlPlaneManager:
 
         acq_mode = message.payload.get("acq_mode")
 
-        if acq_mode not in {"test", "calibration", "multiPMT"}:
+        if acq_mode not in ACQUISITION_MODES:
             self.logger.error(f"Invalid acquisition mode received: {acq_mode}")
             return False
 
@@ -324,14 +328,37 @@ class ControlPlaneManager:
 
             if self.handshake_core(timeout_ms=timeout_ms):
                 if self.acq_mode == "test":
-                    self.logger.info("Mode test: not starting HV")
-                    self.rc_service._submit_command(command="rc_acq_start", payload={"channels": "all",}, sender="client_control_manager_test_mode")
+                    self.logger.info("Mode test: starting RC and EV only")
+                    self.rc_service._submit_command(
+                        command="rc_acq_start",
+                        payload={"channels": "all"},
+                        sender="client_control_manager_test_mode",
+                    )
                     self.evproducer.start(self.server_ip)
 
                 elif self.acq_mode == "calibration":
-                    self.logger.info("Mode calibration: starting HV only")
-                    self.rc_service._submit_command(command="rc_acq_start", payload={"channels": "all",}, sender="client_control_manager_test_mode")
+                    self.logger.info("Mode calibration: starting RC, then HV, then EV")
+
+                    self.rc_service._submit_command(
+                        command="rc_acq_start",
+                        payload={"channels": "all"},
+                        sender="client_control_manager_calibration_mode",
+                    )
+
+                    if not self._ensure_hv_service():
+                        return False
+
                     self.hv_service.start()
+                    self.hv_service._submit_command(
+                        command="set_common_voltage",
+                        payload={"channels": "all", "common_voltage":1200},
+                        sender="client_control_manager_calibration_mode"
+                    )
+                    self.hv_service._submit_command(
+                        command="set_common_threshold",
+                        payload={"channels": "all", "common_threshold":400},
+                        sender="client_control_manager_calibration_mode"
+                    )
                     self.evproducer.start(self.server_ip)
 
                 elif self.acq_mode == "multiPMT":
@@ -348,8 +375,19 @@ class ControlPlaneManager:
 
     def queue_message(self, message: ProtocolMessage) -> None:
         self.outgoing_queue.put(message)
+    
+    def _ensure_hv_service(self) -> bool:
+        if self.hv_service is not None:
+            return True
         
-
+        try:
+            self.hv_service = HVService(hv_port=self.hv_port)
+            return True
+        except Exception as e:  
+            self.logger.error(f"Cannot initialize HVService: {e}")
+            self.hv_service = None
+            return False
+        
     def _control_io_loop(self) -> None:
         """
         Owns the control socket after the handshake.

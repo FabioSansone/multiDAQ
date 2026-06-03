@@ -8,8 +8,9 @@ import zmq
 from server.utils.logger import get_logger, LoggerManager
 from server.commands import app_commands, hv_commands, rc_commands
 from server.communication.control_manager import ControlPlaneManager
+from common.constants import ACQUISITION_MODES
 
-POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
+
 
 
 class Server(cmd2.Cmd):
@@ -41,6 +42,22 @@ class Server(cmd2.Cmd):
         #EVENT MESSAGES MANAGER#
         self.handle_event = app_commands.handle_event.__get__(self, Server)
         self.control_manager.event_callback = self.handle_event
+    
+
+    def set_mode(self, new_mode: str) -> bool:
+
+        new_mode = new_mode.lower()
+
+        if new_mode not in ACQUISITION_MODES:
+            self.logger.error(f"Invalid mode: {new_mode}")
+            return False
+
+        self.mode = new_mode
+        self.control_manager.acq_mode = new_mode
+        self.prompt = f"Server[{self.mode}]> "
+
+        self.logger.info(f"Mode changed to {self.mode}")
+        return True
 
 
 def main() -> int:
@@ -58,7 +75,7 @@ def main() -> int:
     args = server_parser.parse_args()
 
     mode_selected = args.start_mode.lower()
-    if mode_selected not in POSSIBLE_MODES:
+    if mode_selected not in ACQUISITION_MODES:
         print("Unrecognized starting mode. Set to default mode: test.")
         mode_selected = 'test'
 

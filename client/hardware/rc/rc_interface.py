@@ -339,8 +339,9 @@ class RC:
 
         ok1 = self.write(1, mask)
         ok0 = self.write(0, mask)
+        ok19 = self.write(19, mask)
 
-        if ok0 and ok1:
+        if ok0 and ok1 and ok19:
             return {
                 "success": True,
                 "started_channels": channel_list,

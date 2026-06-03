@@ -17,34 +17,12 @@ mode_parser.add_argument("mode", action="store", type=str, help="Acquisition Mod
 
 @cmd2.with_argparser(mode_parser)
 @cmd2.with_category("Generic Commands")
-def do_change_mode(self, args: argparse.Namespace) -> None:
-    """Change the acquisition mode at runtime
-       Test: no HV connected
-       Calibration: PMTs characterization
-       MultiPMT: Full acquisition
-       Default: Test
-    """
-    mode = args.mode.lower()
-    if mode not in POSSIBLE_MODES:
-        self.poutput(f"Invalid mode. Choose from: {POSSIBLE_MODES}")
-        logger.warning(f"Invalid mode: {mode}. Choose from: {POSSIBLE_MODES}")
-        return
-    if mode == self.mode:
-        self.poutput(f"Already in {mode} mode")
-        logger.info(f"Already in {mode} mode")
-        return
-    old_mode = self.mode
-    self.mode = mode
-    self.prompt = f"Server[{mode}]> "
-    self.poutput(f"Mode changed from {old_mode} to {mode}")
-    logger.info(f"Mode changed from {old_mode} to {mode}")
-    
-    if mode == 'test':
-        self.poutput("Test mode: no HV connected")
-    elif mode == 'calibration':
-        self.poutput("Calibration mode: PMTs characterization")
-    elif mode == 'multipmt':
-        self.poutput("MultiPMT mode: Full acquisition")
+def do_change_mode(self, args):
+
+    new_mode = args.mode.lower()
+
+    if self.set_mode(new_mode):
+        self.poutput(f"Mode changed to {new_mode}")
 
 
 @cmd2.with_category("Generic Commands")
