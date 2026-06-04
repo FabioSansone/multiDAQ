@@ -37,9 +37,12 @@ class ControlPlaneManager:
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
         
         self.hv_warning_thread: Optional[threading.Thread] = None
-        self.hv_service = HVService(hv_port=self.hv_port)
+        self.hv_service = None #HVService(hv_port=self.hv_port)
         self.rc_service = RCService()
         self.evproducer = EVService()
+
+        self.acq_info = None
+        self.start_thr = None
         
         
         self.logger = get_logger("control_manager")
@@ -294,6 +297,54 @@ class ControlPlaneManager:
             self.logger.error("Failed to send client identity to server")
             return False
 
+        if self.acq_mode == "multipmt":
+            message, reason = self.receive_message(timeout_ms)
+
+            if message is None:
+                self.logger.error(f"Handshake failed while waiting for server multipmt_acq_config: {reason}")
+                return False
+            
+            if message.msg_type != MessageType.HANDSHAKE:
+                self.logger.error(
+                    f"Unexpected message type during handshake from server {self.server_endpoint}: {message.msg_type}"
+                )
+                return False
+            
+            if message.phase != "multipmt_acq_config":
+                self.logger.error(
+                    f"Unexpected handshake phase from server {self.server_endpoint}: {message.phase}"
+                )
+                return False
+
+            if message.payload.get("message") != "ChannelsConfig":
+                self.logger.error(
+                    f"Unexpected handshake payload from server {self.server_endpoint}: {message.payload}"
+                )
+                return False
+
+            if message.in_reply_to != identity_message.request_id:
+                self.logger.error(
+                    f"MultiPMT Acquisition Config message does not match expected Ready request: "
+                    f"{message.in_reply_to} != {identity_message.request_id}"
+                )
+                return False
+
+            start_thr = message.payload.get("pe_thr")
+            acq_info = message.payload.get("channels_info")
+
+            if start_thr is None:
+                self.logger.error("Missing pe_thr in multipmt acquisition config")
+                return False
+
+            if not isinstance(acq_info, dict) or not acq_info:
+                self.logger.error(f"Invalid channels_info in multipmt acquisition config: {acq_info}")
+                return False
+
+            self.acq_info = acq_info
+            self.start_thr = start_thr
+
+
+
         self.logger.info(
             f"Handshake completed successfully with server {self.server_endpoint}. "
             f"Acquisition mode: {self.acq_mode}, identity: {self.identity.hostname}"
@@ -361,9 +412,30 @@ class ControlPlaneManager:
                     )
                     self.evproducer.start(self.server_ip)
 
-                elif self.acq_mode == "multiPMT":
-                    self.logger.info("Mode multiPMT: starting HV and evproducer")
+                elif self.acq_mode == "multipmt":
+                    self.logger.info("Mode multiPMT: starting RC, HV and evproducer")
+
+                    self.rc_service._submit_command(
+                        command="rc_acq_start"
+                        ,
+                        payload={"channels": "all"},
+                        sender="client_control_manager_calibration_mode",
+                    )
+
+                    if not self._ensure_hv_service():
+                        return False
+                    
                     self.hv_service.start()
+
+                    self.hv_service._submit_command(
+                        command="set_acquisition_configuration",
+                        payload={
+                            "channels": "all",
+                            "acquisition_configuration": self.acq_info,
+                        },
+                        sender="client_control_manager_multipmt_mode",
+                    )
+                    
                     self.evproducer.start(self.server_ip)
                 return True
 
@@ -416,6 +488,11 @@ class ControlPlaneManager:
     
     def _hv_warning_loop(self) -> None:
         while not self.stop_listening.is_set():
+
+            if self.hv_service is None:
+                time.sleep(0.5)
+                continue
+
             try:
                 warning = self.hv_service.warning_queue.get(timeout=0.5)
             except queue.Empty:
@@ -523,7 +600,8 @@ class ControlPlaneManager:
         """Close only the current control socket connection."""
 
         self.stop_listener()
-        self.hv_service.stop()
+        if self.hv_service is not None:
+            self.hv_service.stop()
         self.evproducer.stop()
 
         if self.socket is not None:

@@ -64,6 +64,14 @@ def handle_hv_set_common_threshold(manager, message):
         timeout_s=35.0,
     )
 
+def handle_hv_set_acquisition_configuration(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="set_acquisition_configuration",
+        timeout_s=300.0,
+    )
+
 
 def handle_hv_on(manager, message):
     _handle_hv_command(

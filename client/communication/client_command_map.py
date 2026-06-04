@@ -12,6 +12,7 @@ COMMAND_MAP = {
     
     "set_common_voltage": handle_hv_set_common_voltage,
     "set_common_threshold": handle_hv_set_common_threshold,
+    "set_acquisition_configuration": handle_hv_set_acquisition_configuration,
     
     "set_hv_sync": handle_hv_set_hv_sync,
     

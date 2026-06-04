@@ -261,7 +261,80 @@ class HV:
             "ok_channels": self.getOkChannels(),
             "on_channels": self.getOnChannels(),
             "off_channels": self.getOffChannels(),
-            "common_voltage": common_threshold,
+            "common_threshold": common_threshold,
+        }
+    
+    def set_acquisition_configuration(self, channels, acq_configuration: dict):
+        list_channels_selected = self.hv_channels_definition(channels=channels)
+
+        ok_ch_set = set(self.getOkChannels())
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+
+        for ch in channels_good_selected:
+            try:
+                external_ch = ch - 1
+
+                ch_config = (
+                    acq_configuration.get(external_ch)
+                    or acq_configuration.get(str(external_ch))
+                )
+
+                if ch_config is None:
+                    self.logger.error(
+                        f"Missing acquisition configuration for external channel {external_ch} / HV channel {ch}"
+                    )
+                    failed.append(ch)
+                    continue
+
+                voltage = ch_config.get("voltage")
+                threshold = ch_config.get("threshold_mv")
+
+                if voltage is None or threshold is None:
+                    self.logger.error(
+                        f"Incomplete acquisition configuration for external channel {external_ch}: {ch_config}"
+                    )
+                    failed.append(ch)
+                    continue
+
+                self.hv.setVoltageSet(
+                    value=int(round(voltage)),
+                    slave=ch,
+                )
+
+                self.hv.setThreshold(
+                    value=int(round(threshold)),
+                    slave=ch,
+                )
+
+                successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Problem setting acquisition configuration on HV channel {ch}: {e}"
+                )
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
         }
 
     def get_ch_status(self, channels: List[int] | str | int):

@@ -83,6 +83,20 @@ def command_common_voltage(
     return _wrap_hv_action(protocol_version, hv_request, result)
 
 
+def command_acquisition_configuration(
+        protocol_version: int,
+        hv_interface: HV,
+        hv_request: HVRequest,
+) -> HVResponse:
+    
+    result = hv_interface.set_acquisition_configuration(
+        channels=hv_request.payload["channels"],
+        acq_configuration=hv_request.payload["acquisition_configuration"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
 def command_check_channel_safety(
     protocol_version: int,
     hv_interface: HV,
@@ -370,6 +384,7 @@ def command_hv_sync(
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
     "set_common_threshold": command_common_threshold,
+    "set_acquisition_configuration": command_acquisition_configuration,
     
     "hv_on": command_hv_on,
     "hv_off": command_hv_off,

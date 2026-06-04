@@ -1,7 +1,9 @@
 import zmq
 from typing import Optional, List
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
+from common.constants import ACQUISITION_MODES
 from server.utils.logger import get_logger
+from server.utils.json_parser import JsonParser
 import threading
 import queue
 
@@ -330,6 +332,39 @@ class ControlPlaneManager:
         self.identity_by_client_id[client_id] = identity_payload
 
         self.add_client(client_id)
+
+        if self.acq_mode == "multipmt":
+            config_file_service = JsonParser(
+                multipmt_id=multipmt_id,
+                batch_id=batch_id,
+            )
+
+            channels_acq_info = config_file_service.get_ch_configuration(pe_thr=1)
+
+            if channels_acq_info is None:
+                self.logger.error(
+                    f"Cannot build multipmt acquisition configuration for "
+                    f"multipmt_id={multipmt_id}, batch_id={batch_id}"
+                )
+                return False
+
+            acq_mode_message = self.message_handler.create_handshake(
+                phase="multipmt_acq_config",
+                payload={
+                    "message": "ChannelsConfig",
+                    "pe_thr": 1,
+                    "acquisition_configuration": channels_acq_info,
+                },
+                in_reply_to=startup_message.request_id,
+                sender="server",
+                status=MessageStatus.OK,
+            )
+
+            if not self.send_message(client_id=client_id, message=acq_mode_message):
+                self.logger.error(
+                    f"Failed to send multipmt acquisition config to client {client_id!r}"
+                )
+                return False
 
         self.logger.info(
             f"Handshake completed successfully with client {client_id!r}, "
