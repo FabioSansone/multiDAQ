@@ -23,6 +23,9 @@ LOGGER_NAMES = {
     'hv': 'client.hardware.hv_interface',
     'hv_service': 'client.hardware.hv.hv_service',
     'ev_service': 'client.hardware.evproducer.ev_service',
+
+    #Acquisition
+    'acquisition_service': 'client.acquisition.acquisition_service',
     
 
     #Main Application

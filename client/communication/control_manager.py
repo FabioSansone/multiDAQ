@@ -11,6 +11,9 @@ from client.communication.client_command_map import COMMAND_MAP
 from client.hardware.hv.hv_service import HVService
 from client.hardware.rc.rc_service import RCService
 from client.hardware.evproducer.ev_service import EVService
+from client.acquisition.acquisition_service import AcquisitionService
+
+
 
 
 MAX_RETRIES = 10
@@ -43,6 +46,8 @@ class ControlPlaneManager:
 
         self.acq_info = None
         self.start_thr = None
+
+        self.acquisition_service = AcquisitionService(self)
         
         
         self.logger = get_logger("control_manager")
@@ -378,66 +383,13 @@ class ControlPlaneManager:
                 self.logger.info(f"Handshake attempt {attempt}/{max_retries}")
 
             if self.handshake_core(timeout_ms=timeout_ms):
-                if self.acq_mode == "test":
-                    self.logger.info("Mode test: starting RC and EV only")
-                    self.rc_service._submit_command(
-                        command="rc_acq_start",
-                        payload={"channels": "all"},
-                        sender="client_control_manager_test_mode",
-                    )
-                    self.evproducer.start(self.server_ip)
+                success = self.acquisition_service.apply_acquisition_mode(
+                    new_mode=self.acq_mode,
+                    acq_info=self.acq_info,
+                    pe_thr=self.start_thr,
+                )
 
-                elif self.acq_mode == "calibration":
-                    self.logger.info("Mode calibration: starting RC, then HV, then EV")
-
-                    self.rc_service._submit_command(
-                        command="rc_acq_start",
-                        payload={"channels": "all"},
-                        sender="client_control_manager_calibration_mode",
-                    )
-
-                    if not self._ensure_hv_service():
-                        return False
-
-                    self.hv_service.start()
-                    self.hv_service._submit_command(
-                        command="set_common_voltage",
-                        payload={"channels": "all", "common_voltage":1200},
-                        sender="client_control_manager_calibration_mode"
-                    )
-                    self.hv_service._submit_command(
-                        command="set_common_threshold",
-                        payload={"channels": "all", "common_threshold":400},
-                        sender="client_control_manager_calibration_mode"
-                    )
-                    self.evproducer.start(self.server_ip)
-
-                elif self.acq_mode == "multipmt":
-                    self.logger.info("Mode multiPMT: starting RC, HV and evproducer")
-
-                    self.rc_service._submit_command(
-                        command="rc_acq_start"
-                        ,
-                        payload={"channels": "all"},
-                        sender="client_control_manager_calibration_mode",
-                    )
-
-                    if not self._ensure_hv_service():
-                        return False
-                    
-                    self.hv_service.start()
-
-                    self.hv_service._submit_command(
-                        command="set_acquisition_configuration",
-                        payload={
-                            "channels": "all",
-                            "acquisition_configuration": self.acq_info,
-                        },
-                        sender="client_control_manager_multipmt_mode",
-                    )
-                    
-                    self.evproducer.start(self.server_ip)
-                return True
+                return success
 
             self.logger.warning("Handshake attempt failed, retrying...")
             time.sleep(retry_delay_s)

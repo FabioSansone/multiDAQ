@@ -2,6 +2,7 @@ import argparse
 import cmd2
 from server.utils.logger import get_logger
 from common.message_handler import Channel
+from server.utils.json_parser import JsonParser
 
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
@@ -13,7 +14,14 @@ logger = get_logger('generic_commands')
 ##################
 
 mode_parser = argparse.ArgumentParser()
-mode_parser.add_argument("mode", action="store", type=str, help="Acquisition Mode (test (no HV); calibration, multiPMT)", default="test")
+mode_parser.add_argument(
+    "mode",
+    action="store",
+    type=str,
+    help="Acquisition Mode (test, calibration, multipmt)",
+    default="test",
+)
+
 
 @cmd2.with_argparser(mode_parser)
 @cmd2.with_category("Generic Commands")
@@ -21,8 +29,174 @@ def do_change_mode(self, args):
 
     new_mode = args.mode.lower()
 
+    logger.info(f"Requested acquisition mode change to '{new_mode}'")
+
+    if new_mode not in POSSIBLE_MODES:
+        self.poutput(f"Invalid acquisition mode: {new_mode}")
+        logger.error(f"Invalid acquisition mode requested: {new_mode}")
+        return False
+
+    client_ids = self.control_manager.list_connected_clients()
+
+    if not client_ids:
+        self.poutput("No connected clients.")
+        logger.warning(
+            f"Cannot change mode to '{new_mode}': no connected clients"
+        )
+        return False
+
+    successful_clients = 0
+    failed_clients = 0
+
+    for client_id in client_ids:
+        client_name = client_id.decode(errors="ignore")
+
+        identity = self.control_manager.identity_by_client_id.get(client_id)
+
+        if identity is None:
+            failed_clients += 1
+            logger.error(f"No identity found for client {client_name}")
+            self.poutput(f"Client {client_name}: missing identity")
+            continue
+
+        multipmt_id = identity.get("multipmt_id")
+        batch_id = identity.get("batch_id")
+
+        if not multipmt_id or not batch_id:
+            failed_clients += 1
+            logger.error(
+                f"Incomplete identity for client {client_name}: {identity}"
+            )
+            self.poutput(f"Client {client_name}: incomplete identity")
+            continue
+
+        pe_thr = None
+        acq_info = None
+
+        if new_mode == "multipmt":
+            pe_thr = 1
+
+            logger.info(
+                f"Building multipmt config for client {client_name} "
+                f"(multipmt_id={multipmt_id}, batch_id={batch_id})"
+            )
+
+            config_file_service = JsonParser(
+                multipmt_id=multipmt_id,
+                batch_id=batch_id,
+            )
+
+            acq_info = config_file_service.get_ch_configuration(pe_thr=pe_thr)
+
+            if acq_info is None:
+                failed_clients += 1
+                logger.error(
+                    f"Cannot build multipmt configuration for client "
+                    f"{client_name}, multipmt_id={multipmt_id}, "
+                    f"batch_id={batch_id}"
+                )
+                self.poutput(f"Client {client_name}: cannot build multipmt config")
+                continue
+
+        mode_sync_command = self.control_manager.message_handler.create_command(
+            channel=Channel.ACQUISITION,
+            command="set_acq_mode_sync",
+            payload={
+                "acq_mode": new_mode,
+                "pe_thr": pe_thr,
+                "acquisition_configuration": acq_info,
+            },
+            sender="server",
+        )
+
+        self.control_manager.queue_message(client_id, mode_sync_command)
+
+        logger.info(
+            f"Queued mode sync command for client {client_name}: mode={new_mode}"
+        )
+
+        reply, reason = self.control_manager.wait_for_reply(
+            client_id=client_id,
+            in_reply_to=mode_sync_command.request_id,
+            timeout_s=90.0,
+        )
+
+        if reply is None:
+            failed_clients += 1
+            logger.error(
+                f"Mode sync timeout/failure for client {client_name}: {reason}"
+            )
+            self.poutput(f"Client {client_name}: no reply ({reason})")
+            continue
+
+        payload = reply.payload or {}
+
+        reply_status = payload.get("status")
+        reply_mode = payload.get("acq_mode")
+        error = payload.get("error")
+
+        if reply_status != "ok" or error:
+            failed_clients += 1
+            logger.error(
+                f"Client {client_name} failed mode sync: "
+                f"status={reply_status}, mode={reply_mode}, error={error}"
+            )
+            self.poutput(
+                f"Client {client_name}: mode sync failed "
+                f"(mode={reply_mode}, error={error})"
+            )
+            continue
+
+        successful_clients += 1
+
+        logger.info(
+            f"Client {client_name} synchronized to mode '{reply_mode}'"
+        )
+
+        self.poutput(
+            f"Client {client_name}: mode synchronized to {reply_mode}"
+        )
+
+    self.poutput(
+        f"Mode synchronization completed. "
+        f"Successful clients: {successful_clients}, "
+        f"Failed clients: {failed_clients}"
+    )
+
+    logger.info(
+        f"Mode synchronization completed for mode '{new_mode}'. "
+        f"Successful clients: {successful_clients}, "
+        f"Failed clients: {failed_clients}"
+    )
+
+    if successful_clients == 0:
+        logger.error(
+            f"Mode change to '{new_mode}' failed on all clients. "
+            f"Server mode remains '{self.mode}'"
+        )
+        self.poutput(
+            f"Mode change failed on all clients. "
+            f"Server mode remains '{self.mode}'."
+        )
+        return False
+
+    if failed_clients > 0:
+        logger.warning(
+            f"{failed_clients} client(s) are not synchronized with "
+            f"server acquisition mode '{new_mode}'"
+        )
+        self.poutput(
+            f"Warning: {failed_clients} client(s) are not synchronized."
+        )
+
     if self.set_mode(new_mode):
-        self.poutput(f"Mode changed to {new_mode}")
+        self.poutput(f"Server mode changed to {new_mode}")
+        logger.info(f"Server mode changed to '{new_mode}'")
+        return True
+
+    logger.error(f"Failed to update server mode to '{new_mode}'")
+    self.poutput(f"Failed to update server mode to {new_mode}")
+    return False
 
 
 @cmd2.with_category("Generic Commands")

@@ -1,10 +1,12 @@
 from client.communication.handlers.hv_handlers import *
 from client.communication.handlers.rc_handlers import *
 from client.communication.handlers.system_handlers import *
+from client.communication.handlers.acquisition_handler import *
 
 COMMAND_MAP = {
     #System Handlers
     "server_shutdown": handle_server_shutdown,
+    'set_acq_mode_sync': handle_set_acq_mode_sync,
     
     #HV Handlers
     "hv_on": handle_hv_on,
