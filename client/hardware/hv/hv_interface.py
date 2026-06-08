@@ -297,7 +297,7 @@ class HV:
                     continue
 
                 voltage = ch_config.get("voltage")
-                threshold = ch_config.get("threshold_mv")
+                threshold = ch_config.get("threshold")
 
                 if voltage is None or threshold is None:
                     self.logger.error(
