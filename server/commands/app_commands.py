@@ -34,7 +34,6 @@ def do_change_mode(self, args):
     if new_mode not in POSSIBLE_MODES:
         self.poutput(f"Invalid acquisition mode: {new_mode}")
         logger.error(f"Invalid acquisition mode requested: {new_mode}")
-        return False
 
     client_ids = self.control_manager.list_connected_clients()
 
@@ -43,7 +42,6 @@ def do_change_mode(self, args):
         logger.warning(
             f"Cannot change mode to '{new_mode}': no connected clients"
         )
-        return False
 
     successful_clients = 0
     failed_clients = 0
@@ -178,7 +176,6 @@ def do_change_mode(self, args):
             f"Mode change failed on all clients. "
             f"Server mode remains '{self.mode}'."
         )
-        return False
 
     if failed_clients > 0:
         logger.warning(
@@ -192,11 +189,9 @@ def do_change_mode(self, args):
     if self.set_mode(new_mode):
         self.poutput(f"Server mode changed to {new_mode}")
         logger.info(f"Server mode changed to '{new_mode}'")
-        return True
 
     logger.error(f"Failed to update server mode to '{new_mode}'")
     self.poutput(f"Failed to update server mode to {new_mode}")
-    return False
 
 
 @cmd2.with_category("Generic Commands")
@@ -287,7 +282,6 @@ def do_force(self, args: argparse.Namespace) -> bool:
 
         if not client_ids:
             self.poutput("No connected clients.")
-            return False
 
         for client_id in client_ids:
             hv_sync_command = self.control_manager.message_handler.create_command(
@@ -324,7 +318,6 @@ def do_force(self, args: argparse.Namespace) -> bool:
 
             _print_hv_lists(self, client_name, result)
 
-        return False
 
 
 
@@ -348,7 +341,6 @@ def do_connect(self, args: argparse.Namespace) -> None:
     if requested_clients <= 0:
         self.poutput("num_clients must be greater than 0")
         logger.warning(f"Invalid num_clients value: {requested_clients}")
-        return
 
     listener_was_running = (
         self.control_manager.listener_thread is not None
@@ -368,7 +360,6 @@ def do_connect(self, args: argparse.Namespace) -> None:
             if listener_was_running:
                 self.control_manager.start_listener()
 
-            return
 
     already_connected = len(self.control_manager.list_connected_clients())
     target_total = max(requested_clients, already_connected)
@@ -403,7 +394,6 @@ def do_connect(self, args: argparse.Namespace) -> None:
     if not self.control_manager.start_listener():
         logger.error("Failed to start control listener")
         self.poutput("Failed to start control listener")
-        return
 
 
 #####################################
