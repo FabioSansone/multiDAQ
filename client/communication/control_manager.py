@@ -53,6 +53,27 @@ class ControlPlaneManager:
         self.logger = get_logger("control_manager")
         self.logger.info("ZMQ Control Client Manager initialized")
 
+    
+    def _sanitize_identity_part(self, value: str) -> str:
+        return (
+            str(value)
+            .strip()
+            .lower()
+            .replace(" ", "_")
+            .replace("/", "_")
+        )
+
+    def _zmq_identity(self) -> str:
+        multipmt_id = self._sanitize_identity_part(
+            self.identity.multipmt_id or "unknown"
+        )
+        batch_id = self._sanitize_identity_part(
+            self.identity.batch_id or "unknown"
+        )
+        mac_suffix = self.identity.mac.replace(":", "")[-6:]
+
+        return f"{multipmt_id}-{batch_id}-{mac_suffix}"
+
     def start_connection(self, port: int) -> bool:
         """Start a ZMQ connection with ROUTER server (ROUTER - DEALER)"""
         if self.socket is not None:
@@ -68,7 +89,9 @@ class ControlPlaneManager:
             server_address = f"tcp://{self.server_ip}:{port}"
             
             self.socket = self.context.socket(zmq.DEALER)
-            identity_bytes = self.identity.hostname.encode('utf-8')
+            routing_identity = self._zmq_identity()
+            identity_bytes = routing_identity.encode("utf-8")
+            self.logger.info(f"Using ZMQ identity: {routing_identity}")
             
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.IDENTITY, identity_bytes)

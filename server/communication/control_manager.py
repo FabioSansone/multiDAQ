@@ -1,9 +1,9 @@
 import zmq
 from typing import Optional, List
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
-from common.constants import ACQUISITION_MODES
 from server.utils.logger import get_logger
 from server.utils.json_parser import JsonParser
+from server.core.server_state import ServerState
 import threading
 import queue
 
@@ -11,20 +11,15 @@ MAX_RETRIES = 5
 
 
 class ControlPlaneManager:
-    def __init__(self, context: zmq.Context, num_multi_clients:int, acq_mode: str):
+    def __init__(self, context: zmq.Context, num_multi_clients:int, state: ServerState):
         self.context = context
         self.socket: Optional[zmq.Socket] = None
         self.endpoint: Optional[str] = None
         self.recv_poller = zmq.Poller()
-        
+
+        self.server_state = state
         self.num_multi_clients = num_multi_clients
-        self.acq_mode = acq_mode
-        
-        self.clients_by_multipmt_id: dict[str, bytes] = {}
-        self.identity_by_client_id: dict[bytes, dict] = {}
-        self.client_id_by_multipmt_id: dict[str, bytes] = {}
-        
-        self.connected_clients: List[bytes] = []
+
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
         
         self.stop_listening = threading.Event()
@@ -38,7 +33,18 @@ class ControlPlaneManager:
         
         self.logger = get_logger("control_manager")
         self.logger.debug("ZMQ Control Server Manager initialized")
-        
+    
+    def list_connected_clients(self) -> List[bytes]:
+        return self.server_state.list_connected_clients()
+
+    def get_identity(self, client_id: bytes) -> Optional[dict]:
+        return self.server_state.get_identity(client_id)
+
+    def add_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
+        self.server_state.add_client(client_id, identity)
+
+    def remove_client(self, client_id: bytes) -> None:
+        self.server_state.remove_client(client_id)
         
     def start_connection(self, port: int) -> bool:
         """Start a ZMQ connection with DEALER client (ROUTER - DEALER)"""    
@@ -173,22 +179,6 @@ class ControlPlaneManager:
             )
             return False
         
-
-    def add_client(self, client_id: bytes) -> None:
-        """Add a client to the connected clients list"""
-        if client_id not in self.connected_clients:
-            self.connected_clients.append(client_id)
-            self.logger.info(f"Client {client_id.decode(errors='ignore')} connected. Total clients: {len(self.connected_clients)}")
-    
-    def remove_client(self, client_id: bytes) -> None:
-        """Remove a client from the connected clients list"""
-        if client_id in self.connected_clients:
-            self.connected_clients.remove(client_id)
-            self.logger.info(f"Client {client_id.decode(errors='ignore')} disconnected. Total clients: {len(self.connected_clients)}")
-    
-    def list_connected_clients(self) -> List[bytes]:
-        """List all the connected clients"""
-        return list(self.connected_clients)
     
     def handshake_core(self, timeout_ms: int = 20000) -> bool:
         if self.socket is None:
@@ -263,7 +253,7 @@ class ControlPlaneManager:
             phase="startup",
             payload={
                 "message": "Startup",
-                "acq_mode": self.acq_mode,
+                "acq_mode": self.server_state.get_mode(),
             },
             in_reply_to=ready_message.request_id,
             sender="server",
@@ -321,19 +311,16 @@ class ControlPlaneManager:
             self.logger.error(f"Missing batch_id in identity payload: {identity_payload}")
             return False
 
-        if multipmt_id in self.client_id_by_multipmt_id:
+        existing_client_id = self.server_state.get_client_id_by_multipmt_id(multipmt_id)
+
+        if existing_client_id is not None and existing_client_id != client_id:
             self.logger.error(
                 f"Duplicate multipmt_id received: {multipmt_id}. "
-                f"Already mapped to {self.client_id_by_multipmt_id[multipmt_id]!r}"
+                f"Already mapped to {existing_client_id!r}"
             )
             return False
 
-        self.client_id_by_multipmt_id[multipmt_id] = client_id
-        self.identity_by_client_id[client_id] = identity_payload
-
-        self.add_client(client_id)
-
-        if self.acq_mode == "multipmt":
+        if self.server_state.get_mode() == "multipmt":
             config_file_service = JsonParser(
                 multipmt_id=multipmt_id,
                 batch_id=batch_id,
@@ -365,10 +352,12 @@ class ControlPlaneManager:
                     f"Failed to send multipmt acquisition config to client {client_id!r}"
                 )
                 return False
+            
+        self.add_client(client_id, identity_payload)
 
         self.logger.info(
             f"Handshake completed successfully with client {client_id!r}, "
-            f"multipmt_id={multipmt_id}, batch_id={batch_id}, acq_mode={self.acq_mode}"
+            f"multipmt_id={multipmt_id}, batch_id={batch_id}, acq_mode={self.server_state.get_mode()}"
         )
 
         return True

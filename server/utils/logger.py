@@ -6,6 +6,9 @@ import sys
 from typing import Dict
 
 LOGGER_NAMES = {
+
+    #Server Core
+    'server_state': 'server.core.state',
     
     #Communication
     'control_manager': 'server.comm.control',

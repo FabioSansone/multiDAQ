@@ -9,6 +9,7 @@ from server.utils.logger import get_logger, LoggerManager
 from server.commands import app_commands, hv_commands, rc_commands
 from server.communication.control_manager import ControlPlaneManager
 from common.constants import ACQUISITION_MODES
+from server.core.server_state import ServerState
 
 
 
@@ -53,7 +54,7 @@ class Server(cmd2.Cmd):
             return False
 
         self.mode = new_mode
-        self.control_manager.acq_mode = new_mode
+        self.control_manager.server_state.set_mode(new_mode)
         self.prompt = f"Server[{self.mode}]> "
 
         self.logger.info(f"Mode changed to {self.mode}")
@@ -79,12 +80,14 @@ def main() -> int:
         print("Unrecognized starting mode. Set to default mode: test.")
         mode_selected = 'test'
 
+    server_state = ServerState(initial_mode=mode_selected)
+
     context = zmq.Context()
 
     control_manager = ControlPlaneManager(
         context=context,
         num_multi_clients=1,
-        acq_mode=mode_selected,
+        state=server_state,
     )
 
     app = Server(acquisition_mode=mode_selected, control_manager=control_manager)
