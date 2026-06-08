@@ -133,6 +133,15 @@ class HVModBus:
         self.ch_addr = channel
         return True
     
+    def close(self) -> None:
+        try:
+            if self.client is not None:
+                self.client.close()
+                self.client = None
+                self.logger.info("ModBus serial connection closed")
+        except Exception as e:
+            self.logger.error(f"Error while closing ModBus serial connection: {e}")
+    
     
     def checkAddressBoundary(self, channel):
         if (channel < 0 or channel > self.num_channels):

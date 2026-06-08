@@ -247,6 +247,11 @@ class HVService:
         
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=2.0)
+
+        try:
+            self.hv.close()
+        except Exception as e:
+            self.logger.error(f"Error while closing HV interface: {e}")
             
         self.logger.info("HVService worker stopped")
 

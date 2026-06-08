@@ -1,5 +1,6 @@
 from common.constants import ACQUISITION_MODES
 from client.utils.logger import get_logger
+from common.message_handler import MessageStatus
 
 
 class AcquisitionService:
@@ -48,11 +49,17 @@ class AcquisitionService:
         manager = self.manager
 
         if manager.hv_service is not None:
-            manager.hv_service._submit_command(
+            response=manager.hv_service._submit_command(
                 command="hv_off",
                 payload={"channels": "all"},
                 sender="client_acquisition_service",
+                timeout_s=90.0
             )
+
+            if response.status != MessageStatus.OK:
+                self.logger.error(f"HV off failed before test mode: {response.error}")
+                return False
+            
             manager.hv_service.stop()
             manager.hv_service = None
 

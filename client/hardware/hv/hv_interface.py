@@ -164,6 +164,13 @@ class HV:
         ok_channels, bad_channels = self._normalize_channels(channels)
         return ok_channels, bad_channels
     
+
+    def close(self) -> None:
+        try:
+            self.hv.close()
+        except Exception as e:
+            self.logger.error(f"Error while closing ModBus client: {e}")
+    
     
 
     def set_common_voltage(self, channels: List[int] | str | int, common_voltage: int):
