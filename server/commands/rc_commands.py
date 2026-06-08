@@ -60,6 +60,7 @@ def do_rc(self, args: argparse.Namespace) -> None:
 
     if not client_ids:
         self.poutput("No connected clients.")
+        return
 
     for client_id in client_ids:
         rc_command = self.control_manager.message_handler.create_command(

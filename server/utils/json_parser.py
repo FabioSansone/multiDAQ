@@ -54,34 +54,48 @@ class JsonParser:
     
     def _expected_filename(self) -> str:
         if self.multipmt_id and self.multipmt_id != "generic":
-            return f"config_{self.multipmt_id}_{self.batch_id}.json"
+            return f"*{self.multipmt_id}*{self.batch_id}*.json"
 
-        return f"config_generic_calibration_{self.batch_id}.json"
+        return f"*generic*calibration*{self.batch_id}*.json"
     
     def _find_config_file_path(self) -> Path | None:
         if self.config_files_folder is None:
             self.logger.error("Cannot search config file: config folder not found")
             return None
 
-        expected_filename = self._expected_filename()
+        expected_pattern = self._expected_filename()
 
-        for path in self.config_files_folder.rglob("*.json"):
-            if path.name.lower() == expected_filename.lower():
-                self.logger.info(f"Found config file: {path}")
+        candidates = sorted(
+            self.config_files_folder.rglob(expected_pattern)
+        )
 
-                self.config_file_path = path
-                self.config_file = self._load()
+        if not candidates:
+            self.logger.error(
+                f"Config file not found. Expected pattern: {expected_pattern}"
+            )
+            return None
 
-                if self._validate_metadata():
-                    return path
+        for path in candidates:
+            self.logger.info(f"Found candidate config file: {path}")
 
-                self.logger.error(f"Metadata validation failed for config file: {path}")
+            self.config_file_path = path
+            self.config_file = self._load()
+
+            if self.config_file is None:
+                self.logger.error(f"Cannot load candidate config file: {path}")
                 self.config_file_path = None
-                self.config_file = None
-                return None
+                continue
+
+            if self._validate_metadata():
+                self.logger.info(f"Config file validated: {path}")
+                return path
+
+            self.logger.warning(f"Metadata validation failed for candidate: {path}")
+            self.config_file_path = None
+            self.config_file = None
 
         self.logger.error(
-            f"Config file not found. Expected filename: {expected_filename}"
+            f"No valid config file found for pattern: {expected_pattern}"
         )
         return None
     
@@ -102,7 +116,7 @@ class JsonParser:
 
             if (
                 self.multipmt_id != "generic"
-                and metadata.get("multipmt_id") != self.multipmt_id
+                and self.multipmt_id not in str(metadata.get("multipmt_id", "")).lower()
             ):
                 self.logger.error(
                     f"multiPMT mismatch in {section}: "

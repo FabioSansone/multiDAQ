@@ -34,14 +34,23 @@ def do_change_mode(self, args):
     if new_mode not in POSSIBLE_MODES:
         self.poutput(f"Invalid acquisition mode: {new_mode}")
         logger.error(f"Invalid acquisition mode requested: {new_mode}")
+        return
 
     client_ids = self.control_manager.list_connected_clients()
 
     if not client_ids:
-        self.poutput("No connected clients.")
-        logger.warning(
-            f"Cannot change mode to '{new_mode}': no connected clients"
-        )
+        if self.set_mode(new_mode):
+            self.poutput(
+                f"Server mode changed to {new_mode}. "
+                "No clients connected; mode will be used at next handshake."
+            )
+            logger.info(
+                f"Server mode changed to '{new_mode}' with no connected clients"
+            )
+        else:
+            self.poutput(f"Failed to update server mode to {new_mode}")
+            logger.error(f"Failed to update server mode to '{new_mode}'")
+        return
 
     successful_clients = 0
     failed_clients = 0
@@ -53,8 +62,8 @@ def do_change_mode(self, args):
 
         if identity is None:
             failed_clients += 1
-            logger.error(f"No identity found for client {client_name}")
             self.poutput(f"Client {client_name}: missing identity")
+            logger.error(f"No identity found for client {client_name}")
             continue
 
         multipmt_id = identity.get("multipmt_id")
@@ -62,10 +71,8 @@ def do_change_mode(self, args):
 
         if not multipmt_id or not batch_id:
             failed_clients += 1
-            logger.error(
-                f"Incomplete identity for client {client_name}: {identity}"
-            )
             self.poutput(f"Client {client_name}: incomplete identity")
+            logger.error(f"Incomplete identity for client {client_name}: {identity}")
             continue
 
         pe_thr = None
@@ -88,12 +95,14 @@ def do_change_mode(self, args):
 
             if acq_info is None:
                 failed_clients += 1
-                logger.error(
-                    f"Cannot build multipmt configuration for client "
-                    f"{client_name}, multipmt_id={multipmt_id}, "
-                    f"batch_id={batch_id}"
+                self.poutput(
+                    f"Client {client_name}: cannot build multipmt config "
+                    f"(multipmt_id={multipmt_id}, batch_id={batch_id})"
                 )
-                self.poutput(f"Client {client_name}: cannot build multipmt config")
+                logger.error(
+                    f"Cannot build multipmt configuration for client {client_name}, "
+                    f"multipmt_id={multipmt_id}, batch_id={batch_id}"
+                )
                 continue
 
         mode_sync_command = self.control_manager.message_handler.create_command(
@@ -109,10 +118,6 @@ def do_change_mode(self, args):
 
         self.control_manager.queue_message(client_id, mode_sync_command)
 
-        logger.info(
-            f"Queued mode sync command for client {client_name}: mode={new_mode}"
-        )
-
         reply, reason = self.control_manager.wait_for_reply(
             client_id=client_id,
             in_reply_to=mode_sync_command.request_id,
@@ -121,39 +126,30 @@ def do_change_mode(self, args):
 
         if reply is None:
             failed_clients += 1
-            logger.error(
-                f"Mode sync timeout/failure for client {client_name}: {reason}"
-            )
             self.poutput(f"Client {client_name}: no reply ({reason})")
+            logger.error(f"Mode sync failed for client {client_name}: {reason}")
             continue
 
         payload = reply.payload or {}
-
         reply_status = payload.get("status")
         reply_mode = payload.get("acq_mode")
         error = payload.get("error")
 
         if reply_status != "ok" or error:
             failed_clients += 1
-            logger.error(
-                f"Client {client_name} failed mode sync: "
-                f"status={reply_status}, mode={reply_mode}, error={error}"
-            )
             self.poutput(
                 f"Client {client_name}: mode sync failed "
                 f"(mode={reply_mode}, error={error})"
             )
+            logger.error(
+                f"Client {client_name} failed mode sync: "
+                f"status={reply_status}, mode={reply_mode}, error={error}"
+            )
             continue
 
         successful_clients += 1
-
-        logger.info(
-            f"Client {client_name} synchronized to mode '{reply_mode}'"
-        )
-
-        self.poutput(
-            f"Client {client_name}: mode synchronized to {reply_mode}"
-        )
+        self.poutput(f"Client {client_name}: mode synchronized to {reply_mode}")
+        logger.info(f"Client {client_name} synchronized to mode '{reply_mode}'")
 
     self.poutput(
         f"Mode synchronization completed. "
@@ -161,38 +157,31 @@ def do_change_mode(self, args):
         f"Failed clients: {failed_clients}"
     )
 
-    logger.info(
-        f"Mode synchronization completed for mode '{new_mode}'. "
-        f"Successful clients: {successful_clients}, "
-        f"Failed clients: {failed_clients}"
-    )
-
     if successful_clients == 0:
-        logger.error(
-            f"Mode change to '{new_mode}' failed on all clients. "
-            f"Server mode remains '{self.mode}'"
-        )
         self.poutput(
-            f"Mode change failed on all clients. "
+            f"Mode change failed on all connected clients. "
             f"Server mode remains '{self.mode}'."
         )
+        logger.error(
+            f"Mode change to '{new_mode}' failed on all connected clients. "
+            f"Server mode remains '{self.mode}'"
+        )
+        return
 
     if failed_clients > 0:
+        self.poutput(f"Warning: {failed_clients} client(s) are not synchronized.")
         logger.warning(
             f"{failed_clients} client(s) are not synchronized with "
             f"server acquisition mode '{new_mode}'"
-        )
-        self.poutput(
-            f"Warning: {failed_clients} client(s) are not synchronized."
         )
 
     if self.set_mode(new_mode):
         self.poutput(f"Server mode changed to {new_mode}")
         logger.info(f"Server mode changed to '{new_mode}'")
+        return
 
-    logger.error(f"Failed to update server mode to '{new_mode}'")
     self.poutput(f"Failed to update server mode to {new_mode}")
-
+    logger.error(f"Failed to update server mode to '{new_mode}'")
 
 @cmd2.with_category("Generic Commands")
 def do_quit(self,_) -> bool:
@@ -275,13 +264,12 @@ def do_force(self, args: argparse.Namespace) -> bool:
         self.poutput("Forcing server shutdown...")
         return True
 
-
-
     if args.command == "hv_sync":
         client_ids = self.control_manager.list_connected_clients()
 
         if not client_ids:
             self.poutput("No connected clients.")
+            return
 
         for client_id in client_ids:
             hv_sync_command = self.control_manager.message_handler.create_command(
@@ -318,7 +306,7 @@ def do_force(self, args: argparse.Namespace) -> bool:
 
             _print_hv_lists(self, client_name, result)
 
-
+        return
 
 
 #####################
@@ -341,6 +329,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
     if requested_clients <= 0:
         self.poutput("num_clients must be greater than 0")
         logger.warning(f"Invalid num_clients value: {requested_clients}")
+        return
 
     listener_was_running = (
         self.control_manager.listener_thread is not None
@@ -360,6 +349,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
             if listener_was_running:
                 self.control_manager.start_listener()
 
+            return
 
     already_connected = len(self.control_manager.list_connected_clients())
     target_total = max(requested_clients, already_connected)
@@ -394,7 +384,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
     if not self.control_manager.start_listener():
         logger.error("Failed to start control listener")
         self.poutput("Failed to start control listener")
-
+        return
 
 #####################################
 #HANDLING EVENT MESSAGES FROM CLIENT#
