@@ -335,14 +335,16 @@ class ControlPlaneManager:
                 return False
 
             start_thr = message.payload.get("pe_thr")
-            acq_info = message.payload.get("channels_info")
+            acq_info = message.payload.get("acquisition_configuration")
 
             if start_thr is None:
                 self.logger.error("Missing pe_thr in multipmt acquisition config")
                 return False
 
             if not isinstance(acq_info, dict) or not acq_info:
-                self.logger.error(f"Invalid channels_info in multipmt acquisition config: {acq_info}")
+                self.logger.error(
+                    f"Invalid acquisition_configuration in multipmt acquisition config: {acq_info}"
+                )
                 return False
 
             self.acq_info = acq_info
