@@ -36,7 +36,7 @@ def do_change_mode(self, args):
         logger.error(f"Invalid acquisition mode requested: {new_mode}")
         return
 
-    client_ids = self.control_manager.list_connected_clients()
+    client_ids = self.control_manager.server_state.list_connected_clients()
 
     if not client_ids:
         if self.set_mode(new_mode):
@@ -58,7 +58,7 @@ def do_change_mode(self, args):
     for client_id in client_ids:
         client_name = client_id.decode(errors="ignore")
 
-        identity = self.control_manager.identity_by_client_id.get(client_id)
+        identity = self.control_manager.server_state.get_identity(client_id)
 
         if identity is None:
             failed_clients += 1
@@ -184,19 +184,21 @@ def do_change_mode(self, args):
     logger.error(f"Failed to update server mode to '{new_mode}'")
 
 @cmd2.with_category("Generic Commands")
-def do_quit(self,_) -> bool:
+def do_quit(self, _) -> bool:
     """Send quit command to all connected clients"""
 
     success = self.control_manager.notify_shutdown_to_all_clients()
     if not success:
         self.poutput("Failed to send quit command to all the clients")
         return False
-    
-    list_connected_clients = self.control_manager.connected_clients
+
+    list_connected_clients = self.control_manager.server_state.list_connected_clients()
+
     if list_connected_clients:
         self.poutput("Sent quit command to all connected clients.\n Quitting server.")
     else:
         self.poutput("Server shutting down ...")
+
     return True
 
 ##################
@@ -242,7 +244,7 @@ def do_force(self, args: argparse.Namespace) -> bool:
         try:
             self.control_manager.notify_shutdown_to_all_clients()
 
-            connected_clients = self.control_manager.list_connected_clients()
+            connected_clients = self.control_manager.server_state.list_connected_clients()
 
             if connected_clients:
                 self.poutput(
@@ -265,7 +267,7 @@ def do_force(self, args: argparse.Namespace) -> bool:
         return True
 
     if args.command == "hv_sync":
-        client_ids = self.control_manager.list_connected_clients()
+        client_ids = self.control_manager.server_state.list_connected_clients()
 
         if not client_ids:
             self.poutput("No connected clients.")
@@ -366,7 +368,9 @@ def do_connect(self, args: argparse.Namespace) -> None:
 
             return
 
-    already_connected = len(self.control_manager.list_connected_clients())
+    already_connected = len(
+        self.control_manager.server_state.list_connected_clients()
+    )
     target_total = max(requested_clients, already_connected)
 
     self.control_manager.num_multi_clients = target_total
@@ -379,7 +383,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
 
     control_ready = self.control_manager.handshake()
 
-    connected = self.control_manager.list_connected_clients()
+    connected = self.control_manager.server_state.list_connected_clients()
     decoded_clients = [cid.decode(errors="ignore") for cid in connected]
 
     if not control_ready or not connected:

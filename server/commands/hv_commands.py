@@ -159,7 +159,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
         self.poutput(f"Unknown HV command group: {args.command_group}")
         return
 
-    client_ids = self.control_manager.list_connected_clients()
+    client_ids = self.control_manager.server_state.list_connected_clients()
 
     if not client_ids:
         self.poutput("No connected clients.")

@@ -56,7 +56,7 @@ def do_rc(self, args: argparse.Namespace) -> None:
 
     command = command_map[args.parameter]
 
-    client_ids = self.control_manager.list_connected_clients()
+    client_ids = self.control_manager.server_state.list_connected_clients()
 
     if not client_ids:
         self.poutput("No connected clients.")
