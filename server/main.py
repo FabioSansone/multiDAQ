@@ -8,6 +8,7 @@ import zmq
 from server.utils.logger import get_logger, LoggerManager
 from server.commands import app_commands, hv_commands, rc_commands
 from server.communication.control_manager import ControlPlaneManager
+from server.communication.acquisition_manager import AcquisitionPlaneManager
 from common.constants import ACQUISITION_MODES
 from server.core.server_state import ServerState
 
@@ -17,13 +18,14 @@ from server.core.server_state import ServerState
 class Server(cmd2.Cmd):
     "A terminal application to switch and interact with different multiPMTs"
 
-    def __init__(self, acquisition_mode: str, control_manager: ControlPlaneManager) -> None:
+    def __init__(self, acquisition_mode: str, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager) -> None:
         super().__init__(allow_cli_args=False)
 
         self.intro = "Welcome to the control interface for the multiPMTs. Type ? or help to list commands."
         self.logger = get_logger("app")
         self.mode = acquisition_mode
         self.control_manager = control_manager
+        self.acq_manager = acquisition_manager
 
         self.prompt = f"Server[{self.mode}]> "
 
@@ -90,16 +92,27 @@ def main() -> int:
         state=server_state,
     )
 
-    app = Server(acquisition_mode=mode_selected, control_manager=control_manager)
+
+    acquisition_manager = AcquisitionPlaneManager(
+        context=context,
+        state=server_state
+    )
+
+    app = Server(acquisition_mode=mode_selected, control_manager=control_manager, acquisition_manager=acquisition_manager)
 
     try:
         app.cmdloop()
     except KeyboardInterrupt:
         app.poutput("\nShutting down...")
     finally:
+        if acquisition_manager.socket is not None:
+            acquisition_manager.clear_queues()
+            acquisition_manager.close_connection()
+
         if control_manager.socket is not None:
             control_manager.clear_queues()
             control_manager.close_connection()
+
         context.term()
 
     return 0

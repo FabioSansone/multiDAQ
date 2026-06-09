@@ -1,5 +1,3 @@
-import zmq
-
 
 def handle_server_shutdown(manager, message):
     manager.logger.warning(

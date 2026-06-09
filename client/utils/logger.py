@@ -6,9 +6,13 @@ import sys
 from typing import Dict
 
 LOGGER_NAMES = {
+
+    #Core
+    'run_time': 'client.core.runtime',
     
     #Communication
     'control_manager': 'client.comm.control',
+    'acq_manager': 'client.comm.acq',
     'message_handler': 'client.comm.msg',
     'handshake': 'client.handshake',
     'identity': 'client.identity',

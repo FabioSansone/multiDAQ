@@ -1,15 +1,14 @@
 from common.constants import ACQUISITION_MODES
-from client.utils.logger import get_logger
 from common.message_handler import MessageStatus
+from client.utils.logger import get_logger
 
 
 class AcquisitionService:
-    def __init__(self, manager):
-        self.manager = manager
+    def __init__(self, runtime):
+        self.runtime = runtime
 
         self.logger = get_logger("acquisition_service")
-        self.logger.info("Acquisition Service initialized")
-
+        self.logger.info("AcquisitionService initialized")
 
     def apply_acquisition_mode(
         self,
@@ -18,9 +17,9 @@ class AcquisitionService:
         pe_thr: int | float | None = None,
     ) -> bool:
 
-        manager = self.manager
+        runtime = self.runtime
         new_mode = new_mode.lower()
-        old_mode = getattr(manager, "acq_mode", None)
+        old_mode = runtime.acq_mode
 
         self.logger.info(
             f"Applying acquisition mode change: {old_mode} -> {new_mode}"
@@ -46,68 +45,74 @@ class AcquisitionService:
         return False
 
     def _apply_test_mode(self) -> bool:
-        manager = self.manager
+        runtime = self.runtime
 
-        if manager.hv_service is not None:
-            response=manager.hv_service._submit_command(
+        if runtime.hv_service is not None:
+            response = runtime.hv_service._submit_command(
                 command="hv_off",
                 payload={"channels": "all"},
                 sender="client_acquisition_service",
-                timeout_s=90.0
+                timeout_s=90.0,
             )
 
             if response.status != MessageStatus.OK:
-                self.logger.error(f"HV off failed before test mode: {response.error}")
+                self.logger.error(
+                    f"HV off failed before test mode: {response.error}"
+                )
                 return False
-            
-            manager.hv_service.stop()
-            manager.hv_service = None
 
-        manager.acq_mode = "test"
-        manager.acq_info = None
-        manager.start_thr = None
+            runtime.stop_hv_service()
 
-        manager.rc_service._submit_command(
+        runtime.set_acquisition_mode(
+            acq_mode="test",
+            acq_info=None,
+            start_thr=None,
+        )
+
+        runtime.rc_service._submit_command(
             command="rc_acq_start",
             payload={"channels": "all"},
             sender="client_acquisition_service",
         )
 
-        manager.evproducer.start(manager.server_ip)
+        runtime.evproducer.start(runtime.server_ip)
         return True
 
     def _apply_calibration_mode(self) -> bool:
-        manager = self.manager
+        runtime = self.runtime
 
-        manager.rc_service._submit_command(
+        runtime.rc_service._submit_command(
             command="rc_acq_start",
             payload={"channels": "all"},
             sender="client_acquisition_service",
         )
 
-        if not manager._ensure_hv_service():
+        if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply calibration mode: HVService unavailable")
             return False
 
-        manager.hv_service.start()
+        runtime.hv_service.start()
 
-        manager.hv_service._submit_command(
+        runtime.hv_service._submit_command(
             command="set_common_voltage",
             payload={"channels": "all", "common_voltage": 1200},
             sender="client_acquisition_service",
         )
 
-        manager.hv_service._submit_command(
+        runtime.hv_service._submit_command(
             command="set_common_threshold",
             payload={"channels": "all", "common_threshold": 400},
             sender="client_acquisition_service",
         )
 
-        manager.evproducer.start(manager.server_ip)
+        runtime.evproducer.start(runtime.server_ip)
 
-        manager.acq_mode = "calibration"
-        manager.acq_info = None
-        manager.start_thr = None
+        runtime.set_acquisition_mode(
+            acq_mode="calibration",
+            acq_info=None,
+            start_thr=None,
+        )
+
         return True
 
     def _apply_multipmt_mode(
@@ -115,7 +120,7 @@ class AcquisitionService:
         acq_info: dict | None,
         pe_thr: int | float | None,
     ) -> bool:
-        manager = self.manager
+        runtime = self.runtime
 
         if acq_info is None:
             self.logger.error(
@@ -123,19 +128,19 @@ class AcquisitionService:
             )
             return False
 
-        manager.rc_service._submit_command(
+        runtime.rc_service._submit_command(
             command="rc_acq_start",
             payload={"channels": "all"},
             sender="client_acquisition_service",
         )
 
-        if not manager._ensure_hv_service():
+        if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply multipmt mode: HVService unavailable")
             return False
 
-        manager.hv_service.start()
+        runtime.hv_service.start()
 
-        manager.hv_service._submit_command(
+        runtime.hv_service._submit_command(
             command="set_acquisition_configuration",
             payload={
                 "channels": "all",
@@ -144,10 +149,12 @@ class AcquisitionService:
             sender="client_acquisition_service",
         )
 
-        manager.evproducer.start(manager.server_ip)
+        runtime.evproducer.start(runtime.server_ip)
 
-        manager.acq_mode = "multipmt"
-        manager.acq_info = acq_info
-        manager.start_thr = pe_thr
+        runtime.set_acquisition_mode(
+            acq_mode="multipmt",
+            acq_info=acq_info,
+            start_thr=pe_thr,
+        )
+
         return True
-    

@@ -15,6 +15,9 @@ LOGGER_NAMES = {
     'message_handler': 'server.comm.msg',
     'handshake': 'server.handshake',
 
+    #Acquisition
+    'acquisition_manager': 'server.comm.acq',
+    
     #Utils
     'json_parser': 'server.utils.json',
 

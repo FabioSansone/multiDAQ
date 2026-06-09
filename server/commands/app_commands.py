@@ -315,12 +315,13 @@ def do_force(self, args: argparse.Namespace) -> bool:
 
 connect_parser = argparse.ArgumentParser()
 connect_parser.add_argument("--num_clients", type=int, help="The number of clients expected to connect", default=1)
-connect_parser.add_argument("--port", type=int, help="Selects the port to establish the connection", default=8888)
+connect_parser.add_argument("--control_port", type=int, help="Selects the port to establish the connection", default=8888)
+connect_parser.add_argument("--acq_port", type=int, help="Selects the port to establish the acquisition connection", default=8889)
 
 @cmd2.with_argparser(connect_parser)
 @cmd2.with_category("Connection Commands")
 def do_connect(self, args: argparse.Namespace) -> None:
-    """Wait for one or more clients to connect through the control plane."""
+    """Wait for one or more clients to connect through the control and acquisition planes."""
 
     requested_clients = args.num_clients
 
@@ -331,23 +332,37 @@ def do_connect(self, args: argparse.Namespace) -> None:
         logger.warning(f"Invalid num_clients value: {requested_clients}")
         return
 
-    listener_was_running = (
+    control_listener_was_running = (
         self.control_manager.listener_thread is not None
         and self.control_manager.listener_thread.is_alive()
     )
 
-    if listener_was_running:
+    acq_listener_was_running = (
+        self.acq_manager.acq_listener_thread is not None
+        and self.acq_manager.acq_listener_thread.is_alive()
+    )
+
+    if control_listener_was_running:
         self.poutput("Stopping control listener temporarily to accept new handshakes...")
         self.control_manager.stop_listener()
 
+    if acq_listener_was_running:
+        self.poutput("Stopping acquisition listener temporarily to accept new handshakes...")
+        self.acq_manager.stop_listener()
+
     if self.control_manager.socket is None:
-        started = self.control_manager.start_connection(port=args.port)
+        started = self.control_manager.start_connection(port=args.control_port)
         if not started:
             self.poutput("Failed to start control connection.")
-            logger.error(f"Failed to start control connection on port {args.port}")
+            logger.error(
+                f"Failed to start control connection on port {args.control_port}"
+            )
 
-            if listener_was_running:
+            if control_listener_was_running:
                 self.control_manager.start_listener()
+
+            if acq_listener_was_running:
+                self.acq_manager.start_listener()
 
             return
 
@@ -362,28 +377,88 @@ def do_connect(self, args: argparse.Namespace) -> None:
         f"Currently connected: {already_connected}."
     )
 
-    self.control_manager.handshake()
+    control_ready = self.control_manager.handshake()
 
     connected = self.control_manager.list_connected_clients()
     decoded_clients = [cid.decode(errors="ignore") for cid in connected]
 
-    if connected:
-        self.poutput(
-            f"Control plane ready with {len(connected)}/{target_total} client(s)."
-        )
-        self.poutput(f"Connected clients: {decoded_clients}")
-        logger.info(
-            f"Control plane ready with {len(connected)}/{target_total} clients: {decoded_clients}"
-        )
-    else:
+    if not control_ready or not connected:
         self.poutput("No clients connected.")
-        logger.warning("No clients connected after connect command.")
+        logger.warning("No clients connected after control-plane handshake.")
+
+        if control_listener_was_running:
+            self.control_manager.start_listener()
+
+        if acq_listener_was_running:
+            self.acq_manager.start_listener()
+
+        return
+
+    self.poutput(
+        f"Control plane ready with {len(connected)}/{target_total} client(s)."
+    )
+    self.poutput(f"Connected clients: {decoded_clients}")
+
+    logger.info(
+        f"Control plane ready with {len(connected)}/{target_total} clients: "
+        f"{decoded_clients}"
+    )
+
+    if self.acq_manager.socket is None:
+        started = self.acq_manager.start_connection(port=args.acq_port)
+        if not started:
+            self.poutput("Failed to start acquisition connection.")
+            logger.error(
+                f"Failed to start acquisition connection on port {args.acq_port}"
+            )
+
+            if control_listener_was_running:
+                self.control_manager.start_listener()
+
+            if acq_listener_was_running:
+                self.acq_manager.start_listener()
+
+            return
+
+    self.acq_manager.clear_queues()
+
+    self.poutput("Starting acquisition-plane handshake...")
+
+    acq_ready = self.acq_manager.handshake()
+
+    if not acq_ready:
+        self.poutput("Acquisition plane handshake failed.")
+        logger.error("Acquisition plane handshake failed.")
+
+        if control_listener_was_running:
+            self.control_manager.start_listener()
+
+        if acq_listener_was_running:
+            self.acq_manager.start_listener()
+
+        return
+
+    self.poutput(
+        f"Acquisition plane ready with "
+        f"{len(self.acq_manager.acquisition_clients)}/{len(connected)} client(s)."
+    )
+
+    logger.info(
+        f"Acquisition plane ready with "
+        f"{len(self.acq_manager.acquisition_clients)}/{len(connected)} clients."
+    )
 
     self.control_manager.clear_queues()
+    self.acq_manager.clear_queues()
 
     if not self.control_manager.start_listener():
         logger.error("Failed to start control listener")
         self.poutput("Failed to start control listener")
+        return
+
+    if not self.acq_manager.start_listener():
+        logger.error("Failed to start acquisition listener")
+        self.poutput("Failed to start acquisition listener")
         return
 
 #####################################

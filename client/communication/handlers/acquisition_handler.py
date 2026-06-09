@@ -30,7 +30,7 @@ def handle_set_acq_mode_sync(manager, message):
         f"Received acquisition mode sync request: {new_mode}"
     )
 
-    success = manager.acquisition_service.apply_acquisition_mode(
+    success = manager.runtime.acquisition_service.apply_acquisition_mode(
         new_mode=new_mode,
         acq_info=acq_info,
         pe_thr=pe_thr,

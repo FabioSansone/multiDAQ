@@ -15,7 +15,7 @@ def handle_rc_start_acquisition_mode(manager, message):
         status=message.status,
     )
 
-    rc_response = manager.rc_service.execute_response(
+    rc_response = manager.runtime.rc_service.execute_response(
         rc_request=rc_request,
         priority=RCMessagePriority.CONTROL,
         timeout_s=timeout_s,
