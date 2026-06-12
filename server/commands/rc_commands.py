@@ -18,6 +18,25 @@ rc_subparsers = rc_parser.add_subparsers(
     required=True,
 )
 
+read_parser = rc_subparsers.add_parser("read")
+read_parser.add_argument(
+    "address",
+    type=int,
+    help="RC register address to read",
+)
+
+write_parser = rc_subparsers.add_parser("write")
+write_parser.add_argument(
+    "address",
+    type=int,
+    help="RC register address to write",
+)
+write_parser.add_argument(
+    "value",
+    type=int,
+    help="Value to write into the RC register",
+)
+
 start_parser = rc_subparsers.add_parser("start")
 start_parser.add_argument(
     "--channels",
@@ -52,6 +71,8 @@ def do_rc(self, args: argparse.Namespace) -> None:
         "start": "rc_acq_start",
         "reset": "rc_reset",
         "boot": "rc_boot",
+        "read": "rc_read_register",
+        "write": "rc_write_register",
     }
 
     command = command_map[args.parameter]
@@ -62,13 +83,30 @@ def do_rc(self, args: argparse.Namespace) -> None:
         self.poutput("No connected clients.")
         return
 
+    if args.parameter == "read":
+        payload = {
+            "address": args.address,
+        }
+        timeout_s = 35.0
+
+    elif args.parameter == "write":
+        payload = {
+            "address": args.address,
+            "value": args.value,
+        }
+        timeout_s = 35.0
+
+    else:
+        payload = {
+            "channels": args.channels,
+        }
+        timeout_s = 35.0
+
     for client_id in client_ids:
         rc_command = self.control_manager.message_handler.create_command(
             channel=Channel.RC,
             command=command,
-            payload={
-                "channels": args.channels,
-            },
+            payload=payload,
             sender="server",
         )
 
@@ -77,7 +115,7 @@ def do_rc(self, args: argparse.Namespace) -> None:
         reply, reason = self.control_manager.wait_for_reply(
             client_id=client_id,
             in_reply_to=rc_command.request_id,
-            timeout_s=35.0,
+            timeout_s=timeout_s,
         )
 
         client_name = client_id.decode(errors="ignore")
@@ -93,6 +131,46 @@ def do_rc(self, args: argparse.Namespace) -> None:
         status = payload.get("status")
         result = payload.get("result", {})
         error = payload.get("error")
+
+        if args.parameter == "read":
+            value = result.get("value")
+            address = result.get("address", args.address)
+
+            if status != "ok":
+                logger.error(
+                    f"RC read register failed for client {client_name}: {error}"
+                )
+                self.poutput(
+                    f"Client {client_name}: failed to read register {address}."
+                )
+                if error:
+                    self.poutput(f"Client {client_name}: error: {error}")
+                continue
+
+            self.poutput(
+                f"Client {client_name}: register {address} = {value}"
+            )
+            continue
+
+        if args.parameter == "write":
+            address = result.get("address", args.address)
+            value = result.get("value", args.value)
+
+            if status != "ok":
+                logger.error(
+                    f"RC write register failed for client {client_name}: {error}"
+                )
+                self.poutput(
+                    f"Client {client_name}: failed to write register {address}."
+                )
+                if error:
+                    self.poutput(f"Client {client_name}: error: {error}")
+                continue
+
+            self.poutput(
+                f"Client {client_name}: register {address} written with value {value}"
+            )
+            continue
 
         failed = result.get("failed_channels", [])
 

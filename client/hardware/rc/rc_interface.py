@@ -63,6 +63,44 @@ class RC:
 
         else:
             return False
+        
+
+    def read_register(self, address: int) -> dict:
+        value = self.read(address)
+
+        if value is None:
+            return {
+                "success": False,
+                "address": address,
+                "value": None,
+                "message": f"Failed to read register {address}",
+            }
+
+        return {
+            "success": True,
+            "address": address,
+            "value": value,
+            "message": f"Register {address} read successfully",
+        }
+
+
+    def write_register(self, address: int, value: int) -> dict:
+        success = self.write(address, value)
+
+        if not success:
+            return {
+                "success": False,
+                "address": address,
+                "value": value,
+                "message": f"Failed to write register {address}",
+            }
+
+        return {
+            "success": True,
+            "address": address,
+            "value": value,
+            "message": f"Register {address} written successfully",
+        }
     
     def reset_channel(self, channel: int) -> dict:
         """
@@ -128,28 +166,67 @@ class RC:
 
     def reset(self, channels):
         """
-        Reset of different or all channels
+        Reset selected channels.
+        Only selected channels are reset.
         """
-        channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
-        
-        results = []
+        channel_list = channels_definition(
+            channels=channels,
+            n_channels=self.num_channels,
+        )
+
+        if not channel_list:
+            return {
+                "success": False,
+                "reset_channels": [],
+                "failed_channels": [],
+                "message": "No valid channels selected",
+            }
+
+        mask = 0
         for ch in channel_list:
-            result = self.reset_channel(ch)
-            results.append(result)
-            if result['success']:
-                self.logger.info(result['message'])
-            else:
-                self.logger.warning(result['message'])
-        
-        success_count = sum(1 for r in results if r['success'])
-        
-        reset_channels = [r['channel'] for r in results if r['success']]
-        failed_channels = [r['channel'] for r in results if not r['success']]
-        
+            if not self.checkChannelsBoundary(ch):
+                return {
+                    "success": False,
+                    "reset_channels": [],
+                    "failed_channels": [ch],
+                    "message": f"Invalid channel {ch}",
+                }
+
+            mask |= 1 << ch
+
+        reg0 = self.read(0)
+        reg1 = self.read(1)
+
+        if reg0 is None or reg1 is None:
+            return {
+                "success": False,
+                "reset_channels": [],
+                "failed_channels": channel_list,
+                "register_mask": mask,
+                "message": "Failed to read RC registers 0/1",
+            }
+
+        new_reg0 = reg0 & ~mask
+        new_reg1 = reg1 & ~mask
+
+        ok0 = self.write(0, new_reg0)
+        ok1 = self.write(1, new_reg1)
+
+        if ok0 and ok1:
+            return {
+                "success": True,
+                "reset_channels": channel_list,
+                "failed_channels": [],
+                "register_mask": mask,
+                "message": f"Channels {channel_list} reset",
+            }
+
         return {
-            'success': success_count > 0,
-            'reset_channels': reset_channels,
-            'failed_channels': failed_channels
+            "success": False,
+            "reset_channels": [],
+            "failed_channels": channel_list,
+            "register_mask": mask,
+            "message": f"Write failed for channels {channel_list}",
         }
     
     def boot_channel(self, channel) -> dict:

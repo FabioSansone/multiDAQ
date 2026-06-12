@@ -124,6 +124,78 @@ def command_reset(
     )
 
 
+def command_read_register(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    address = rc_request.payload.get("address")
+
+    if address is None:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error="Missing RC register address",
+        )
+
+    result = rc_interface.read_register(
+        address=address,
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix=f"Failed to read RC register {address}",
+    )
+
+
+def command_write_register(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    address = rc_request.payload.get("address")
+    value = rc_request.payload.get("value")
+
+    if address is None:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error="Missing RC register address",
+        )
+
+    if value is None:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error="Missing RC register value",
+        )
+
+    result = rc_interface.write_register(
+        address=address,
+        value=value,
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix=f"Failed to write RC register {address}",
+    )
+
+
 def command_free_rate_monitoring(
     protocol_version: int,
     rc_interface: RC,
@@ -244,6 +316,10 @@ COMMAND_HANDLERS = {
     "rc_acq_start": command_start_acquisition_mode,
     "rc_boot": command_boot_mode,
     "rc_reset": command_reset,
+
+    "rc_read_register": command_read_register,
+    "rc_write_register": command_write_register,
+
     "rc_free_rate_monitoring": command_free_rate_monitoring,
     "rc_trg_rate_monitoring": command_trg_rate_monitoring,
     "rc_all_rate_monitoring": command_all_rate_monitoring,

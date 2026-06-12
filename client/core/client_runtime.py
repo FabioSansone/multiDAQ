@@ -6,6 +6,7 @@ from client.hardware.hv.hv_service import HVService
 from client.hardware.rc.rc_service import RCService
 from client.hardware.evproducer.ev_service import EVService
 from client.acquisition.acquisition_service import AcquisitionService
+from common.message_handler import MessageStatus
 
 
 class ClientRunTime:
@@ -58,7 +59,7 @@ class ClientRunTime:
             return True
 
         try:
-            self.hv_service = HVService(hv_port=self.hv_port)
+            self.hv_service = HVService(hv_port=self.hv_port, state_change_callback=self.sync_rc_register_19_with_hv,)
             self.logger.info("HVService initialized")
             return True
 
@@ -78,6 +79,48 @@ class ClientRunTime:
             self.logger.error(f"Error while stopping HVService: {e}")
         finally:
             self.hv_service = None
+    
+    def sync_rc_register_19_with_hv(self) -> bool:
+        if self.hv_service is None:
+            self.logger.warning("Cannot sync RC register 19: HVService unavailable")
+            return False
+
+        ok_channels = set(self.hv_service.hv.getOkChannels())
+        on_channels = set(self.hv_service.hv.getOnChannels())
+
+        hv_enabled_channels = sorted(ok_channels & on_channels)
+
+        rc_channels = [ch - 1 for ch in hv_enabled_channels]
+
+        mask = 0
+        for ch in rc_channels:
+            if ch < 0 or ch >= 7:
+                self.logger.error(f"Invalid RC channel derived from HV: {ch}")
+                return False
+
+            mask |= 1 << ch
+
+        response = self.rc_service._submit_command(
+            command="rc_write_register",
+            payload={
+                "address": 19,
+                "value": mask,
+            },
+            sender="client_runtime_rc19_sync",
+        )
+
+        if response.status != MessageStatus.OK:
+            self.logger.error(
+                f"Failed to sync RC register 19 with HV state: {response.error}"
+            )
+            return False
+
+        self.logger.info(
+            f"RC register 19 synchronized with HV OK+ON channels: "
+            f"hv_channels={hv_enabled_channels}, rc_channels={rc_channels}, mask={mask}"
+        )
+
+        return True
 
     def set_acquisition_mode(
         self,

@@ -17,7 +17,14 @@ COMMAND_MAP = {
     "set_acquisition_configuration": handle_hv_set_acquisition_configuration,
     
     "set_hv_sync": handle_hv_set_hv_sync,
+
+    "hv_on_and_wait": handle_hv_set_on_and_wait,
     
     #RC Handlert
     "rc_acq_start": handle_rc_start_acquisition_mode,
+    "rc_boot": handle_rc_boot_mode,
+    "rc_reset": handle_rc_reset,
+
+    "rc_read_register": handle_rc_read_register,
+    "rc_write_register": handle_rc_write_register,
 }

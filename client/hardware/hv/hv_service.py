@@ -25,7 +25,7 @@ class HVService:
     RECOVERY_CHECK_DEADLINE_S = 30.0
     POWER_CHECK_PERIOD_S = 300.0
 
-    def __init__(self, hv_port: str):
+    def __init__(self, hv_port: str, state_change_callback=None):
         self.logger = get_logger("hv_service")
         self.logger.debug("HV Service Initialized")
 
@@ -44,7 +44,21 @@ class HVService:
         self.safety_check_pending = False
         self.recovery_check_pending = False
         self.power_check_pending = False
-        self.pending_lock = threading.Lock()    
+        self.pending_lock = threading.Lock()  
+
+        self.state_change_callback = state_change_callback
+
+
+    def _notify_state_change(self, source: str, result: dict) -> None:
+        if self.state_change_callback is None:
+            return
+
+        try:
+            self.state_change_callback()
+        except Exception as e:
+            self.logger.error(
+                f"Error while synchronizing RC register 19 after {source}: {e}"
+            )
         
     def _submit_command(self, *, command: str, payload: dict, sender: str, priority: HVMessagePriority = HVMessagePriority.CONTROL, timeout_s: float = 35.0,) -> HVResponse:
         hv_request = HVRequest(
@@ -173,6 +187,20 @@ class HVService:
 
                 response = self._execute_response(hv_request)
                 self._hv_warnings(hv_request, response)
+
+                if hv_request.command in {
+                    "hv_on",
+                    "hv_off",
+                    "hv_on_and_wait",
+                    "set_hv_sync",
+                    "check_channel_safety",
+                    "check_channel_power",
+                    "check_recovery_bad",
+                }:
+                    self._notify_state_change(
+                        source=hv_request.command,
+                        result=response.result or {},
+    )
 
                 if hv_request.response_queue is not None:
                     hv_request.response_queue.put(response)

@@ -17,6 +17,9 @@ LOGGER_NAMES = {
 
     #Acquisition
     'acquisition_manager': 'server.comm.acq',
+
+    #Receiver
+    'data_receiver': 'server.acquisition.receiver',
     
     #Utils
     'json_parser': 'server.utils.json',
@@ -25,6 +28,7 @@ LOGGER_NAMES = {
     'generic_commands': 'server.commands.generic',
     'hv_commands': 'server.commands.hv',
     'rc_commands': 'server.commands.rc',
+    'acq_commands': 'server.commands.acq',
 
     #Main Application
     'app': 'server.app'

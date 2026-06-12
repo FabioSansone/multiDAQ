@@ -3,6 +3,7 @@ from client.hardware.hv.hvmodbus import HVModBus
 from client.utils.logger import get_logger
 import threading
 from typing import List
+import time
 
 
 
@@ -683,6 +684,135 @@ class HV:
             "recovered_on_channels": recovered_on,
             "recovered_off_channels": recovered_off,
             "still_bad_channels": still_bad,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+        }
+    
+
+    def on_and_wait(self, channels: List[int] | str | int, timeout_s: float = 240.0, poll_s: float = 2.0):
+        list_channels_selected = self.hv_channels_definition(
+            channels=channels,
+        )
+
+        ok_ch_set = set(self.getOkChannels())
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        power_on_successful = []
+        failed_channels = []
+        up_channels = []
+
+        for ch in channels_good_selected:
+            try:
+                self.hv.powerOn(slave=ch)
+                power_on_successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem powering on channel {ch}: {e}")
+
+                try:
+                    self.hv.reset(slave=ch)
+                    self.hv.powerOff(slave=ch)
+                except Exception as shutdown_error:
+                    self.logger.error(
+                        f"Problem forcing channel {ch} off after power-on failure: "
+                        f"{shutdown_error}"
+                    )
+
+                failed_channels.append(ch)
+                self.moveToBad(ch)
+
+        pending_channels = [
+            ch for ch in power_on_successful
+            if ch not in failed_channels
+        ]
+
+        deadline = time.time() + timeout_s
+
+        while pending_channels and time.time() < deadline:
+            for ch in list(pending_channels):
+                try:
+                    status = self.hv.getStatus(slave=ch)
+                    alarm = self.hv.getAlarm(slave=ch)
+
+                    if status == "UP":
+                        self.moveToOn(ch)
+                        up_channels.append(ch)
+                        pending_channels.remove(ch)
+
+                    elif status == "TRIP" or alarm in {"OV", "UV", "OC", "UC"}:
+                        self.logger.error(
+                            f"Channel {ch} unsafe while waiting for UP: "
+                            f"status={status}, alarm={alarm}"
+                        )
+
+                        try:
+                            self.hv.reset(slave=ch)
+                            self.hv.powerOff(slave=ch)
+                        except Exception as shutdown_error:
+                            self.logger.error(
+                                f"Problem resetting/off channel {ch} after unsafe state: "
+                                f"{shutdown_error}"
+                            )
+
+                        failed_channels.append(ch)
+                        self.moveToBad(ch)
+                        pending_channels.remove(ch)
+
+                except Exception as e:
+                    self.logger.error(
+                        f"Problem checking UP state for channel {ch}: {e}"
+                    )
+
+                    try:
+                        self.hv.reset(slave=ch)
+                        self.hv.powerOff(slave=ch)
+                    except Exception as shutdown_error:
+                        self.logger.error(
+                            f"Problem resetting/off channel {ch} after read failure: "
+                            f"{shutdown_error}"
+                        )
+
+                    failed_channels.append(ch)
+                    self.moveToBad(ch)
+                    pending_channels.remove(ch)
+
+            if pending_channels:
+                time.sleep(poll_s)
+
+        if pending_channels:
+            for ch in pending_channels:
+                self.logger.error(
+                    f"Timeout waiting for channel {ch} to reach UP state"
+                )
+
+                try:
+                    self.hv.reset(slave=ch)
+                    self.hv.powerOff(slave=ch)
+                except Exception as shutdown_error:
+                    self.logger.error(
+                        f"Problem resetting/off channel {ch} after timeout: "
+                        f"{shutdown_error}"
+                    )
+
+                failed_channels.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": sorted(up_channels),
+            "up_channels": sorted(up_channels),
+            "failed_channels": sorted(set(failed_channels)),
             "bad_channels": self.getBadChannels(),
             "ok_channels": self.getOkChannels(),
             "on_channels": self.getOnChannels(),

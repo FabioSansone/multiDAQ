@@ -9,6 +9,7 @@ from server.utils.logger import get_logger, LoggerManager
 from server.commands import app_commands, hv_commands, rc_commands
 from server.communication.control_manager import ControlPlaneManager
 from server.communication.acquisition_manager import AcquisitionPlaneManager
+from server.acquisition.receiver_service import DataReceiverService
 from common.constants import ACQUISITION_MODES
 from server.core.server_state import ServerState
 
@@ -26,6 +27,7 @@ class Server(cmd2.Cmd):
         self.mode = acquisition_mode
         self.control_manager = control_manager
         self.acq_manager = acquisition_manager
+        self.data_receiver_service = DataReceiverService()
 
         self.prompt = f"Server[{self.mode}]> "
 

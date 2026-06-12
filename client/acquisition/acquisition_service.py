@@ -44,21 +44,45 @@ class AcquisitionService:
         self.logger.error(f"Unhandled acquisition mode: {new_mode}")
         return False
 
+    def _submit_hv_command(
+        self,
+        command: str,
+        payload: dict,
+        timeout_s: float,
+    ) -> bool:
+        runtime = self.runtime
+
+        if runtime.hv_service is None:
+            self.logger.error(
+                f"Cannot execute HV command {command}: HVService unavailable"
+            )
+            return False
+
+        response = runtime.hv_service._submit_command(
+            command=command,
+            payload=payload,
+            sender="client_acquisition_service",
+            timeout_s=timeout_s,
+        )
+
+        if response.status != MessageStatus.OK:
+            self.logger.error(
+                f"HV command {command} failed: {response.error}"
+            )
+            return False
+
+        return True
+
     def _apply_test_mode(self) -> bool:
         runtime = self.runtime
 
         if runtime.hv_service is not None:
-            response = runtime.hv_service._submit_command(
+            if not self._submit_hv_command(
                 command="hv_off",
                 payload={"channels": "all"},
-                sender="client_acquisition_service",
                 timeout_s=90.0,
-            )
-
-            if response.status != MessageStatus.OK:
-                self.logger.error(
-                    f"HV off failed before test mode: {response.error}"
-                )
+            ):
+                self.logger.error("HV off failed before test mode")
                 return False
 
             runtime.stop_hv_service()
@@ -93,17 +117,26 @@ class AcquisitionService:
 
         runtime.hv_service.start()
 
-        runtime.hv_service._submit_command(
+        if not self._submit_hv_command(
             command="set_common_voltage",
             payload={"channels": "all", "common_voltage": 1200},
-            sender="client_acquisition_service",
-        )
+            timeout_s=35.0,
+        ):
+            return False
 
-        runtime.hv_service._submit_command(
+        if not self._submit_hv_command(
             command="set_common_threshold",
             payload={"channels": "all", "common_threshold": 400},
-            sender="client_acquisition_service",
-        )
+            timeout_s=35.0,
+        ):
+            return False
+
+        if not self._submit_hv_command(
+            command="hv_on",
+            payload={"channels": "all"},
+            timeout_s=90.0,
+        ):
+            return False
 
         runtime.evproducer.start(runtime.server_ip)
 
@@ -140,14 +173,22 @@ class AcquisitionService:
 
         runtime.hv_service.start()
 
-        runtime.hv_service._submit_command(
+        if not self._submit_hv_command(
             command="set_acquisition_configuration",
             payload={
                 "channels": "all",
                 "acquisition_configuration": acq_info,
             },
-            sender="client_acquisition_service",
-        )
+            timeout_s=300.0,
+        ):
+            return False
+
+        if not self._submit_hv_command(
+            command="hv_on",
+            payload={"channels": "all"},
+            timeout_s=90.0,
+        ):
+            return False
 
         runtime.evproducer.start(runtime.server_ip)
 

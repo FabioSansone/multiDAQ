@@ -123,3 +123,11 @@ def handle_hv_set_hv_sync(manager, message):
         hv_command="set_hv_sync",
         timeout_s=90.0,
     )
+
+def handle_hv_set_on_and_wait(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="hv_on_and_wait",
+        timeout_s=300.0,
+    )

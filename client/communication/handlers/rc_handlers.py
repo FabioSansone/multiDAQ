@@ -2,15 +2,18 @@ from common.message_handler import Channel
 from client.hardware.rc.rc_messages import RCRequest, RCMessagePriority
 
 
-def handle_rc_start_acquisition_mode(manager, message):
-
-    timeout_s = 30.0
-
+def _handle_rc_command(
+    manager,
+    message,
+    *,
+    rc_command: str,
+    timeout_s: float = 30.0,
+):
     rc_request = RCRequest(
         protocol_version=message.protocol_version,
         request_id=message.request_id,
         sender="control_manager",
-        command="rc_acq_start",
+        command=rc_command,
         payload=message.payload,
         status=message.status,
     )
@@ -35,3 +38,48 @@ def handle_rc_start_acquisition_mode(manager, message):
     )
 
     manager.queue_message(reply)
+
+
+def handle_rc_start_acquisition_mode(manager, message):
+    _handle_rc_command(
+        manager,
+        message,
+        rc_command="rc_acq_start",
+        timeout_s=30.0,
+    )
+
+
+def handle_rc_boot_mode(manager, message):
+    _handle_rc_command(
+        manager,
+        message,
+        rc_command="rc_boot",
+        timeout_s=30.0,
+    )
+
+
+def handle_rc_reset(manager, message):
+    _handle_rc_command(
+        manager,
+        message,
+        rc_command="rc_reset",
+        timeout_s=30.0,
+    )
+
+
+def handle_rc_read_register(manager, message):
+    _handle_rc_command(
+        manager,
+        message,
+        rc_command="rc_read_register",
+        timeout_s=30.0,
+    )
+
+
+def handle_rc_write_register(manager, message):
+    _handle_rc_command(
+        manager,
+        message,
+        rc_command="rc_write_register",
+        timeout_s=30.0,
+    )
