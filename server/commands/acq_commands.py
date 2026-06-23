@@ -463,32 +463,71 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
     if args.command == "start":
         self.poutput("Acquisition start command received.")
 
-        enabled_channels_by_client = _enable_hv_channels(self=self)
+        client_ids = self.control_manager.server_state.list_connected_clients()
 
-        if not enabled_channels_by_client:
-            self.poutput("No HV channels available for acquisition.")
+        if not client_ids:
+            self.poutput("No connected clients.")
             return
 
-        for client_id, channels in enabled_channels_by_client.items():
-            client_name = client_id.decode(errors="ignore")
+        rc_ready_clients = []
 
-            if not channels:
-                self.poutput(
-                    f"Client {client_name}: no channels available for RC enable."
-                )
-                continue
-
-            rc_ok = _enable_rc_channels(
-                self=self,
-                channels=channels,
+        if self.mode == "test":
+            self.poutput(
+                "Server is in test mode: skipping HV sync and enabling all RC channels."
             )
 
-            if not rc_ok:
-                self.poutput(
-                    f"Client {client_name}: RC channel enable failed. "
-                    "Skipping acquisition start."
+            for client_id in client_ids:
+                client_name = client_id.decode(errors="ignore")
+
+                rc_ok = _enable_rc_channels(
+                    self=self,
+                    client_id=client_id,
+                    channels=list(range(7)),
                 )
-                continue
+
+                if not rc_ok:
+                    self.poutput(
+                        f"Client {client_name}: RC channel enable failed. "
+                        "Skipping acquisition start."
+                    )
+                    continue
+
+                rc_ready_clients.append(client_id)
+
+        else:
+            enabled_channels_by_client = _enable_hv_channels(self=self)
+
+            if not enabled_channels_by_client:
+                self.poutput("No HV channels available for acquisition.")
+                return
+
+            for client_id, channels in enabled_channels_by_client.items():
+                client_name = client_id.decode(errors="ignore")
+
+                if not channels:
+                    self.poutput(
+                        f"Client {client_name}: no channels available for RC enable."
+                    )
+                    continue
+
+                rc_ok = _enable_rc_channels(
+                    self=self,
+                    client_id=client_id,
+                    channels=channels,
+                )
+
+                if not rc_ok:
+                    self.poutput(
+                        f"Client {client_name}: RC channel enable failed. "
+                        "Skipping acquisition start."
+                    )
+                    continue
+
+                rc_ready_clients.append(client_id)
+
+        if not rc_ready_clients:
+            self.poutput("No clients ready for acquisition.")
+            return
 
         receiver_info = self.data_receiver_service.start(
             duration=args.duration,
@@ -554,4 +593,3 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
 
         self.poutput("Final flush completed.")
         return
-
