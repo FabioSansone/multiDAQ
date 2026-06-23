@@ -6,7 +6,7 @@ import cmd2
 import zmq
 
 from server.utils.logger import get_logger, LoggerManager
-from server.commands import app_commands, hv_commands, rc_commands
+from server.commands import app_commands, hv_commands, rc_commands, acq_commands
 from server.communication.control_manager import ControlPlaneManager
 from server.communication.acquisition_manager import AcquisitionPlaneManager
 from server.acquisition.receiver_service import DataReceiverService
@@ -43,6 +43,9 @@ class Server(cmd2.Cmd):
         
         #RC COMMANDS#
         self.do_rc = rc_commands.do_rc.__get__(self, Server)
+
+        #GENERIC ACQ COMMANDS#
+        self.do_acquire = acq_commands.do_acquisition.__get__(self, Server)
 
         #EVENT MESSAGES MANAGER#
         self.handle_event = app_commands.handle_event.__get__(self, Server)

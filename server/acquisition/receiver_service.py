@@ -186,6 +186,7 @@ class DataReceiverService:
                     str(self.evr_exe),
                     str(filepath),
                     duration_arg,
+                    "0"
                 ]
             )
 
@@ -241,4 +242,57 @@ class DataReceiverService:
             "pid": self.process.pid if self.is_running() else None,
             "file": str(self.current_file) if self.current_file else None,
             "folder": str(self.current_folder) if self.current_folder else None,
+        }
+    
+
+    def start_flush(
+        self,
+        duration: int | float | None = None,
+    ) -> dict | None:
+
+        if self.is_running():
+            self.logger.error(
+                f"Cannot start flush service: already running with PID {self.process.pid}"
+            )
+            return None
+
+        if not self.receiver_ready:
+            self.logger.error(
+                "Cannot start flush service: evreceiver unavailable"
+            )
+            return None
+
+        if self.current_file is None:
+            self.logger.error(
+                "Cannot start flush service: no acquisition file available"
+            )
+            return None
+
+        duration_arg = str(duration if duration is not None else -1)
+
+        self.logger.info(
+            f"Starting flushing of last data: "
+            f"file={self.current_file}, duration={duration_arg}"
+        )
+
+        try:
+            self.process = subprocess.Popen(
+                [
+                    str(self.evr_exe),
+                    str(self.current_file),
+                    duration_arg,
+                    "1"
+                ]
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to start flushing: {e}")
+            self.process = None
+            return None
+
+        return {
+            "pid": self.process.pid,
+            "file": str(self.current_file),
+            "folder": str(self.current_folder),
+            "duration": duration,
         }

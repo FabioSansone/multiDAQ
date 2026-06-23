@@ -1,6 +1,8 @@
 import argparse
 import cmd2
 from typing import List
+import time
+import threading
 from server.utils.logger import get_logger
 from common.message_handler import Channel
 
@@ -30,6 +32,88 @@ def _send_hv_command(self, client_id: bytes, command: str, payload: dict, timeou
         in_reply_to=hv_command.request_id,
         timeout_s=timeout_s,
     )
+
+
+
+def _send_rc_command(self, client_id: bytes, command: str, payload: dict, timeout_s: float):
+    rc_command = self.control_manager.message_handler.create_command(
+        channel=Channel.RC,
+        command=command,
+        payload=payload,
+        sender="server",
+    )
+
+    self.control_manager.queue_message(client_id, rc_command)
+
+    return self.control_manager.wait_for_reply(
+        client_id=client_id,
+        in_reply_to=rc_command.request_id,
+        timeout_s=timeout_s,
+    )
+
+
+def _read_rc_register(self, client_id: bytes, address: int) -> int | None:
+    client_name = client_id.decode(errors="ignore")
+
+    reply, reason = _send_rc_command(
+        self=self,
+        client_id=client_id,
+        command="rc_read_register",
+        payload={"address": address},
+        timeout_s=35.0,
+    )
+
+    if reply is None:
+        logger.error(f"RC read register {address} failed for client {client_name}: {reason}")
+        self.poutput(f"Client {client_name}: no reply while reading RC register {address} ({reason})")
+        return None
+
+    payload = reply.payload or {}
+    status = payload.get("status")
+    result = payload.get("result", {})
+    error = payload.get("error")
+
+    if status != "ok":
+        logger.error(f"RC read register {address} failed for client {client_name}: {error}")
+        self.poutput(f"Client {client_name}: failed to read RC register {address}")
+        if error:
+            self.poutput(f"Client {client_name}: error: {error}")
+        return None
+
+    return result.get("value")
+
+
+def _write_rc_register(self, client_id: bytes, address: int, value: int) -> bool:
+    client_name = client_id.decode(errors="ignore")
+
+    reply, reason = _send_rc_command(
+        self=self,
+        client_id=client_id,
+        command="rc_write_register",
+        payload={
+            "address": address,
+            "value": value,
+        },
+        timeout_s=35.0,
+    )
+
+    if reply is None:
+        logger.error(f"RC write register {address} failed for client {client_name}: {reason}")
+        self.poutput(f"Client {client_name}: no reply while writing RC register {address} ({reason})")
+        return False
+
+    payload = reply.payload or {}
+    status = payload.get("status")
+    error = payload.get("error")
+
+    if status != "ok":
+        logger.error(f"RC write register {address} failed for client {client_name}: {error}")
+        self.poutput(f"Client {client_name}: failed to write RC register {address}")
+        if error:
+            self.poutput(f"Client {client_name}: error: {error}")
+        return False
+
+    return True
 
 
 def _enable_hv_channels(self) -> dict[bytes, List[int]]:
@@ -184,22 +268,12 @@ def _enable_hv_channels(self) -> dict[bytes, List[int]]:
 
     return enabled_channels_by_client
 
-def _enable_rc_channels(self, channels: List[int]) -> bool:
-    """
-    Enable selected RC acquisition channels by writing register 19.
-
-    Channels are expected in external numbering: 0..6.
-    """
-
-    client_ids = self.control_manager.server_state.list_connected_clients()
-
-    if not client_ids:
-        self.poutput("No connected clients.")
-        return False
+def _enable_rc_channels(self, client_id: bytes, channels: List[int]) -> bool:
+    client_name = client_id.decode(errors="ignore")
 
     if not channels:
-        self.poutput("No RC channels selected for acquisition.")
-        logger.warning("Cannot enable RC channels: empty channel list")
+        self.poutput(f"Client {client_name}: no RC channels selected for acquisition.")
+        logger.warning(f"Cannot enable RC channels for client {client_name}: empty channel list")
         return False
 
     register_address = 19
@@ -207,94 +281,114 @@ def _enable_rc_channels(self, channels: List[int]) -> bool:
 
     for ch in channels:
         if ch < 0 or ch >= 7:
-            self.poutput(f"Invalid RC channel: {ch}")
+            self.poutput(f"Client {client_name}: invalid RC channel: {ch}")
             logger.error(f"Invalid RC channel requested for acquisition: {ch}")
             return False
 
         register_value |= 1 << ch
 
-    command = "rc_write_register"
-    payload = {
-        "address": register_address,
-        "value": register_value,
-    }
-    timeout_s = 35.0
+    ok = _write_rc_register(
+        self=self,
+        client_id=client_id,
+        address=register_address,
+        value=register_value,
+    )
 
-    successful_clients = 0
-    failed_clients = 0
+    if not ok:
+        self.poutput(f"Client {client_name}: failed to enable RC channels.")
+        return False
+
+    self.poutput(
+        f"Client {client_name}: RC register {register_address} written with "
+        f"value {register_value} (enabled channels: {channels})"
+    )
+
+    return True
+
+
+def _disable_rc_channels(self) -> None:
+    client_ids = self.control_manager.server_state.list_connected_clients()
 
     for client_id in client_ids:
         client_name = client_id.decode(errors="ignore")
 
-        rc_command = self.control_manager.message_handler.create_command(
-            channel=Channel.RC,
-            command=command,
-            payload=payload,
-            sender="server",
-        )
-
-        self.control_manager.queue_message(client_id, rc_command)
-
-        reply, reason = self.control_manager.wait_for_reply(
+        ok = _write_rc_register(
+            self=self,
             client_id=client_id,
-            in_reply_to=rc_command.request_id,
-            timeout_s=timeout_s,
+            address=19,
+            value=0,
         )
 
-        if reply is None:
-            failed_clients += 1
-            logger.error(
-                f"RC channel enable failed for client {client_name}: {reason}"
-            )
-            self.poutput(f"Client {client_name}: no reply ({reason})")
-            continue
+        if ok:
+            self.poutput(f"Client {client_name}: RC acquisition channels disabled.")
+        else:
+            self.poutput(f"Client {client_name}: failed to disable RC acquisition channels.")
 
-        reply_payload = reply.payload or {}
-        status = reply_payload.get("status")
-        result = reply_payload.get("result", {})
-        error = reply_payload.get("error")
 
-        if status != "ok":
-            failed_clients += 1
-            logger.error(
-                f"RC channel enable failed for client {client_name}: {error}"
-            )
-            self.poutput(
-                f"Client {client_name}: failed to write RC register {register_address}."
-            )
 
-            if error:
-                self.poutput(f"Client {client_name}: error: {error}")
+def _flush_client(self, client_id: bytes) -> bool:
+    client_name = client_id.decode(errors="ignore")
 
-            continue
+    read_prev = _read_rc_register(
+        self=self,
+        client_id=client_id,
+        address=15,
+    )
 
-        written_address = result.get("address", register_address)
-        written_value = result.get("value", register_value)
-
-        successful_clients += 1
-
-        self.poutput(
-            f"Client {client_name}: RC register {written_address} "
-            f"written with value {written_value} "
-            f"(enabled channels: {channels})"
-        )
-
-        logger.info(
-            f"Enabled RC acquisition channels for client {client_name}: "
-            f"channels={channels}, register={written_address}, value={written_value}"
-        )
-
-    if successful_clients == 0:
-        self.poutput("Failed to enable RC channels on all clients.")
+    if read_prev is None:
+        self.poutput(f"Client {client_name}: flush skipped, no valid read from register 15.")
         return False
 
-    if failed_clients > 0:
-        self.poutput(
-            f"Warning: RC channels enabled on {successful_clients} client(s), "
-            f"failed on {failed_clients} client(s)."
+    if not _write_rc_register(
+        self=self,
+        client_id=client_id,
+        address=15,
+        value=read_prev + 32,
+    ):
+        self.poutput(f"Client {client_name}: flush failed while writing register 15.")
+        return False
+
+    time.sleep(1.0)
+
+    read_now = _read_rc_register(
+        self=self,
+        client_id=client_id,
+        address=15,
+    )
+
+    if read_now is None:
+        self.poutput(f"Client {client_name}: flush failed, missing final read.")
+        return False
+
+    if read_now - read_prev - 32 == 64:
+        self.poutput(f"Client {client_name}: data flushing ended successfully.")
+
+        _write_rc_register(
+            self=self,
+            client_id=client_id,
+            address=15,
+            value=read_prev,
         )
 
-    return True
+        return True
+
+    self.poutput(f"Client {client_name}: flush error. Please check.")
+    logger.error(
+        f"Flush check failed for client {client_name}: "
+        f"prev={read_prev}, now={read_now}"
+    )
+
+    return False
+
+
+def _flush_clients(self, client_ids: List[bytes]) -> None:
+    time.sleep(10.0)
+
+    for client_id in client_ids:
+        _flush_client(
+            self=self,
+            client_id=client_id,
+        )
 
 ########################
 # ACQUISITION COMMANDS #
@@ -418,12 +512,46 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
         return
 
     if args.command == "stop":
+        client_ids = self.control_manager.server_state.list_connected_clients()
+
         stopped = self.data_receiver_service.stop()
 
         if stopped:
             self.poutput("Acquisition stopped.")
         else:
             self.poutput("Failed to stop acquisition.")
+            return
 
+        _disable_rc_channels(self=self)
+
+        if not client_ids:
+            self.poutput("No connected clients. Final flush skipped.")
+            return
+
+        self.poutput("Starting final flush receiver...")
+
+        flush_info = self.data_receiver_service.start_flush(
+            duration=40.0,
+        )
+
+        if flush_info is None:
+            self.poutput("Failed to start final flush receiver.")
+            logger.error("Failed to start final flush receiver")
+            return
+
+        flush_thread = threading.Thread(
+            target=_flush_clients,
+            args=(self, client_ids),
+            daemon=True,
+        )
+
+        flush_thread.start()
+
+        while self.data_receiver_service.is_running():
+            time.sleep(0.5)
+
+        flush_thread.join(timeout=45.0)
+
+        self.poutput("Final flush completed.")
         return
 

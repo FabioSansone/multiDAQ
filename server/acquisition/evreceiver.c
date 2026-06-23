@@ -413,5 +413,30 @@ int run(int duration, const char *output_path, int flag_flush){
 
 
 
+int main(int argc, char *argv[])
+{
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <output_path> <duration_s> [flag_flush]\n", argv[0]);
+        return 2;
+    }
+
+    const char *output_path = argv[1];
+    int duration = atoi(argv[2]);
+
+    int flag_flush = 0;
+    if (argc >= 4) {
+        flag_flush = atoi(argv[3]);
+    }
+
+    if (flag_flush != 0 && flag_flush != 1) {
+        fprintf(stderr, "Invalid flag_flush: %d. Use 0 or 1.\n", flag_flush);
+        return 2;
+    }
+
+    return run(duration, output_path, flag_flush);
+}
+
+
+
 
 
