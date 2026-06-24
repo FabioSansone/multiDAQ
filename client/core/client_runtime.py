@@ -1,5 +1,5 @@
 from typing import Optional
-
+import time
 from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
 from client.hardware.hv.hv_service import HVService
@@ -31,6 +31,10 @@ class ClientRunTime:
         self.start_thr: Optional[int | float] = None
 
         self.acquisition_service = AcquisitionService(self)
+        
+        self._last_rc19_sync_time = 0.0
+        self._last_rc19_mask = None
+        self._rc19_sync_period_s = 30.0
 
         self.logger.info("ClientRuntime initialized")
 
@@ -88,7 +92,10 @@ class ClientRunTime:
         ok_channels = set(self.hv_service.hv.getOkChannels())
         on_channels = set(self.hv_service.hv.getOnChannels())
 
-        hv_enabled_channels = sorted(ok_channels & on_channels)
+        if self.acq_mode == "test":
+            hv_enabled_channels = sorted(ok_channels)
+        else:
+            hv_enabled_channels = sorted(ok_channels & on_channels)
 
         rc_channels = [ch - 1 for ch in hv_enabled_channels]
 
@@ -99,6 +106,14 @@ class ClientRunTime:
                 return False
 
             mask |= 1 << ch
+
+        now = time.time()
+
+        if (
+            self._last_rc19_mask == mask
+            and now - self._last_rc19_sync_time < self._rc19_sync_period_s
+        ):
+            return True
 
         response = self.rc_service._submit_command(
             command="rc_write_register",
@@ -115,9 +130,13 @@ class ClientRunTime:
             )
             return False
 
+        self._last_rc19_mask = mask
+        self._last_rc19_sync_time = now
+
         self.logger.info(
-            f"RC register 19 synchronized with HV OK+ON channels: "
-            f"hv_channels={hv_enabled_channels}, rc_channels={rc_channels}, mask={mask}"
+            f"RC register 19 synchronized: "
+            f"mode={self.acq_mode}, hv_channels={hv_enabled_channels}, "
+            f"rc_channels={rc_channels}, mask={mask}"
         )
 
         return True
