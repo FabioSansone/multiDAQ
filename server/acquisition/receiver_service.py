@@ -39,6 +39,8 @@ class DataReceiverService:
             self.logger.info("DataReceiverService initialized")
         else:
             self.logger.error("DataReceiverService initialized, but evreceiver is unavailable")
+            
+        self.finalizing = False
 
     @staticmethod
     def generate_timestamp() -> str:
@@ -144,8 +146,15 @@ class DataReceiverService:
 
         self.logger.info("evreceiver compilation completed successfully")
         return True
+    
+    def is_busy(self)->bool:
+        return self.is_running() or self.finalizing
 
     def start(self, duration: int | float | None = None, suffix: str = "", acq_type: str = "test", run_id: str | int | None = None, batch_id: str | int | None = None, force_compile: bool = False) -> dict | None:
+        if self.is_busy():
+            self.logger.error("Cannot start acquisition: receiver is busy")
+            return None
+        
         if self.is_running():
             self.logger.error(
                 f"Cannot start data receiver: already running with PID {self.process.pid}"
@@ -256,6 +265,10 @@ class DataReceiverService:
             )
             return None
 
+        if self.finalizing:
+            self.logger.error("Cannot start flush service: finalization already active")
+            return None
+
         if not self.receiver_ready:
             self.logger.error(
                 "Cannot start flush service: evreceiver unavailable"
@@ -275,19 +288,22 @@ class DataReceiverService:
             f"file={self.current_file}, duration={duration_arg}"
         )
 
+        self.finalizing = True
+
         try:
             self.process = subprocess.Popen(
                 [
                     str(self.evr_exe),
                     str(self.current_file),
                     duration_arg,
-                    "1"
+                    "1",
                 ]
             )
 
         except Exception as e:
             self.logger.error(f"Failed to start flushing: {e}")
             self.process = None
+            self.finalizing = False
             return None
 
         return {
@@ -295,4 +311,9 @@ class DataReceiverService:
             "file": str(self.current_file),
             "folder": str(self.current_folder),
             "duration": duration,
+            "flag_flush": 1,
         }
+        
+        
+    def clear_finalizing(self) -> None:
+        self.finalizing = False

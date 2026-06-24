@@ -24,12 +24,6 @@ class AcquisitionService:
         self.logger.info(
             f"Applying acquisition mode change: {old_mode} -> {new_mode}"
         )
-        
-        if runtime.hv_service is not None:
-            if new_mode == "test":
-                runtime.hv_service.set_policy("monitor_only")
-            else:
-                runtime.hv_service.set_policy("full_control")
 
         if new_mode not in ACQUISITION_MODES:
             self.logger.error(f"Unknown acquisition mode: {new_mode}")
@@ -82,16 +76,14 @@ class AcquisitionService:
     def _apply_test_mode(self) -> bool:
         runtime = self.runtime
 
-        if runtime.hv_service is not None:
-            if not self._submit_hv_command(
-                command="hv_off",
-                payload={"channels": "all"},
-                timeout_s=90.0,
-            ):
-                self.logger.error("HV off failed before test mode")
-                return False
-
-            runtime.stop_hv_service()
+        if runtime.ensure_hv_service():
+            runtime.hv_service.set_policy("monitor_only")
+            runtime.hv_service.start()
+        else:
+            self.logger.warning(
+                "Test mode applied without HVService. "
+                "Acquisition will use RC fallback if needed."
+            )
 
         runtime.set_acquisition_mode(
             acq_mode="test",
@@ -120,6 +112,8 @@ class AcquisitionService:
         if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply calibration mode: HVService unavailable")
             return False
+        
+        runtime.hv_service.set_policy("full_control")
 
         runtime.hv_service.start()
 
@@ -176,6 +170,8 @@ class AcquisitionService:
         if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply multipmt mode: HVService unavailable")
             return False
+        
+        runtime.hv_service.set_policy("full_control")
 
         runtime.hv_service.start()
 

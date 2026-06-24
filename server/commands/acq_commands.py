@@ -515,7 +515,7 @@ def _finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
         self.poutput("Starting final flush receiver...")
 
         flush_info = self.data_receiver_service.start_flush(
-            duration=40.0,
+            duration=20.0,
         )
 
         if flush_info is None:
@@ -534,7 +534,9 @@ def _finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
         while self.data_receiver_service.is_running():
             time.sleep(0.5)
 
-        flush_thread.join(timeout=45.0)
+        flush_thread.join(timeout=10.0)
+        
+        self.data_receiver_service.clear_finalizing()
 
         self.poutput("Final flush completed.")
         logger.info("Final flush completed")
