@@ -16,6 +16,18 @@ from common.message_handler import MessageStatus
 from client.hardware.hv.hv_commands import COMMAND_HANDLERS
 
 
+HV_POLICY_MONITOR_ONLY = "monitor_only"
+HV_POLICY_FULL_CONTROL = "full_control"
+
+MONITOR_ONLY_ALLOWED_COMMANDS = {
+    "set_hv_sync",
+    "check_channel_safety",
+    "check_channel_power",
+    "check_recovery_bad",
+    "check_channel_presence",
+}
+
+
 
 class HVService:
     
@@ -25,11 +37,12 @@ class HVService:
     RECOVERY_CHECK_DEADLINE_S = 30.0
     POWER_CHECK_PERIOD_S = 300.0
 
-    def __init__(self, hv_port: str, state_change_callback=None):
+    def __init__(self, hv_port: str, state_change_callback=None, hv_policy: str = HV_POLICY_FULL_CONTROL):
         self.logger = get_logger("hv_service")
         self.logger.debug("HV Service Initialized")
 
         self.hv = HV(hv_port=hv_port)
+        self.hv_policy = hv_policy
 
         self.input_queue: queue.PriorityQueue = queue.PriorityQueue()
         self._counter = itertools.count()
@@ -47,6 +60,20 @@ class HVService:
         self.pending_lock = threading.Lock()  
 
         self.state_change_callback = state_change_callback
+        
+        
+    def set_policy(self, hv_policy: str) -> None:
+        self.hv_policy = hv_policy
+        self.logger.info(f"HVService policy set to {hv_policy}")
+
+    def _is_command_allowed(self, command: str) -> bool:
+        if self.hv_policy == HV_POLICY_FULL_CONTROL:
+            return True
+
+        if self.hv_policy == HV_POLICY_MONITOR_ONLY:
+            return command in MONITOR_ONLY_ALLOWED_COMMANDS
+
+        return False
 
 
     def _notify_state_change(self, source: str, result: dict) -> None:
@@ -76,6 +103,28 @@ class HVService:
             timeout_s=timeout_s,
         )
     def _execute_response(self, hv_request: HVRequest) -> HVResponse:
+        if not self._is_command_allowed(hv_request.command):
+            self.logger.warning(
+                f"HV command blocked by policy {self.hv_policy}: {hv_request.command}"
+            )
+
+            return HVResponse(
+                protocol_version=PROTOCOL_VERSION,
+                request_id=hv_request.request_id,
+                in_reply_to=hv_request.request_id,
+                status=MessageStatus.ERROR,
+                error=(
+                    f"HV command '{hv_request.command}' not allowed "
+                    f"with policy '{self.hv_policy}'"
+                ),
+                result={
+                    "blocked_by_policy": True,
+                    "policy": self.hv_policy,
+                    "command": hv_request.command,
+                },
+            )
+    
+    
         try:
             handler = COMMAND_HANDLERS.get(hv_request.command)
 

@@ -348,7 +348,7 @@ def _flush_client(self, client_id: bytes) -> bool:
         self.poutput(f"Client {client_name}: flush failed while writing register 15.")
         return False
 
-    time.sleep(1.0)
+    time.sleep(2.0)
 
     read_now = _read_rc_register(
         self=self,
@@ -389,6 +389,166 @@ def _flush_clients(self, client_ids: List[bytes]) -> None:
             self=self,
             client_id=client_id,
         )
+        
+        
+def _get_test_rc_channels(self, client_id: bytes) -> List[int]:
+    """
+    Return RC channels to enable in test mode.
+
+    In test mode no HV power/configuration command is allowed.
+    If HVService is available in monitor-only mode, use HV OK channels only.
+    If HVService is unavailable, fall back to all RC channels for bench tests.
+    """
+
+    client_name = client_id.decode(errors="ignore")
+
+    sync_reply, reason = _send_hv_command(
+        self=self,
+        client_id=client_id,
+        command="set_hv_sync",
+        payload={"channels": "all"},
+        timeout_s=90.0,
+    )
+
+    if sync_reply is None:
+        logger.warning(
+            f"HV sync unavailable in test mode for client {client_name}: {reason}. "
+            "Falling back to all RC channels."
+        )
+        self.poutput(
+            f"Client {client_name}: HV sync unavailable in test mode; "
+            "enabling all RC channels."
+        )
+        return list(range(7))
+
+    sync_payload = sync_reply.payload or {}
+    sync_result = sync_payload.get("result", {})
+    sync_error = sync_payload.get("error")
+
+    if sync_error:
+        logger.warning(
+            f"HV sync error in test mode for client {client_name}: {sync_error}. "
+            "Falling back to all RC channels."
+        )
+        self.poutput(
+            f"Client {client_name}: HV sync error in test mode; "
+            "enabling all RC channels."
+        )
+        return list(range(7))
+
+    ok_channels = sorted(set(sync_result.get("ok_channels", [])))
+    bad_channels = sorted(set(sync_result.get("bad_channels", [])))
+
+    if bad_channels:
+        self.poutput(
+            f"Client {client_name}: BAD HV/FEB channels excluded in test mode: "
+            f"{_hv_to_user_channels(bad_channels)}"
+        )
+
+    rc_channels = _hv_to_user_channels(ok_channels)
+
+    if not rc_channels:
+        logger.warning(
+            f"No OK HV/FEB channels found in test mode for client {client_name}. "
+            "Falling back to all RC channels."
+        )
+        self.poutput(
+            f"Client {client_name}: no OK HV/FEB channels found in test mode; "
+            "enabling all RC channels."
+        )
+        return list(range(7))
+
+    self.poutput(
+        f"Client {client_name}: test mode RC channels from HV/FEB presence: "
+        f"{rc_channels}"
+    )
+
+    return rc_channels
+
+
+def _ensure_acquisition_state(self) -> None:
+    if not hasattr(self, "_acq_finalize_lock"):
+        self._acq_finalize_lock = threading.Lock()
+
+    if not hasattr(self, "_acq_finalized"):
+        self._acq_finalized = False
+
+
+def _reset_acquisition_state(self) -> None:
+    _ensure_acquisition_state(self=self)
+
+    with self._acq_finalize_lock:
+        self._acq_finalized = False
+
+
+def _finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
+    _ensure_acquisition_state(self=self)
+
+    with self._acq_finalize_lock:
+        if self._acq_finalized:
+            logger.info(f"Acquisition finalization already completed. Ignoring request: {reason}")
+            return
+
+        self._acq_finalized = True
+
+        self.poutput(f"Finalizing acquisition: {reason}")
+        logger.info(f"Finalizing acquisition: {reason}")
+
+        if self.data_receiver_service.is_running():
+            stopped = self.data_receiver_service.stop()
+
+            if stopped:
+                self.poutput("Acquisition stopped.")
+            else:
+                self.poutput("Failed to stop acquisition.")
+                return
+
+        else:
+            self.poutput("Data receiver is not running. Continuing finalization.")
+
+        _disable_rc_channels(self=self)
+
+        if not client_ids:
+            self.poutput("No connected clients. Final flush skipped.")
+            return
+
+        self.poutput("Starting final flush receiver...")
+
+        flush_info = self.data_receiver_service.start_flush(
+            duration=40.0,
+        )
+
+        if flush_info is None:
+            self.poutput("Failed to start final flush receiver.")
+            logger.error("Failed to start final flush receiver")
+            return
+
+        flush_thread = threading.Thread(
+            target=_flush_clients,
+            args=(self, client_ids),
+            daemon=True,
+        )
+
+        flush_thread.start()
+
+        while self.data_receiver_service.is_running():
+            time.sleep(0.5)
+
+        flush_thread.join(timeout=45.0)
+
+        self.poutput("Final flush completed.")
+        logger.info("Final flush completed")
+
+
+def _watch_acquisition_completion(self, client_ids: List[bytes]) -> None:
+    while self.data_receiver_service.is_running():
+        time.sleep(0.5)
+
+    _finalize_acquisition(
+        self=self,
+        client_ids=client_ids,
+        reason="data receiver completed its configured duration",
+    )
 
 ########################
 # ACQUISITION COMMANDS #
@@ -469,20 +629,31 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
             self.poutput("No connected clients.")
             return
 
+        if self.data_receiver_service.is_running():
+            self.poutput("Data receiver is already running.")
+            return
+
+        _reset_acquisition_state(self=self)
+
         rc_ready_clients = []
 
         if self.mode == "test":
             self.poutput(
-                "Server is in test mode: skipping HV sync and enabling all RC channels."
+                "Server is in test mode: skipping HV power commands. "
+                "RC channels will be enabled from HV/FEB presence if available."
             )
 
             for client_id in client_ids:
                 client_name = client_id.decode(errors="ignore")
+                channels = _get_test_rc_channels(
+                    self=self,
+                    client_id=client_id,
+                )
 
                 rc_ok = _enable_rc_channels(
                     self=self,
                     client_id=client_id,
-                    channels=list(range(7)),
+                    channels=channels,
                 )
 
                 if not rc_ok:
@@ -548,48 +719,28 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
             f"PID={receiver_info['pid']}, file={receiver_info['file']}"
         )
 
+        if args.duration is not None and args.duration > 0:
+            watcher_thread = threading.Thread(
+                target=_watch_acquisition_completion,
+                args=(self, rc_ready_clients),
+                daemon=True,
+            )
+            watcher_thread.start()
+
+            self.poutput(
+                "Automatic finalization enabled: RC disable and final flush "
+                "will run when the receiver duration elapses."
+            )
+
         return
 
     if args.command == "stop":
         client_ids = self.control_manager.server_state.list_connected_clients()
 
-        stopped = self.data_receiver_service.stop()
-
-        if stopped:
-            self.poutput("Acquisition stopped.")
-        else:
-            self.poutput("Failed to stop acquisition.")
-            return
-
-        _disable_rc_channels(self=self)
-
-        if not client_ids:
-            self.poutput("No connected clients. Final flush skipped.")
-            return
-
-        self.poutput("Starting final flush receiver...")
-
-        flush_info = self.data_receiver_service.start_flush(
-            duration=40.0,
+        _finalize_acquisition(
+            self=self,
+            client_ids=client_ids,
+            reason="manual stop command",
         )
 
-        if flush_info is None:
-            self.poutput("Failed to start final flush receiver.")
-            logger.error("Failed to start final flush receiver")
-            return
-
-        flush_thread = threading.Thread(
-            target=_flush_clients,
-            args=(self, client_ids),
-            daemon=True,
-        )
-
-        flush_thread.start()
-
-        while self.data_receiver_service.is_running():
-            time.sleep(0.5)
-
-        flush_thread.join(timeout=45.0)
-
-        self.poutput("Final flush completed.")
         return

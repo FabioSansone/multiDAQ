@@ -24,6 +24,12 @@ class AcquisitionService:
         self.logger.info(
             f"Applying acquisition mode change: {old_mode} -> {new_mode}"
         )
+        
+        if runtime.hv_service is not None:
+            if new_mode == "test":
+                runtime.hv_service.set_policy("monitor_only")
+            else:
+                runtime.hv_service.set_policy("full_control")
 
         if new_mode not in ACQUISITION_MODES:
             self.logger.error(f"Unknown acquisition mode: {new_mode}")
