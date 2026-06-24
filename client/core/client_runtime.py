@@ -32,9 +32,9 @@ class ClientRunTime:
 
         self.acquisition_service = AcquisitionService(self)
         
-        self._last_rc19_sync_time = 0.0
-        self._last_rc19_mask = None
-        self._rc19_sync_period_s = 30.0
+        self._last_rc39_sync_time = 0.0
+        self._last_rc39_mask = None
+        self._rc39_sync_period_s = 30.0
 
         self.logger.info("ClientRuntime initialized")
 
@@ -63,7 +63,7 @@ class ClientRunTime:
             return True
 
         try:
-            self.hv_service = HVService(hv_port=self.hv_port, state_change_callback=self.sync_rc_register_19_with_hv,)
+            self.hv_service = HVService(hv_port=self.hv_port, state_change_callback=self.sync_rc_register_39_with_hv,)
             self.logger.info("HVService initialized")
             return True
 
@@ -84,9 +84,9 @@ class ClientRunTime:
         finally:
             self.hv_service = None
     
-    def sync_rc_register_19_with_hv(self) -> bool:
+    def sync_rc_register_39_with_hv(self) -> bool:
         if self.hv_service is None:
-            self.logger.warning("Cannot sync RC register 19: HVService unavailable")
+            self.logger.warning("Cannot sync RC register 39: HVService unavailable")
             return False
 
         ok_channels = set(self.hv_service.hv.getOkChannels())
@@ -110,31 +110,31 @@ class ClientRunTime:
         now = time.time()
 
         if (
-            self._last_rc19_mask == mask
-            and now - self._last_rc19_sync_time < self._rc19_sync_period_s
+            self._last_rc39_mask == mask
+            and now - self._last_rc39_sync_time < self._rc39_sync_period_s
         ):
             return True
 
         response = self.rc_service._submit_command(
             command="rc_write_register",
             payload={
-                "address": 19,
+                "address": 39,
                 "value": mask,
             },
-            sender="client_runtime_rc19_sync",
+            sender="client_runtime_rc39_sync",
         )
 
         if response.status != MessageStatus.OK:
             self.logger.error(
-                f"Failed to sync RC register 19 with HV state: {response.error}"
+                f"Failed to sync RC register 39 with HV state: {response.error}"
             )
             return False
 
-        self._last_rc19_mask = mask
-        self._last_rc19_sync_time = now
+        self._last_rc39_mask = mask
+        self._last_rc39_sync_time = now
 
         self.logger.info(
-            f"RC register 19 synchronized: "
+            f"RC register 39 synchronized: "
             f"mode={self.acq_mode}, hv_channels={hv_enabled_channels}, "
             f"rc_channels={rc_channels}, mask={mask}"
         )

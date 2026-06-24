@@ -494,7 +494,7 @@ def _finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
         self.poutput(f"Finalizing acquisition: {reason}")
         logger.info(f"Finalizing acquisition: {reason}")
 
-        if self.data_receiver_service.is_running():
+        if self.data_receiver_service.is_busy():
             stopped = self.data_receiver_service.stop()
 
             if stopped:
@@ -515,7 +515,7 @@ def _finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
         self.poutput("Starting final flush receiver...")
 
         flush_info = self.data_receiver_service.start_flush(
-            duration=20.0,
+            duration=30.0,
         )
 
         if flush_info is None:
@@ -531,7 +531,7 @@ def _finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
 
         flush_thread.start()
 
-        while self.data_receiver_service.is_running():
+        while self.data_receiver_service.is_busy():
             time.sleep(0.5)
 
         flush_thread.join(timeout=10.0)
@@ -543,7 +543,7 @@ def _finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
 
 
 def _watch_acquisition_completion(self, client_ids: List[bytes]) -> None:
-    while self.data_receiver_service.is_running():
+    while self.data_receiver_service.is_busy():
         time.sleep(0.5)
 
     _finalize_acquisition(
@@ -631,7 +631,7 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
             self.poutput("No connected clients.")
             return
 
-        if self.data_receiver_service.is_running():
+        if self.data_receiver_service.is_busy():
             self.poutput("Data receiver is already running.")
             return
 
