@@ -12,6 +12,10 @@ from server.communication.acquisition_manager import AcquisitionPlaneManager
 from server.acquisition.receiver_service import DataReceiverService
 from common.constants import ACQUISITION_MODES
 from server.core.server_state import ServerState
+from server.services.client_command_service import ClientCommandService
+from server.services.channel_selection_service import ChannelSelectionService
+from server.services.acquisition_orchestrator import AcquisitionOrchestrator
+from server.services.shutdown_service import ShutdownService
 
 
 
@@ -28,6 +32,32 @@ class Server(cmd2.Cmd):
         self.control_manager = control_manager
         self.acq_manager = acquisition_manager
         self.data_receiver_service = DataReceiverService()
+
+        self.client_command_service = ClientCommandService(
+        control_manager=self.control_manager,
+        output_func=self.poutput,
+)
+
+        self.channel_selection_service = ChannelSelectionService(
+            control_manager=self.control_manager,
+            command_service=self.client_command_service,
+            output_func=self.poutput,
+        )
+
+        self.acquisition_orchestrator = AcquisitionOrchestrator(
+            control_manager=self.control_manager,
+            data_receiver_service=self.data_receiver_service,
+            channel_selection_service=self.channel_selection_service,
+            command_service=self.client_command_service,
+            get_mode=lambda: self.mode,
+            output_func=self.poutput,
+        )
+
+        self.shutdown_service = ShutdownService(
+            control_manager=self.control_manager,
+            command_service=self.client_command_service,
+            output_func=self.poutput,
+        )
 
         self.prompt = f"Server[{self.mode}]> "
 

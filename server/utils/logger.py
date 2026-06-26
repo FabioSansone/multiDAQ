@@ -30,6 +30,12 @@ LOGGER_NAMES = {
     'rc_commands': 'server.commands.rc',
     'acq_commands': 'server.commands.acq',
 
+    #Server Services
+    'client_command_service': 'server.services.client_command',
+    'channel_selection_service': 'server.services.channel_selection',
+    'acquisition_orchestrator': 'server.services.acquisition_orchestrator',
+    'shutdown_service': 'server.services.shutdown',
+
     #Main Application
     'app': 'server.app'
     

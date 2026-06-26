@@ -3,6 +3,7 @@ import cmd2
 from server.utils.logger import get_logger
 from common.message_handler import Channel
 from server.utils.json_parser import JsonParser
+from server.services.shutdown_service import _zero_rc_registers_on_shutdown
 
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
@@ -186,6 +187,8 @@ def do_change_mode(self, args):
 @cmd2.with_category("Generic Commands")
 def do_quit(self, _) -> bool:
     """Send quit command to all connected clients"""
+
+    self.shutdown_service.zero_rc_registers_on_shutdown()
 
     success = self.control_manager.notify_shutdown_to_all_clients()
     if not success:
