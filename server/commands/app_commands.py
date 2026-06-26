@@ -3,7 +3,6 @@ import cmd2
 from server.utils.logger import get_logger
 from common.message_handler import Channel
 from server.utils.json_parser import JsonParser
-from server.services.shutdown_service import _zero_rc_registers_on_shutdown
 
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
