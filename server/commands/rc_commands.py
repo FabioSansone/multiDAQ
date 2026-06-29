@@ -138,7 +138,7 @@ def do_rc(self, args: argparse.Namespace) -> None:
         }
         timeout_s = 600.0
 
-    if args.parameter == "read":
+    elif args.parameter == "read":
         payload = {
             "address": args.address,
         }
