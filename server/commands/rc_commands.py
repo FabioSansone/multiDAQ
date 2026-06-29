@@ -62,6 +62,7 @@ boot_parser.add_argument(
 )
 
 program_parser = rc_subparsers.add_parser("program_feb")
+program_parser = rc_subparsers.add_parser("prog_feb")
 program_parser.add_argument(
     "--channels",
     type=str,
@@ -79,14 +80,14 @@ program_parser.add_argument(
 program_parser.add_argument(
     "--firmware",
     type=str,
-    required=True,
-    help="Firmware path on the client filesystem",
+    default=None,
+    help="Firmware path on the client filesystem. If omitted, client uses default firmware near feb_service.py",
 )
 
 program_parser.add_argument(
     "--port",
     type=str,
-    default="/dev/ttyPS0",
+    default="/dev/ttyPS1",
     help="UART port used by stm32flash on the client",
 )
 
@@ -115,6 +116,14 @@ def do_rc(self, args: argparse.Namespace) -> None:
     command = command_map[args.parameter]
 
     client_ids = self.control_manager.server_state.list_connected_clients()
+
+    if args.parameter in {"program_feb", "prog_feb"}:
+            if self.data_receiver_service.is_busy():
+                self.poutput(
+                    "Cannot program FEB while an acquisition is running or finalizing."
+                )
+                logger.error("FEB programming blocked: acquisition receiver is busy")
+                return
 
     if not client_ids:
         self.poutput("No connected clients.")
@@ -150,6 +159,7 @@ def do_rc(self, args: argparse.Namespace) -> None:
         timeout_s = 35.0
 
     for client_id in client_ids:
+            
         rc_command = self.control_manager.message_handler.create_command(
             channel=Channel.RC,
             command=command,

@@ -222,6 +222,31 @@ class AcquisitionOrchestrator:
             reason="data receiver completed its configured duration",
         )
 
+    
+    def _resolve_batch_id(self, args, client_ids: List[bytes]) -> str | None:
+        if args.batch_id is not None:
+            return args.batch_id
+
+        if not client_ids:
+            return None
+
+        client_id = client_ids[0]
+        identity = self.control_manager.server_state.get_identity(client_id) or {}
+
+        batch_id = identity.get("batch_id")
+        if batch_id:
+            self.poutput(f"Using batch_id from client identity: {batch_id}")
+            return batch_id
+
+        multipmt_id = identity.get("multipmt_id")
+        if multipmt_id:
+            self.poutput(
+                f"No batch_id in client identity. Using multipmt_id as acquisition folder id: {multipmt_id}"
+            )
+            return multipmt_id
+
+        return None
+
     def start(self, args) -> None:
         self.poutput("Acquisition start command received.")
 
@@ -239,6 +264,7 @@ class AcquisitionOrchestrator:
 
         rc_ready_clients = []
         mode = self.get_mode()
+        
 
         if mode == "test":
             self.poutput(
@@ -301,15 +327,23 @@ class AcquisitionOrchestrator:
         if not rc_ready_clients:
             self.poutput("No clients ready for acquisition.")
             return
+        
+        resolved_batch_id = self._resolve_batch_id(args, rc_ready_clients)
+
+        if resolved_batch_id is None:
+            self.poutput("Cannot start acquisition: missing batch_id and multipmt_id.")
+            self._disable_rc_channels()
+            return
 
         receiver_info = self.data_receiver_service.start(
             duration=args.duration,
             suffix=args.suffix,
             acq_type=args.acq_type,
             run_id=args.run_id,
-            batch_id=args.batch_id,
+            batch_id=resolved_batch_id,
             force_compile=args.force_compile,
         )
+
 
         if receiver_info is None:
             self.poutput("Failed to start data receiver.")
@@ -342,3 +376,6 @@ class AcquisitionOrchestrator:
             client_ids=client_ids,
             reason="manual stop command",
         )
+
+    
+    

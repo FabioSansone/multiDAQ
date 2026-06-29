@@ -75,7 +75,7 @@ class Server(cmd2.Cmd):
         self.do_rc = rc_commands.do_rc.__get__(self, Server)
 
         #GENERIC ACQ COMMANDS#
-        self.do_acquire = acq_commands.do_acquisition.__get__(self, Server)
+        self.do_acquisition = acq_commands.do_acquisition.__get__(self, Server)
 
         #EVENT MESSAGES MANAGER#
         self.handle_event = app_commands.handle_event.__get__(self, Server)

@@ -20,15 +20,43 @@ ADDR_CHANNELS_ENCODING = {
 
 
 class FEBService:
+
+    DEFAULT_FIRMWARE_NAMES = [
+        "HKL031V4B.hex",
+        "HKL031V4A.hex",
+        "HKL031V4C.hex",
+    ]
+
+
     def __init__(self, runtime):
         self.runtime = runtime
         self.logger = get_logger("feb_service")
+        self.service_dir = Path(__file__).parent
 
-    def _flash(self, baud: int, firmware: str, port: str) -> bool:
-        firmware_path = Path(firmware)
+    def _resolve_firmware_path(self, firmware: str | None) -> Path | None:
+        if firmware is not None:
+            path = Path(firmware).expanduser()
 
-        if not firmware_path.exists():
-            self.logger.error(f"Firmware file not found: {firmware}")
+            if not path.is_absolute():
+                path = self.service_dir / path
+
+            return path if path.exists() else None
+
+        for name in self.DEFAULT_FIRMWARE_NAMES:
+            candidate = self.service_dir / name
+            if candidate.exists():
+                return candidate
+
+        return None
+
+    def _flash(self, baud: int, firmware: str | None, port: str) -> bool:
+        firmware_path = self._resolve_firmware_path(firmware)
+
+        if firmware_path is None:
+            self.logger.error(
+                f"Firmware not found. Provide --firmware or place one of "
+                f"{self.DEFAULT_FIRMWARE_NAMES} in {self.service_dir}"
+            )
             return False
 
         command = [
@@ -41,17 +69,13 @@ class FEBService:
         ]
 
         try:
-            self.logger.info(
-                f"Flashing FEB with firmware={firmware_path}, port={port}, baud={baud}"
-            )
+            self.logger.info(f"Flashing FEB with firmware={firmware_path}")
             subprocess.run(command, check=True)
             time.sleep(0.5)
             return True
-
         except subprocess.CalledProcessError as e:
             self.logger.error(f"FEB flashing failed: {e}")
             return False
-
         except Exception as e:
             self.logger.error(f"Unexpected error during FEB flashing: {e}")
             return False
@@ -81,8 +105,8 @@ class FEBService:
         self,
         channels,
         baud: int,
-        firmware: str,
-        port: str,
+        firmware: str | None = None,
+        port: str = "/dev/ttyPS1",
         standard_addr: int | None = None,
     ) -> dict:
         self.logger.info(
