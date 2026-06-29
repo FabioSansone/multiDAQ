@@ -61,7 +61,7 @@ boot_parser.add_argument(
     default="all",
 )
 
-program_parser = rc_subparsers.add_parser("prog_feb")
+program_parser = rc_subparsers.add_parser("progam_feb")
 program_parser.add_argument(
     "--channels",
     type=str,
