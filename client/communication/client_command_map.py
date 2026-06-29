@@ -2,6 +2,7 @@ from client.communication.handlers.hv_handlers import *
 from client.communication.handlers.rc_handlers import *
 from client.communication.handlers.system_handlers import *
 from client.communication.handlers.acquisition_handler import *
+from client.communication.handlers.feb_handlers import *
 
 COMMAND_MAP = {
     #System Handlers
@@ -20,11 +21,14 @@ COMMAND_MAP = {
 
     "hv_on_and_wait": handle_hv_set_on_and_wait,
     
-    #RC Handlert
+    #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,
     "rc_boot": handle_rc_boot_mode,
     "rc_reset": handle_rc_reset,
 
     "rc_read_register": handle_rc_read_register,
     "rc_write_register": handle_rc_write_register,
+    
+    #FEB Handlers
+    "feb_program": handle_feb_program,
 }

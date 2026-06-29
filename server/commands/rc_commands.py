@@ -61,6 +61,42 @@ boot_parser.add_argument(
     default="all",
 )
 
+program_parser = rc_subparsers.add_parser("program_feb")
+program_parser.add_argument(
+    "--channels",
+    type=str,
+    default="all",
+    help='Channels selected. Can be "all" or comma separated string list',
+)
+
+program_parser.add_argument(
+    "--baud",
+    type=int,
+    default=115200,
+    help="UART baudrate for stm32flash",
+)
+
+program_parser.add_argument(
+    "--firmware",
+    type=str,
+    required=True,
+    help="Firmware path on the client filesystem",
+)
+
+program_parser.add_argument(
+    "--port",
+    type=str,
+    default="/dev/ttyPS0",
+    help="UART port used by stm32flash on the client",
+)
+
+program_parser.add_argument(
+    "--standard-addr",
+    type=int,
+    default=None,
+    help="Optional default FEB Modbus address after flashing",
+)
+
 
 @cmd2.with_argparser(rc_parser)
 @cmd2.with_category("RC Commands")
@@ -73,6 +109,7 @@ def do_rc(self, args: argparse.Namespace) -> None:
         "boot": "rc_boot",
         "read": "rc_read_register",
         "write": "rc_write_register",
+        "program_feb": "feb_program",
     }
 
     command = command_map[args.parameter]
@@ -82,6 +119,16 @@ def do_rc(self, args: argparse.Namespace) -> None:
     if not client_ids:
         self.poutput("No connected clients.")
         return
+    
+    if args.parameter == "program_feb":
+        payload = {
+            "channels": args.channels,
+            "baud": args.baud,
+            "firmware": args.firmware,
+            "port": args.port,
+            "standard_addr": args.standard_addr,
+        }
+        timeout_s = 600.0
 
     if args.parameter == "read":
         payload = {
@@ -131,6 +178,27 @@ def do_rc(self, args: argparse.Namespace) -> None:
         status = payload.get("status")
         result = payload.get("result", {})
         error = payload.get("error")
+        
+        
+        if args.parameter == "program_feb":
+            result = payload.get("result", {})
+            successful = result.get("successful_channels", [])
+            failed = result.get("failed_channels", [])
+
+            if status == "ok":
+                self.poutput(
+                    f"Client {client_name}: FEB programming completed. "
+                    f"Successful channels: {successful}"
+                )
+            else:
+                self.poutput(
+                    f"Client {client_name}: FEB programming failed. "
+                    f"Successful: {successful}, failed: {failed}"
+                )
+                if error:
+                    self.poutput(f"Client {client_name}: error: {error}")
+
+            continue
 
         if args.parameter == "read":
             value = result.get("value")

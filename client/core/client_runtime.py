@@ -6,6 +6,7 @@ from client.hardware.hv.hv_service import HVService
 from client.hardware.rc.rc_service import RCService
 from client.hardware.evproducer.ev_service import EVService
 from client.acquisition.acquisition_service import AcquisitionService
+from client.hardware.feb.feb_service import FEBService
 from common.message_handler import MessageStatus
 
 
@@ -25,6 +26,7 @@ class ClientRunTime:
         self.hv_service: Optional[HVService] = None
         self.rc_service = RCService()
         self.evproducer = EVService()
+        self.feb_service = FEBService(self)
 
         self.acq_mode: Optional[str] = None
         self.acq_info: Optional[dict] = None

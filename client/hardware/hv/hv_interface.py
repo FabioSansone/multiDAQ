@@ -818,6 +818,81 @@ class HV:
             "on_channels": self.getOnChannels(),
             "off_channels": self.getOffChannels(),
         }
+        
+        
+    def change_feb_address(
+        self,
+        new_address: int,
+        standard_addr: int | None = None,
+    ) -> dict:
+        try:
+            self.hv.reset_connection()
+            time.sleep(2.0)
+
+            old_address = self.hv.find_feb_address(
+                preferred_address=standard_addr,
+            )
+
+            if old_address is None:
+                return {
+                    "success": False,
+                    "old_address": None,
+                    "new_address": new_address,
+                    "error": "No FEB found with standard/default address",
+                }
+
+            if old_address == new_address:
+                return {
+                    "success": True,
+                    "old_address": old_address,
+                    "new_address": new_address,
+                    "message": "FEB already at requested address",
+                }
+
+            if not self.hv.checkAddress(old_address):
+                return {
+                    "success": False,
+                    "old_address": old_address,
+                    "new_address": new_address,
+                    "error": f"Cannot connect to FEB at address {old_address}",
+                }
+
+            try:
+                self.hv.setModbusAddress(
+                    ch_addr=new_address,
+                    slave=old_address,
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Expected communication interruption during address change: {e}"
+                )
+
+            self.hv.reset_connection()
+            time.sleep(2.0)
+
+            if self.hv.checkAddress(new_address):
+                self.moveToOk(new_address)
+                return {
+                    "success": True,
+                    "old_address": old_address,
+                    "new_address": new_address,
+                    "message": "FEB address changed successfully",
+                }
+
+            return {
+                "success": False,
+                "old_address": old_address,
+                "new_address": new_address,
+                "error": f"Failed to verify new address {new_address}",
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "old_address": None,
+                "new_address": new_address,
+                "error": str(e),
+            }
 
 
 

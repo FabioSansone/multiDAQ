@@ -390,6 +390,33 @@ def command_hv_sync(
             "off_channels": hv_interface.getOffChannels(),
         },
     )
+    
+    
+def command_feb_change_address(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    channel_index = hv_request.payload["channel_index"]
+    standard_addr = hv_request.payload.get("standard_addr")
+
+    new_address = channel_index + 1
+
+    result = hv_interface.change_feb_address(
+        new_address=new_address,
+        standard_addr=standard_addr,
+    )
+
+    status = MessageStatus.OK if result.get("success") else MessageStatus.ERROR
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=status,
+        result=result,
+        error=None if result.get("success") else result.get("error"),
+    )
 
 
 COMMAND_HANDLERS = {
@@ -403,6 +430,8 @@ COMMAND_HANDLERS = {
     "hv_on_and_wait": command_hv_on_and_wait,
     
     "set_hv_sync": command_hv_sync,
+    
+    "feb_change_address": command_feb_change_address,
     
     "check_channel_safety": command_check_channel_safety,
     "check_channel_power": command_check_channel_power,

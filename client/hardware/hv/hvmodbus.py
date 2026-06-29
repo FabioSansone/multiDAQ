@@ -120,6 +120,19 @@ class HVModBus:
         except Exception as e:
             self.logger.error(f"Error checking the connection status of the client: {e}")
             return False
+        
+    
+    def reset_connection(self) -> bool:
+        try:
+            if self.client is not None:
+                self.client.close()
+
+            self.ch_addr = None
+            return self.client.connect()
+
+        except Exception as e:
+            self.logger.error(f"Error while resetting Modbus connection: {e}")
+            return False
     
     
     def open(self, channel):
@@ -413,5 +426,22 @@ class HVModBus:
         slave = self.ch_addr if slave is None else slave
         discr = int(discr * 1.6890722)
         self._safe_write(addr=0x34, value=discr, slave=slave, desc="write discr")
+        
+    def find_feb_address(self, preferred_address: int | None = None):
+        candidates = []
+        if preferred_address is not None:
+            candidates.append(preferred_address)
+        candidates.extend(range(1, self.num_channels + 1))
+        seen = set()
+        for addr in candidates:
+            if addr in seen:
+                continue
+            seen.add(addr)
+            try:
+                if self.checkAddress(addr):
+                    return addr
+            except Exception:
+                continue
+        return None
     
 
