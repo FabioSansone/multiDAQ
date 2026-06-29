@@ -22,9 +22,9 @@ ADDR_CHANNELS_ENCODING = {
 class FEBService:
 
     DEFAULT_FIRMWARE_NAMES = [
-        "../feb/HKL031V4B.hex",
-        "../feb/HKL031V4A.hex",
-        "../feb/HKL031V4C.hex",
+        "HKL031V4B.hex",
+        "HKL031V4A.hex",
+        "HKL031V4C.hex",
     ]
 
 
