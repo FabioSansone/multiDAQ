@@ -318,6 +318,17 @@ class FEBService:
 
             self.logger.info(f"Programming FEB channel {ch}")
 
+            if not self._submit_rc_command(
+                command="rc_reset",
+                payload={"channels": "all"},
+                timeout_s=30.0,
+            ):
+                self.logger.error(f"Failed to reset RC before boot mode for FEB channel {ch}")
+                failed_channels.append(ch)
+                hv.moveToBad(hv_ch)
+                continue
+
+            time.sleep(0.1)
 
             if not self._submit_rc_command(
                 command="rc_boot",
@@ -328,6 +339,7 @@ class FEBService:
                 failed_channels.append(ch)
                 hv.moveToBad(hv_ch)
                 continue
+
 
             time.sleep(0.1)
 
