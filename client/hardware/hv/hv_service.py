@@ -26,6 +26,7 @@ MONITOR_ONLY_ALLOWED_COMMANDS = {
     "check_recovery_bad",
     "check_channel_presence",
     "hv_off",
+    "feb_change_address",
 }
 
 
