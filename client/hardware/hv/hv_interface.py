@@ -820,6 +820,111 @@ class HV:
         }
         
         
+    
+    def off_and_wait(
+        self,
+        channels: List[int] | str | int,
+        timeout_s: float = 120.0,
+        poll_s: float = 2.0,
+    ):
+        list_channels_selected = self.hv_channels_definition(
+            channels=channels,
+        )
+
+        ok_ch_set = set(self.getOkChannels())
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        power_off_successful = []
+        failed_channels = []
+        down_channels = []
+
+        for ch in channels_good_selected:
+            try:
+                self.hv.powerOff(slave=ch)
+                power_off_successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(f"Problem powering off channel {ch}: {e}")
+                failed_channels.append(ch)
+                self.moveToBad(ch)
+
+        pending_channels = [
+            ch for ch in power_off_successful
+            if ch not in failed_channels
+        ]
+
+        deadline = time.time() + timeout_s
+
+        while pending_channels and time.time() < deadline:
+            for ch in list(pending_channels):
+                try:
+                    status = self.hv.getStatus(slave=ch)
+
+                    if status in {"DOWN", "OFF"}:
+                        self.moveToOff(ch)
+                        down_channels.append(ch)
+                        pending_channels.remove(ch)
+
+                    elif status == "TRIP":
+                        self.logger.error(
+                            f"Channel {ch} went TRIP while waiting for DOWN"
+                        )
+
+                        try:
+                            self.hv.reset(slave=ch)
+                            self.hv.powerOff(slave=ch)
+                        except Exception as shutdown_error:
+                            self.logger.error(
+                                f"Problem resetting/off channel {ch} after TRIP: "
+                                f"{shutdown_error}"
+                            )
+
+                        failed_channels.append(ch)
+                        self.moveToBad(ch)
+                        pending_channels.remove(ch)
+
+                except Exception as e:
+                    self.logger.error(
+                        f"Problem checking DOWN state for channel {ch}: {e}"
+                    )
+
+                    failed_channels.append(ch)
+                    self.moveToBad(ch)
+                    pending_channels.remove(ch)
+
+            if pending_channels:
+                time.sleep(poll_s)
+
+        if pending_channels:
+            for ch in pending_channels:
+                self.logger.error(
+                    f"Timeout waiting for channel {ch} to reach DOWN state"
+                )
+
+                failed_channels.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": sorted(down_channels),
+            "down_channels": sorted(down_channels),
+            "failed_channels": sorted(set(failed_channels)),
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+        }
+        
+        
     def change_feb_address(
         self,
         new_address: int,

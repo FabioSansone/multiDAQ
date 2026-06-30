@@ -250,33 +250,19 @@ class FEBService:
                 "successful_channels": [],
                 "failed_channels": [],
                 "skipped_bad_channels": [],
-                "error": "No valid channels selected",
+                "error": "No valid RC channels selected",
             }
 
-        if not self.runtime.ensure_hv_service():
+        if self.runtime.hv_service is None:
             return {
                 "success": False,
                 "successful_channels": [],
                 "failed_channels": channel_list,
                 "skipped_bad_channels": [],
-                "error": "HVService unavailable",
-            }
-
-        self.runtime.hv_service.start()
-        
-        hv_channels_requested = [ch + 1 for ch in channel_list]
-
-        if not self._submit_hv_command(
-            command="set_hv_sync",
-            payload={"channels": hv_channels_requested},
-            timeout_s=90.0,
-        ):
-            return {
-                "success": False,
-                "successful_channels": [],
-                "failed_channels": channel_list,
-                "skipped_bad_channels": [],
-                "error": "HV sync failed before FEB programming",
+                "error": (
+                    "HVService unavailable. Apply acquisition mode before "
+                    "programming FEB."
+                ),
             }
 
         hv = self.runtime.hv_service.hv
@@ -285,45 +271,55 @@ class FEBService:
         failed_channels = []
         skipped_bad_channels = []
 
+        ok_on_hv_channels = sorted(
+            set(hv.getOkChannels()) & set(hv.getOnChannels())
+        )
+
+        if ok_on_hv_channels:
+            self.logger.info(
+                f"Switching OFF all known OK+ON HV channels before FEB programming: "
+                f"{ok_on_hv_channels}"
+            )
+
+            if not self._submit_hv_command(
+                command="hv_off_and_wait",
+                payload={
+                    "channels": ok_on_hv_channels,
+                    "timeout_s": 120.0,
+                    "poll_s": 2.0,
+                },
+                timeout_s=150.0,
+            ):
+                return {
+                    "success": False,
+                    "successful_channels": [],
+                    "failed_channels": channel_list,
+                    "skipped_bad_channels": [],
+                    "data_mode_ok": False,
+                    "hv_restore_ok": False,
+                    "acq_mode": self.runtime.acq_mode,
+                    "error": (
+                        "Failed to switch OFF known OK+ON HV channels "
+                        "before FEB programming"
+                    ),
+                }
+
         for ch in channel_list:
             hv_ch = ch + 1
 
-            ok_channels = set(hv.getOkChannels())
-            bad_channels = set(hv.getBadChannels())
-            on_channels = set(hv.getOnChannels())
-
-            if hv_ch in bad_channels or hv_ch not in ok_channels:
-                self.logger.warning(
-                    f"Skipping FEB channel {ch}: HV channel {hv_ch} is BAD/not OK"
-                )
-                skipped_bad_channels.append(ch)
-                continue
-
-            if hv_ch in on_channels:
-                self.logger.info(
-                    f"HV channel {hv_ch} is ON before FEB programming. Switching OFF."
-                )
-
-                if not self._submit_hv_command(
-                    command="hv_off",
-                    payload={"channels": [hv_ch]},
-                    timeout_s=90.0,
-                ):
-                    self.logger.error(f"Cannot switch OFF HV channel {hv_ch}")
-                    failed_channels.append(ch)
-                    hv.moveToBad(hv_ch)
-                    continue
-
-                time.sleep(0.5)
-
-            self.logger.info(f"Programming FEB channel {ch}")
+            self.logger.info(
+                f"Programming FEB on RC channel {ch}; "
+                f"expected final HV address {hv_ch}"
+            )
 
             if not self._submit_rc_command(
                 command="rc_reset",
                 payload={"channels": "all"},
                 timeout_s=30.0,
             ):
-                self.logger.error(f"Failed to reset RC before boot mode for FEB channel {ch}")
+                self.logger.error(
+                    f"Failed to reset RC before boot mode for FEB channel {ch}"
+                )
                 failed_channels.append(ch)
                 hv.moveToBad(hv_ch)
                 continue
@@ -339,7 +335,6 @@ class FEBService:
                 failed_channels.append(ch)
                 hv.moveToBad(hv_ch)
                 continue
-
 
             time.sleep(0.1)
 
@@ -389,15 +384,22 @@ class FEBService:
                 },
                 timeout_s=90.0,
             ):
-                self.logger.error(f"Address change failed for FEB channel {ch}")
+                self.logger.error(
+                    f"Address change/verification failed for FEB channel {ch}"
+                )
                 failed_channels.append(ch)
                 hv.moveToBad(hv_ch)
                 continue
 
             successful_channels.append(ch)
-            hv.moveToOk(hv_ch)
 
-            self.logger.info(f"FEB channel {ch} programmed successfully")
+            hv.moveToOk(hv_ch)
+            hv.moveToOff(hv_ch)
+
+            self.logger.info(
+                f"FEB channel {ch} programmed successfully; "
+                f"expected HV address is now {hv_ch}"
+            )
 
         for ch in failed_channels:
             hv.moveToBad(ch + 1)

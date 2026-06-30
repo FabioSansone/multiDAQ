@@ -267,6 +267,21 @@ def command_hv_on_and_wait(
 
     return _wrap_hv_action(protocol_version, hv_request, result)
 
+def command_hv_off_and_wait(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.off_and_wait(
+        channels=hv_request.payload["channels"],
+        timeout_s=hv_request.payload.get("timeout_s", 240.0),
+        poll_s=hv_request.payload.get("poll_s", 2.0),
+    )
+    
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
 def command_check_channel_presence(
     protocol_version: int,
     hv_interface: HV,
@@ -429,6 +444,7 @@ COMMAND_HANDLERS = {
     "hv_off": command_hv_off,
 
     "hv_on_and_wait": command_hv_on_and_wait,
+    "hv_off_and_wait": command_hv_off_and_wait,
     
     "set_hv_sync": command_hv_sync,
     
