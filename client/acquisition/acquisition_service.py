@@ -76,6 +76,19 @@ class AcquisitionService:
     def _apply_test_mode(self) -> bool:
         runtime = self.runtime
 
+        rc_response = runtime.rc_service._submit_command(
+            command="rc_acq_start",
+            payload={"channels": "all"},
+            sender="client_acquisition_service",
+        )
+
+        if rc_response.status != MessageStatus.OK:
+            self.logger.error(
+                f"Cannot apply test mode: failed to enable RC channels: "
+                f"{rc_response.error}"
+            )
+            return False
+
         if runtime.ensure_hv_service():
             runtime.hv_service.set_policy("monitor_only")
             runtime.hv_service.start()
@@ -89,12 +102,6 @@ class AcquisitionService:
             acq_mode="test",
             acq_info=None,
             start_thr=None,
-        )
-
-        runtime.rc_service._submit_command(
-            command="rc_acq_start",
-            payload={"channels": "all"},
-            sender="client_acquisition_service",
         )
 
         runtime.evproducer.start(runtime.server_ip)
