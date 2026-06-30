@@ -262,12 +262,13 @@ class FEBService:
                 "error": "HVService unavailable",
             }
 
-        self.runtime.hv_service.set_policy("full_control")
         self.runtime.hv_service.start()
+        
+        hv_channels_requested = [ch + 1 for ch in channel_list]
 
         if not self._submit_hv_command(
             command="set_hv_sync",
-            payload={"channels": "all"},
+            payload={"channels": hv_channels_requested},
             timeout_s=90.0,
         ):
             return {

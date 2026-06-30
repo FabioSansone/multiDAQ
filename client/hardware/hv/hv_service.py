@@ -25,6 +25,7 @@ MONITOR_ONLY_ALLOWED_COMMANDS = {
     "check_channel_power",
     "check_recovery_bad",
     "check_channel_presence",
+    "hv_off",
 }
 
 
