@@ -4,18 +4,12 @@ from common.message_handler import Channel, MessageStatus
 def handle_feb_program(manager, message):
     payload = message.payload or {}
 
-    channels = payload.get("channels", "all")
-    baud = payload.get("baud", 115200)
-    firmware = payload.get("firmware")
-    port = payload.get("port", "/dev/ttyPS1")
-    standard_addr = payload.get("standard_addr")
-
     result = manager.runtime.feb_service.program(
-        channels=channels,
-        baud=baud,
-        firmware=firmware,
-        port=port,
-        standard_addr=standard_addr,
+        channels=payload.get("channels", "all"),
+        baud=payload.get("baud", 115200),
+        firmware=payload.get("firmware"),
+        port=payload.get("port", "/dev/ttyPS1"),
+        standard_addr=payload.get("standard_addr"),
     )
 
     status = MessageStatus.OK if result.get("success") else MessageStatus.ERROR

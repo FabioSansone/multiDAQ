@@ -310,6 +310,23 @@ def command_all_rate_monitoring(
         result=result,
         error=None,
     )
+    
+def command_feb_select_address_change(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    result = rc_interface.select_for_feb_address_change(
+        channels=rc_request.payload["channels"],
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix="Failed to select FEB for address change",
+    )
 
 
 COMMAND_HANDLERS = {
@@ -323,5 +340,7 @@ COMMAND_HANDLERS = {
     "rc_free_rate_monitoring": command_free_rate_monitoring,
     "rc_trg_rate_monitoring": command_trg_rate_monitoring,
     "rc_all_rate_monitoring": command_all_rate_monitoring,
+    
+    "rc_feb_select_address_change": command_feb_select_address_change,
 }
     

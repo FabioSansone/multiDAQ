@@ -157,7 +157,7 @@ class HVModBus:
     
     
     def checkAddressBoundary(self, channel):
-        if (channel < 0 or channel > self.num_channels):
+        if (channel < 1 or channel > self.num_channels):
             self.logger.warning(f"Channel {channel} is out of boundary: [0, {self.num_channels}]")
             return False
         return True

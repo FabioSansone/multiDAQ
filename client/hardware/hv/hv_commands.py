@@ -397,6 +397,7 @@ def command_feb_change_address(
     hv_interface: HV,
     hv_request: HVRequest,
 ) -> HVResponse:
+
     channel_index = hv_request.payload["channel_index"]
     standard_addr = hv_request.payload.get("standard_addr")
 

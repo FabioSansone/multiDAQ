@@ -830,7 +830,7 @@ class HV:
             time.sleep(2.0)
 
             old_address = self.hv.find_feb_address(
-                preferred_address=standard_addr,
+                preferred_address=standard_addr or new_address,
             )
 
             if old_address is None:
@@ -838,23 +838,16 @@ class HV:
                     "success": False,
                     "old_address": None,
                     "new_address": new_address,
-                    "error": "No FEB found with standard/default address",
+                    "error": "No FEB found in Modbus scan",
                 }
 
             if old_address == new_address:
+                self.moveToOk(new_address)
                 return {
                     "success": True,
                     "old_address": old_address,
                     "new_address": new_address,
                     "message": "FEB already at requested address",
-                }
-
-            if not self.hv.checkAddress(old_address):
-                return {
-                    "success": False,
-                    "old_address": old_address,
-                    "new_address": new_address,
-                    "error": f"Cannot connect to FEB at address {old_address}",
                 }
 
             try:

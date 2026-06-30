@@ -434,6 +434,72 @@ class RC:
             "register_mask": mask,
             "message": f"Write failed for channels {channel_list}",
         }
+        
+    def select_for_feb_address_change(self, channels):
+        """
+        Select FEB channels for Modbus address change after flashing.
+        """
+
+        reset_result = self.reset("all")
+
+        if not reset_result.get("success"):
+            return {
+                "success": False,
+                "selected_channels": [],
+                "failed_channels": [],
+                "register_mask": 0,
+                "message": "Failed to reset RC before FEB address change",
+                "reset_result": reset_result,
+            }
+
+        channel_list = channels_definition(
+            channels=channels,
+            n_channels=self.num_channels,
+        )
+
+        if not channel_list:
+            return {
+                "success": False,
+                "selected_channels": [],
+                "failed_channels": [],
+                "register_mask": 0,
+                "message": "No valid channels selected",
+            }
+
+        mask = 0
+
+        for ch in channel_list:
+            if not self.checkChannelsBoundary(ch):
+                return {
+                    "success": False,
+                    "selected_channels": [],
+                    "failed_channels": [ch],
+                    "register_mask": mask,
+                    "message": f"Invalid channel {ch}",
+                }
+
+            mask |= 1 << ch
+
+        ok1 = self.write(1, mask)
+
+        if ok1:
+            return {
+                "success": True,
+                "selected_channels": channel_list,
+                "failed_channels": [],
+                "register_mask": mask,
+                "message": (
+                    f"FEB channels {channel_list} selected for address change"
+                ),
+            }
+
+        return {
+            "success": False,
+            "selected_channels": [],
+            "failed_channels": channel_list,
+            "register_mask": mask,
+            "message": "Failed to write RC register 1 for FEB address change",
+        }
     
 
     def free_rate_monitoring(self, channels):
