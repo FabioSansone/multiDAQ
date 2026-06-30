@@ -311,13 +311,29 @@ def command_all_rate_monitoring(
         error=None,
     )
     
-def command_feb_select_address_change(
+def command_feb_reset_after_flash(
     protocol_version: int,
     rc_interface: RC,
     rc_request: RCRequest,
 ) -> RCResponse:
 
-    result = rc_interface.select_for_feb_address_change(
+    result = rc_interface.feb_reset_after_flash()
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix="Failed to reset RC after FEB flash",
+    )
+
+
+def command_feb_select_for_address_change(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    result = rc_interface.feb_select_for_address_change(
         channels=rc_request.payload["channels"],
     )
 
@@ -341,6 +357,7 @@ COMMAND_HANDLERS = {
     "rc_trg_rate_monitoring": command_trg_rate_monitoring,
     "rc_all_rate_monitoring": command_all_rate_monitoring,
     
-    "rc_feb_select_address_change": command_feb_select_address_change,
+    "rc_feb_reset_after_flash": command_feb_reset_after_flash,
+    "rc_feb_select_address_change": command_feb_select_for_address_change,
 }
     

@@ -120,6 +120,110 @@ class FEBService:
             return False
 
         return True
+    
+    def _restore_after_programming(self, successful_channels: list[int]) -> tuple[bool, bool]:
+        """
+        Restore RC/HV state after FEB programming according to acquisition mode.
+
+        Returns
+        -------
+        data_mode_ok, hv_restore_ok
+        """
+
+        if not successful_channels:
+            return False, False
+
+        data_mode_ok = self._submit_rc_command(
+            command="rc_acq_start",
+            payload={
+                "channels": ",".join(str(ch) for ch in successful_channels),
+            },
+            timeout_s=30.0,
+        )
+
+        if not data_mode_ok:
+            return False, False
+
+        mode = self.runtime.acq_mode
+        successful_hv_channels = [ch + 1 for ch in successful_channels]
+
+        if mode == "test":
+            self.logger.info(
+                "Test mode: FEB programmed channels returned to data mode, "
+                "but HV channels will remain OFF."
+            )
+            return data_mode_ok, True
+
+        if mode == "calibration":
+            self.logger.info(
+                "Calibration mode: restoring common calibration HV settings "
+                "before switching channels ON."
+            )
+
+            if not self._submit_hv_command(
+                command="set_common_voltage",
+                payload={
+                    "channels": successful_hv_channels,
+                    "common_voltage": 1200,
+                },
+                timeout_s=35.0,
+            ):
+                return data_mode_ok, False
+
+            if not self._submit_hv_command(
+                command="set_common_threshold",
+                payload={
+                    "channels": successful_hv_channels,
+                    "common_threshold": 400,
+                },
+                timeout_s=35.0,
+            ):
+                return data_mode_ok, False
+
+            hv_restore_ok = self._submit_hv_command(
+                command="hv_on_and_wait",
+                payload={"channels": successful_hv_channels},
+                timeout_s=300.0,
+            )
+
+            return data_mode_ok, hv_restore_ok
+
+        if mode == "multipmt":
+            self.logger.info(
+                "multiPMT mode: restoring acquisition configuration from handshake "
+                "before switching channels ON."
+            )
+
+            if not self.runtime.acq_info:
+                self.logger.error(
+                    "Cannot restore multiPMT HV state: missing acquisition configuration"
+                )
+                return data_mode_ok, False
+
+            if not self._submit_hv_command(
+                command="set_acquisition_configuration",
+                payload={
+                    "channels": successful_hv_channels,
+                    "acquisition_configuration": self.runtime.acq_info,
+                },
+                timeout_s=300.0,
+            ):
+                return data_mode_ok, False
+
+            hv_restore_ok = self._submit_hv_command(
+                command="hv_on_and_wait",
+                payload={"channels": successful_hv_channels},
+                timeout_s=300.0,
+            )
+
+            return data_mode_ok, hv_restore_ok
+
+        self.logger.warning(
+            f"Unknown acquisition mode after FEB programming: {mode}. "
+            "Leaving HV channels OFF."
+        )
+
+        return data_mode_ok, True
 
     def program(
         self,
@@ -135,7 +239,7 @@ class FEBService:
             f"firmware={firmware}, port={port}, standard_addr={standard_addr}"
         )
 
-        channel_list: List[int] = channels_definition(
+        channel_list = channels_definition(
             channels=channels,
             n_channels=7,
         )
@@ -145,6 +249,7 @@ class FEBService:
                 "success": False,
                 "successful_channels": [],
                 "failed_channels": [],
+                "skipped_bad_channels": [],
                 "error": "No valid channels selected",
             }
 
@@ -153,64 +258,116 @@ class FEBService:
                 "success": False,
                 "successful_channels": [],
                 "failed_channels": channel_list,
+                "skipped_bad_channels": [],
                 "error": "HVService unavailable",
             }
 
         self.runtime.hv_service.set_policy("full_control")
         self.runtime.hv_service.start()
 
+        if not self._submit_hv_command(
+            command="set_hv_sync",
+            payload={"channels": "all"},
+            timeout_s=90.0,
+        ):
+            return {
+                "success": False,
+                "successful_channels": [],
+                "failed_channels": channel_list,
+                "skipped_bad_channels": [],
+                "error": "HV sync failed before FEB programming",
+            }
+
+        hv = self.runtime.hv_service.hv
+
         successful_channels = []
         failed_channels = []
+        skipped_bad_channels = []
 
         for ch in channel_list:
-            self.logger.info(f"Programming FEB channel {ch}")
+            hv_ch = ch + 1
 
-            # 1. Reset RC: old reset() logic, but using existing rc_reset
-            if not self._submit_rc_command(
-                command="rc_reset",
-                payload={"channels": "all"},
-                timeout_s=30.0,
-            ):
-                failed_channels.append(ch)
+            ok_channels = set(hv.getOkChannels())
+            bad_channels = set(hv.getBadChannels())
+            on_channels = set(hv.getOnChannels())
+
+            if hv_ch in bad_channels or hv_ch not in ok_channels:
+                self.logger.warning(
+                    f"Skipping FEB channel {ch}: HV channel {hv_ch} is BAD/not OK"
+                )
+                skipped_bad_channels.append(ch)
                 continue
 
-            time.sleep(0.1)
+            if hv_ch in on_channels:
+                self.logger.info(
+                    f"HV channel {hv_ch} is ON before FEB programming. Switching OFF."
+                )
 
-            # 2. Boot mode: use existing rc_boot
+                if not self._submit_hv_command(
+                    command="hv_off",
+                    payload={"channels": [hv_ch]},
+                    timeout_s=90.0,
+                ):
+                    self.logger.error(f"Cannot switch OFF HV channel {hv_ch}")
+                    failed_channels.append(ch)
+                    hv.moveToBad(hv_ch)
+                    continue
+
+                time.sleep(0.5)
+
+            self.logger.info(f"Programming FEB channel {ch}")
+
+
             if not self._submit_rc_command(
                 command="rc_boot",
                 payload={"channels": str(ch)},
                 timeout_s=30.0,
             ):
+                self.logger.error(f"Failed to put FEB channel {ch} in boot mode")
                 failed_channels.append(ch)
+                hv.moveToBad(hv_ch)
                 continue
 
             time.sleep(0.1)
 
-            # 3. Flash FEB
             if not self._flash(
                 baud=baud,
                 firmware=firmware,
                 port=port,
             ):
+                self.logger.error(f"Firmware flash failed for FEB channel {ch}")
                 failed_channels.append(ch)
+                hv.moveToBad(hv_ch)
                 continue
 
             time.sleep(1.0)
 
-            # 4. Select FEB for Modbus address change:
-            #    reset all + write only register 1
+            if not self._submit_rc_command(
+                command="rc_feb_reset_after_flash",
+                payload={},
+                timeout_s=30.0,
+            ):
+                self.logger.error(f"Post-flash RC reset failed for FEB channel {ch}")
+                failed_channels.append(ch)
+                hv.moveToBad(hv_ch)
+                continue
+
+            time.sleep(0.1)
+
             if not self._submit_rc_command(
                 command="rc_feb_select_address_change",
                 payload={"channels": str(ch)},
                 timeout_s=30.0,
             ):
+                self.logger.error(
+                    f"Failed to select FEB channel {ch} for address change"
+                )
                 failed_channels.append(ch)
+                hv.moveToBad(hv_ch)
                 continue
 
             time.sleep(0.5)
 
-            # 5. Change/verify address using HV Modbus
             if not self._submit_hv_command(
                 command="feb_change_address",
                 payload={
@@ -219,38 +376,31 @@ class FEBService:
                 },
                 timeout_s=90.0,
             ):
+                self.logger.error(f"Address change failed for FEB channel {ch}")
                 failed_channels.append(ch)
+                hv.moveToBad(hv_ch)
                 continue
 
             successful_channels.append(ch)
+            hv.moveToOk(hv_ch)
+
             self.logger.info(f"FEB channel {ch} programmed successfully")
 
-        if successful_channels:
-            # Old init_acq starts with reg17 = 0.
-            reg17_ok = self._submit_rc_command(
-                command="rc_write_register",
-                payload={
-                    "address": 17,
-                    "value": 0,
-                },
-                timeout_s=30.0,
-            )
+        for ch in failed_channels:
+            hv.moveToBad(ch + 1)
 
-            data_mode_ok = reg17_ok and self._submit_rc_command(
-                command="rc_acq_start",
-                payload={
-                    "channels": ",".join(str(ch) for ch in successful_channels),
-                },
-                timeout_s=30.0,
-            )
-        else:
-            data_mode_ok = False
+        data_mode_ok, hv_restore_ok = self._restore_after_programming(
+            successful_channels=successful_channels,
+        )
 
         return {
-            "success": bool(successful_channels) and data_mode_ok,
+            "success": bool(successful_channels) and data_mode_ok and hv_restore_ok,
             "successful_channels": successful_channels,
             "failed_channels": failed_channels,
+            "skipped_bad_channels": skipped_bad_channels,
             "data_mode_ok": data_mode_ok,
+            "hv_restore_ok": hv_restore_ok,
+            "acq_mode": self.runtime.acq_mode,
             "firmware": str(self._resolve_firmware_path(firmware)),
             "baud": baud,
             "port": port,

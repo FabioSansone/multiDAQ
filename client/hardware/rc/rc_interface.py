@@ -435,72 +435,89 @@ class RC:
             "message": f"Write failed for channels {channel_list}",
         }
         
-    def select_for_feb_address_change(self, channels):
+        
+        
+    def feb_reset_after_flash(self) -> dict:
         """
-        Select FEB channels for Modbus address change after flashing.
+        Reset RC after FEB firmware flashing.
+
+        Required order:
+            reg1 = 0
+            reg0 = 0
+            reg17 = 0
         """
+        ok1 = self.write(1, 0)
+        ok0 = self.write(0, 0)
+        ok17 = self.write(17, 0)
 
-        reset_result = self.reset("all")
+        success = ok1 and ok0 and ok17
 
-        if not reset_result.get("success"):
-            return {
-                "success": False,
-                "selected_channels": [],
-                "failed_channels": [],
-                "register_mask": 0,
-                "message": "Failed to reset RC before FEB address change",
-                "reset_result": reset_result,
-            }
+        return {
+            "success": success,
+            "registers": {
+                1: 0,
+                0: 0,
+                17: 0,
+            },
+            "message": (
+                "FEB post-flash RC reset completed"
+                if success
+                else "FEB post-flash RC reset failed"
+            ),
+        }
 
+
+    def feb_select_for_address_change(self, channels) -> dict:
+        """
+        Select exactly one FEB channel for Modbus address change.
+
+        Required sequence before Modbus scan:
+            reg1 = mask
+
+        Assumption:
+            reg0 and reg17 have already been reset.
+        """
         channel_list = channels_definition(
             channels=channels,
             n_channels=self.num_channels,
         )
 
-        if not channel_list:
+        if len(channel_list) != 1:
             return {
                 "success": False,
                 "selected_channels": [],
-                "failed_channels": [],
+                "failed_channels": channel_list,
                 "register_mask": 0,
-                "message": "No valid channels selected",
+                "message": "FEB address change must select exactly one channel",
             }
 
-        mask = 0
+        ch = channel_list[0]
 
-        for ch in channel_list:
-            if not self.checkChannelsBoundary(ch):
-                return {
-                    "success": False,
-                    "selected_channels": [],
-                    "failed_channels": [ch],
-                    "register_mask": mask,
-                    "message": f"Invalid channel {ch}",
-                }
+        if not self.checkChannelsBoundary(ch):
+            return {
+                "success": False,
+                "selected_channels": [],
+                "failed_channels": [ch],
+                "register_mask": 0,
+                "message": f"Invalid channel {ch}",
+            }
 
-            mask |= 1 << ch
+        mask = 1 << ch
 
         ok1 = self.write(1, mask)
 
-        if ok1:
-            return {
-                "success": True,
-                "selected_channels": channel_list,
-                "failed_channels": [],
-                "register_mask": mask,
-                "message": (
-                    f"FEB channels {channel_list} selected for address change"
-                ),
-            }
-
         return {
-            "success": False,
-            "selected_channels": [],
-            "failed_channels": channel_list,
+            "success": ok1,
+            "selected_channels": [ch] if ok1 else [],
+            "failed_channels": [] if ok1 else [ch],
             "register_mask": mask,
-            "message": "Failed to write RC register 1 for FEB address change",
+            "message": (
+                f"FEB channel {ch} selected for address change"
+                if ok1
+                else f"Failed to select FEB channel {ch} for address change"
+            ),
         }
-    
+        
 
     def free_rate_monitoring(self, channels):
         """
