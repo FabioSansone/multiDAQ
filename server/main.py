@@ -6,7 +6,7 @@ import cmd2
 import zmq
 
 from server.utils.logger import get_logger, LoggerManager
-from server.commands import app_commands, hv_commands, rc_commands, acq_commands
+from server.commands import app_commands, hv_commands, rc_commands, acq_commands, calibration_commands
 from server.communication.control_manager import ControlPlaneManager
 from server.communication.acquisition_manager import AcquisitionPlaneManager
 from server.acquisition.receiver_service import DataReceiverService
@@ -15,6 +15,8 @@ from server.core.server_state import ServerState
 from server.services.client_command_service import ClientCommandService
 from server.services.channel_selection_service import ChannelSelectionService
 from server.services.acquisition_orchestrator import AcquisitionOrchestrator
+from server.services.acquisition_service import AcquisitionService
+from server.services.calibration_orchestrator import CalibrationOrchestrator
 from server.services.shutdown_service import ShutdownService
 
 
@@ -34,9 +36,9 @@ class Server(cmd2.Cmd):
         self.data_receiver_service = DataReceiverService()
 
         self.client_command_service = ClientCommandService(
-        control_manager=self.control_manager,
-        output_func=self.poutput,
-)
+            control_manager=self.control_manager,
+            output_func=self.poutput,
+        )
 
         self.channel_selection_service = ChannelSelectionService(
             control_manager=self.control_manager,
@@ -44,9 +46,22 @@ class Server(cmd2.Cmd):
             output_func=self.poutput,
         )
 
-        self.acquisition_orchestrator = AcquisitionOrchestrator(
+        self.acquisition_service = AcquisitionService(
             control_manager=self.control_manager,
             data_receiver_service=self.data_receiver_service,
+            command_service=self.client_command_service,
+            output_func=self.poutput,
+        )
+
+        self.acquisition_orchestrator = AcquisitionOrchestrator(
+            acquisition_service=self.acquisition_service,
+            channel_selection_service=self.channel_selection_service,
+            get_mode=lambda: self.mode,
+            output_func=self.poutput,
+        )
+
+        self.calibration_orchestrator = CalibrationOrchestrator(
+            acquisition_service=self.acquisition_service,
             channel_selection_service=self.channel_selection_service,
             command_service=self.client_command_service,
             get_mode=lambda: self.mode,
@@ -76,6 +91,9 @@ class Server(cmd2.Cmd):
 
         #GENERIC ACQ COMMANDS#
         self.do_acquisition = acq_commands.do_acquisition.__get__(self, Server)
+        
+        #CALIBRATION COMMANDS#
+        self.do_calibration = calibration_commands.do_calibration.__get__(self, Server)
 
         #EVENT MESSAGES MANAGER#
         self.handle_event = app_commands.handle_event.__get__(self, Server)

@@ -34,7 +34,9 @@ LOGGER_NAMES = {
     'client_command_service': 'server.services.client_command',
     'channel_selection_service': 'server.services.channel_selection',
     'acquisition_orchestrator': 'server.services.acquisition_orchestrator',
+    'calibration_orchestrator': 'server.services.calibration_orchestrator',
     'shutdown_service': 'server.services.shutdown',
+    'acquisition_service': 'server.services.acquisition',
 
     #Main Application
     'app': 'server.app'

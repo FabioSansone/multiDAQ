@@ -16,17 +16,98 @@ class ChannelSelectionService:
     @staticmethod
     def hv_to_user_channels(channels: List[int]) -> List[int]:
         return [ch - 1 for ch in channels]
+    
+    @staticmethod
+    def parse_user_channels(
+        channels: str | int | list[int],
+        n_channels: int = 7,
+    ) -> list[int]:
+        """
+        Parse channels expressed in external/user numbering: 0..6.
 
-    def get_test_rc_channels(self, client_id: bytes) -> List[int]:
+        Accepted formats:
+            "all"
+            "0,1,4"
+            3
+            [0, 2, 5]
+        """
+
+        if channels == "all":
+            return list(range(n_channels))
+
+        if isinstance(channels, int):
+            parsed_channels = [channels]
+
+        elif isinstance(channels, str):
+            try:
+                parsed_channels = [
+                    int(item.strip())
+                    for item in channels.split(",")
+                    if item.strip()
+                ]
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid channel selection: {channels!r}"
+                ) from exc
+
+        elif isinstance(channels, list):
+            try:
+                parsed_channels = [int(channel) for channel in channels]
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid channel selection: {channels!r}"
+                ) from exc
+
+        else:
+            raise TypeError(
+                f"Unsupported channel selection type: {type(channels).__name__}"
+            )
+
+        invalid_channels = [
+            channel
+            for channel in parsed_channels
+            if channel < 0 or channel >= n_channels
+        ]
+
+        if invalid_channels:
+            raise ValueError(
+                f"Channels outside valid range 0..{n_channels - 1}: "
+                f"{invalid_channels}"
+            )
+
+        return sorted(set(parsed_channels))
+
+    def get_test_rc_channels(
+        self,
+        client_id: bytes,
+        requested_channels: str | int | list[int] = "all",
+    ) -> List[int]:
         """
         Return RC channels to enable in test mode.
 
-        In test mode no HV power/configuration command is allowed.
-        If HVService is available in monitor-only mode, use HV OK channels only.
-        If HVService is unavailable, fall back to all RC channels for bench tests.
+        The final channel selection is the intersection between:
+            - channels requested by the user, in RC numbering 0..6;
+            - HV/FEB channels detected as OK.
+
+        If HV synchronization is unavailable, the requested channel selection
+        is used as fallback.
         """
 
         client_name = client_id.decode(errors="ignore")
+
+        try:
+            requested_rc_channels = self.parse_user_channels(
+                channels=requested_channels,
+                n_channels=7,
+            )
+        except (TypeError, ValueError) as exc:
+            self.logger.error(
+                f"Invalid requested channels for client {client_name}: {exc}"
+            )
+            self.poutput(
+                f"Client {client_name}: invalid channel selection: {exc}"
+            )
+            return []
 
         sync_reply, reason = self.command_service.send_hv_command(
             client_id=client_id,
@@ -37,14 +118,14 @@ class ChannelSelectionService:
 
         if sync_reply is None:
             self.logger.warning(
-                f"HV sync unavailable in test mode for client {client_name}: {reason}. "
-                "Falling back to all RC channels."
+                f"HV sync unavailable in test mode for client {client_name}: "
+                f"{reason}. Using requested RC channels."
             )
             self.poutput(
-                f"Client {client_name}: HV sync unavailable in test mode; "
-                "enabling all RC channels."
+                f"Client {client_name}: HV sync unavailable; "
+                f"using requested RC channels: {requested_rc_channels}"
             )
-            return list(range(7))
+            return requested_rc_channels
 
         sync_payload = sync_reply.payload or {}
         sync_result = sync_payload.get("result", {})
@@ -52,43 +133,70 @@ class ChannelSelectionService:
 
         if sync_error:
             self.logger.warning(
-                f"HV sync error in test mode for client {client_name}: {sync_error}. "
-                "Falling back to all RC channels."
+                f"HV sync error in test mode for client {client_name}: "
+                f"{sync_error}. Using requested RC channels."
             )
             self.poutput(
-                f"Client {client_name}: HV sync error in test mode; "
-                "enabling all RC channels."
+                f"Client {client_name}: HV sync error; "
+                f"using requested RC channels: {requested_rc_channels}"
             )
-            return list(range(7))
+            return requested_rc_channels
 
-        ok_channels = sorted(set(sync_result.get("ok_channels", [])))
-        bad_channels = sorted(set(sync_result.get("bad_channels", [])))
-
-        if bad_channels:
-            self.poutput(
-                f"Client {client_name}: BAD HV/FEB channels excluded in test mode: "
-                f"{self.hv_to_user_channels(bad_channels)}"
-            )
-
-        rc_channels = self.hv_to_user_channels(ok_channels)
-
-        if not rc_channels:
-            self.logger.warning(
-                f"No OK HV/FEB channels found in test mode for client {client_name}. "
-                "Falling back to all RC channels."
-            )
-            self.poutput(
-                f"Client {client_name}: no OK HV/FEB channels found in test mode; "
-                "enabling all RC channels."
-            )
-            return list(range(7))
-
-        self.poutput(
-            f"Client {client_name}: test mode RC channels from HV/FEB presence: "
-            f"{rc_channels}"
+        ok_hv_channels = sorted(
+            set(sync_result.get("ok_channels", []))
         )
 
-        return rc_channels
+        bad_hv_channels = sorted(
+            set(sync_result.get("bad_channels", []))
+        )
+
+        available_rc_channels = self.hv_to_user_channels(ok_hv_channels)
+        bad_rc_channels = self.hv_to_user_channels(bad_hv_channels)
+
+        if bad_rc_channels:
+            self.poutput(
+                f"Client {client_name}: BAD HV/FEB channels excluded: "
+                f"{bad_rc_channels}"
+            )
+
+        final_rc_channels = sorted(
+            set(requested_rc_channels) & set(available_rc_channels)
+        )
+
+        excluded_requested_channels = sorted(
+            set(requested_rc_channels) - set(final_rc_channels)
+        )
+
+        if excluded_requested_channels:
+            self.poutput(
+                f"Client {client_name}: requested channels unavailable and excluded: "
+                f"{excluded_requested_channels}"
+            )
+
+        if not final_rc_channels:
+            self.logger.warning(
+                f"No requested OK HV/FEB channels available for client {client_name}. "
+                f"Requested={requested_rc_channels}, available={available_rc_channels}"
+            )
+            self.poutput(
+                f"Client {client_name}: no requested channels are currently available."
+            )
+            return []
+
+        self.poutput(
+            f"Client {client_name}: requested RC channels: "
+            f"{requested_rc_channels}"
+        )
+        self.poutput(
+            f"Client {client_name}: available RC channels: "
+            f"{available_rc_channels}"
+        )
+        self.poutput(
+            f"Client {client_name}: final RC channels enabled: "
+            f"{final_rc_channels}"
+        )
+
+        return final_rc_channels
 
     def prepare_hv_channels_for_acquisition(self) -> dict[bytes, List[int]]:
         """

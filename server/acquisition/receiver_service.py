@@ -16,6 +16,7 @@ ACQUISITION_FOLDERS = {
     "threshold_dark": "threshold_calibration_dark",
     "threshold_scan": "threshold_scan",
     "spe_equal": "spe_equal_gains",
+    "ttp": "time_to_peak",
     "test": "test",
 }
 
@@ -58,7 +59,7 @@ class DataReceiverService:
             return Path("/swgo")
         return Path.home()
 
-    def _get_run_folder(self, acq_type: str, batch_id: str | int | None = None, run_id: str | int | None = None) -> Path:
+    def get_run_folder(self, acq_type: str, batch_id: str | int | None = None, run_id: str | int | None = None) -> Path:
         batch_name = str(batch_id)
 
         if not batch_name.startswith("batch_"):
@@ -150,7 +151,7 @@ class DataReceiverService:
     def is_busy(self)->bool:
         return self.is_running() or self.finalizing
 
-    def start(self, duration: int | float | None = None, suffix: str = "", acq_type: str = "test", run_id: str | int | None = None, batch_id: str | int | None = None, force_compile: bool = False) -> dict | None:
+    def start(self, duration: int | float | None = None, suffix: str = "", acq_type: str = "test", run_id: str | int | None = None, batch_id: str | int | None = None, run_folder: Path | None = None, force_compile: bool = False) -> dict | None:
         if self.is_busy():
             self.logger.error("Cannot start acquisition: receiver is busy")
             return None
@@ -172,11 +173,14 @@ class DataReceiverService:
             self.logger.error("Cannot start data receiver: missing batch_id")
             return None
 
-        run_folder = self._get_run_folder(
-            acq_type=acq_type,
-            batch_id=batch_id,
-            run_id=run_id,
-        )
+        if run_folder is None:
+            run_folder = self._get_run_folder(
+                acq_type=acq_type,
+                batch_id=batch_id,
+                run_id=run_id,
+            )
+        else:
+            run_folder.mkdir(parents=True, exist_ok=True)
 
         filepath = self._build_file_path(
             run_folder=run_folder,

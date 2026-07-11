@@ -164,7 +164,7 @@ void *receive_data(void *args) {
             { server_socket, 0, ZMQ_POLLIN, 0 }
         };
 
-        if (zmq_poll(items, 1, 120000) <= 0) //100 ms timeout
+        if (zmq_poll(items, 1, 500) <= 0) //500 ms timeout
             continue;
 
         if (!(items[0].revents & ZMQ_POLLIN))
