@@ -2,24 +2,59 @@ import threading
 from typing import List
 import time
 
+from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 
 
 class AcquisitionService:
+    def __init__(
+        self,
+        server_state,
+        data_receiver_service,
+        command_service,
+        output_func=None,
+    ) -> None:
 
-    def __init__(self, control_manager, data_receiver_service, command_service, output_func=None,) -> None:
-
-        self.control_manager = control_manager
+        self.server_state = server_state
         self.command_service = command_service
         self.data_receiver_service = data_receiver_service
 
         self.poutput = output_func or (lambda message: None)
-        
+
         self.logger = get_logger("acquisition_service")
         self.logger.debug("Acquisition Service initialized")
 
         self._finalize_lock = threading.Lock()
         self._finalized = False
+
+        self._active_clients_lock = threading.Lock()
+        self._active_client_ids: list[bytes] = []
+        
+        
+    def set_active_clients(self, client_ids: List[bytes]) -> None:
+        with self._active_clients_lock:
+            self._active_client_ids = list(dict.fromkeys(client_ids))
+
+        client_names = [
+            client_id.decode(errors="ignore")
+            for client_id in self._active_client_ids
+        ]
+
+        self.logger.info(
+            f"Active acquisition clients set: {client_names}"
+        )
+
+
+    def get_active_clients(self) -> list[bytes]:
+        with self._active_clients_lock:
+            return list(self._active_client_ids)
+
+
+    def clear_active_clients(self) -> None:
+        with self._active_clients_lock:
+            self._active_client_ids.clear()
+
+        self.logger.info("Active acquisition clients cleared")
 
     
     def reset_acquisition_state(self) -> None:
@@ -34,6 +69,7 @@ class AcquisitionService:
         read_prev = self.command_service.read_rc_register(
             client_id=client_id,
             address=15,
+            plane=CommandPlane.ACQUISITION
         )
 
         if read_prev is None:
@@ -46,6 +82,7 @@ class AcquisitionService:
             client_id=client_id,
             address=15,
             value=read_prev + 32,
+            plane=CommandPlane.ACQUISITION
         ):
             self.poutput(
                 f"Client {client_name}: flush failed while writing register 15."
@@ -57,6 +94,7 @@ class AcquisitionService:
         read_now = self.command_service.read_rc_register(
             client_id=client_id,
             address=15,
+            plane=CommandPlane.ACQUISITION
         )
 
         if read_now is None:
@@ -70,6 +108,7 @@ class AcquisitionService:
                 client_id=client_id,
                 address=15,
                 value=read_prev,
+                plane=CommandPlane.ACQUISITION
             )
 
             return True
@@ -88,68 +127,81 @@ class AcquisitionService:
         for client_id in client_ids:
             self.flush_client(client_id=client_id)
 
-    def finalize_acquisition(self, client_ids: List[bytes], reason: str) -> None:
+    def finalize_acquisition(
+        self,
+        client_ids: List[bytes] | None,
+        reason: str,
+    ) -> None:
+
         with self._finalize_lock:
             if self._finalized:
                 self.logger.info(
-                    f"Acquisition finalization already completed. Ignoring request: {reason}"
+                    f"Acquisition finalization already completed. "
+                    f"Ignoring request: {reason}"
                 )
                 return
 
             self._finalized = True
 
-        self.poutput(f"Finalizing acquisition: {reason}")
-        self.logger.info(f"Finalizing acquisition: {reason}")
-
-        self.disable_rc_channels()
-
-        if self.data_receiver_service.is_running():
-            stopped = self.data_receiver_service.stop()
-
-            if stopped:
-                self.poutput("Acquisition stopped.")
-            else:
-                self.poutput("Failed to stop acquisition.")
-                return
-
+        if client_ids is None:
+            client_ids = self.get_active_clients()
         else:
-            self.poutput("Data receiver is not running. Continuing finalization.")
-
-        if not client_ids:
-            self.poutput("No connected clients. Final flush skipped.")
-            return
-
-        self.poutput("Starting final flush receiver...")
-
-        flush_info = self.data_receiver_service.start_flush(
-            duration=30.0,
-        )
-
-        if flush_info is None:
-            self.poutput("Failed to start final flush receiver.")
-            self.logger.error("Failed to start final flush receiver")
-            return
-
-        flush_thread = threading.Thread(
-            target=self.flush_clients,
-            args=(client_ids,),
-            daemon=True,
-        )
-
-        flush_thread.start()
+            client_ids = list(client_ids)
 
         try:
+            self.poutput(f"Finalizing acquisition: {reason}")
+            self.logger.info(f"Finalizing acquisition: {reason}")
+
+            self.disable_rc_channels(client_ids=client_ids)
+
+            if self.data_receiver_service.is_running():
+                stopped = self.data_receiver_service.stop()
+
+                if stopped:
+                    self.poutput("Acquisition stopped.")
+                else:
+                    self.poutput("Failed to stop acquisition.")
+                    return
+            else:
+                self.poutput(
+                    "Data receiver is not running. Continuing finalization."
+                )
+
+            if not client_ids:
+                self.poutput(
+                    "No active clients. Final hardware flush skipped."
+                )
+                return
+
+            self.poutput("Starting final flush receiver...")
+
+            flush_info = self.data_receiver_service.start_flush(
+                duration=30.0,
+            )
+
+            if flush_info is None:
+                self.poutput("Failed to start final flush receiver.")
+                self.logger.error("Failed to start final flush receiver")
+                return
+
+            flush_thread = threading.Thread(
+                target=self.flush_clients,
+                args=(client_ids,),
+                daemon=True,
+            )
+            flush_thread.start()
+
             while self.data_receiver_service.is_running():
                 time.sleep(0.5)
 
             flush_thread.join(timeout=15.0)
 
+            self.poutput("Final flush completed.")
+            self.logger.info("Final flush completed")
+
         finally:
             self.data_receiver_service.clear_finalizing()
-
-        self.poutput("Final flush completed.")
-        self.logger.info("Final flush completed")
-
+            self.clear_active_clients()
 
     def watch_acquisition_completion(self, client_ids: List[bytes]) -> None:
         while self.data_receiver_service.is_running():
@@ -225,6 +277,7 @@ class AcquisitionService:
             client_id=client_id,
             address=register_address,
             value=register_value,
+            plane=CommandPlane.ACQUISITION
         )
 
         if not ok:
@@ -239,8 +292,15 @@ class AcquisitionService:
         return True
 
 
-    def disable_rc_channels(self) -> None:
-        client_ids = self.control_manager.server_state.list_connected_clients()
+    def disable_rc_channels(
+        self,
+        client_ids: List[bytes] | None = None,
+    ) -> None:
+
+        if client_ids is None:
+            client_ids = self.command_service.list_clients_on_plane(
+                CommandPlane.ACQUISITION
+            )
 
         for client_id in client_ids:
             client_name = client_id.decode(errors="ignore")
@@ -249,13 +309,17 @@ class AcquisitionService:
                 client_id=client_id,
                 address=19,
                 value=0,
+                plane=CommandPlane.ACQUISITION,
             )
 
             if ok:
-                self.poutput(f"Client {client_name}: RC acquisition channels disabled.")
+                self.poutput(
+                    f"Client {client_name}: RC acquisition channels disabled."
+                )
             else:
                 self.poutput(
-                    f"Client {client_name}: failed to disable RC acquisition channels."
+                    f"Client {client_name}: failed to disable "
+                    "RC acquisition channels."
                 )
     
 
@@ -267,7 +331,7 @@ class AcquisitionService:
             return None
 
         client_id = client_ids[0]
-        identity = self.control_manager.server_state.get_identity(client_id) or {}
+        identity = self.server_state.get_identity(client_id) or {}
 
         batch_id = identity.get("batch_id")
         if batch_id:
@@ -284,6 +348,16 @@ class AcquisitionService:
         return None
     
 
-    def get_connected_clients(self):
-        return self.control_manager.list_connected_clients()
+    def get_connected_clients(
+        self,
+        plane: CommandPlane = CommandPlane.ACQUISITION,
+    ) -> list[bytes]:
+        return self.command_service.list_clients_on_plane(plane)
     
+    def list_connected_clients(self) -> list[bytes]:
+        return list(self.acquisition_clients)
+
+
+    def is_client_connected(self, client_id: bytes) -> bool:
+        return client_id in self.acquisition_clients
+        

@@ -37,17 +37,17 @@ class Server(cmd2.Cmd):
 
         self.client_command_service = ClientCommandService(
             control_manager=self.control_manager,
+            acquisition_manager=self.acq_manager,
             output_func=self.poutput,
         )
 
         self.channel_selection_service = ChannelSelectionService(
-            control_manager=self.control_manager,
             command_service=self.client_command_service,
             output_func=self.poutput,
         )
 
         self.acquisition_service = AcquisitionService(
-            control_manager=self.control_manager,
+            server_state=self.control_manager.server_state,
             data_receiver_service=self.data_receiver_service,
             command_service=self.client_command_service,
             output_func=self.poutput,

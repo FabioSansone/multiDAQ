@@ -1,5 +1,6 @@
 import time
 
+from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 
 class CalibrationOrchestrator:
@@ -64,6 +65,7 @@ class CalibrationOrchestrator:
                 client_id=client_id,
                 address=10,
                 value=ttp_value,
+                plane=CommandPlane.ACQUISITION
             )
 
             if not ok:
@@ -96,6 +98,7 @@ class CalibrationOrchestrator:
             channels = self.channel_selection_service.get_test_rc_channels(
                 client_id=client_id,
                 requested_channels=args.channels,
+                plane=CommandPlane.ACQUISITION
             )
             
             if not channels:
@@ -141,9 +144,16 @@ class CalibrationOrchestrator:
         )
 
         if receiver_info is None:
-            self.poutput(f"Failed to start data receiver for TTP={ttp_value}.")
-            self.acquisition_service.disable_rc_channels()
+            self.poutput(
+                f"Failed to start data receiver for TTP={ttp_value}."
+            )
+            self.acquisition_service.disable_rc_channels(
+                client_ids=rc_ready_clients,
+            )
+            self.acquisition_service.clear_active_clients()
             return
+
+        self.acquisition_service.set_active_clients(rc_ready_clients)
 
         self.poutput(
             f"TTP={ttp_value}: data receiver started. "
@@ -170,7 +180,9 @@ class CalibrationOrchestrator:
             )
             return
 
-        client_ids = self.acquisition_service.get_connected_clients()
+        client_ids = self.acquisition_service.get_connected_clients(
+            plane=CommandPlane.ACQUISITION
+        )
 
 
         if not client_ids:

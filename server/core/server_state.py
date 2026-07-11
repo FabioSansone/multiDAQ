@@ -1,6 +1,18 @@
 import threading
 from typing import List, Optional
 from server.utils.logger import get_logger
+from enum import Enum
+
+
+class ServerFSM(str, Enum):
+    DISCONNECTED = "disconnected"
+    CONNECTED = "connected"
+    READY = "ready"
+    CONFIGURING = "configuring"
+    ACQUIRING = "acquiring"
+    FINALIZING = "finalizing"
+    ERROR = "error"
+    
 
 
 class ServerState:
@@ -13,6 +25,8 @@ class ServerState:
         self.connected_clients: List[bytes] = []
         self.identity_by_client_id: dict[bytes, dict] = {}
         self.client_id_by_multipmt_id: dict[str, bytes] = {}
+        
+        self.run_state = ServerFSM.DISCONNECTED
 
         self.logger = get_logger("server_state")
         self.logger.debug("Server State initialized")
@@ -24,6 +38,15 @@ class ServerState:
     def get_mode(self) -> str:
         with self._lock:
             return self.acq_mode
+        
+    def set_server_state(self, state: ServerFSM):
+        with self._lock:
+            self.run_state = state
+            self.logger.info(f"Server run state changed to {state.value}")
+    
+    def get_server_state(self):
+        with self._lock:
+            return self.run_state
 
     def add_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
         with self._lock:

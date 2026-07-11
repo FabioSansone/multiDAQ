@@ -3,6 +3,7 @@ import time
 import threading
 
 from server.utils.logger import get_logger
+from server.services.client_command_service import CommandPlane
 
 
 
@@ -28,7 +29,9 @@ class AcquisitionOrchestrator:
     def start(self, args) -> None:
         self.poutput("Acquisition start command received.")
 
-        client_ids = self.acquisition_service.get_connected_clients()
+        client_ids = self.acquisition_service.get_connected_clients(
+            plane=CommandPlane.ACQUISITION
+        )
 
         if not client_ids:
             self.poutput("No connected clients.")
@@ -37,8 +40,10 @@ class AcquisitionOrchestrator:
         if self.acquisition_service.check_acquisition_busy():
             self.poutput("Data receiver is already running or finalizing.")
             return
+        
 
         self.acquisition_service.reset_acquisition_state()
+        self.acquisition_service.clear_active_clients()
 
         rc_ready_clients = []
         mode = self.get_mode()
@@ -54,6 +59,7 @@ class AcquisitionOrchestrator:
                 client_name = client_id.decode(errors="ignore")
                 channels = self.channel_selection_service.get_test_rc_channels(
                     client_id=client_id,
+                    plane=CommandPlane.ACQUISITION
                 )
 
                 rc_ok = self.acquisition_service.enable_rc_channels(
@@ -72,7 +78,7 @@ class AcquisitionOrchestrator:
 
         else:
             enabled_channels_by_client = (
-                self.channel_selection_service.prepare_hv_channels_for_acquisition()
+                self.channel_selection_service.prepare_hv_channels_for_acquisition(plane=CommandPlane.ACQUISITION)
             )
 
             if not enabled_channels_by_client:
@@ -110,10 +116,12 @@ class AcquisitionOrchestrator:
 
         if resolved_batch_id is None:
             self.poutput("Cannot start acquisition: missing batch_id and multipmt_id.")
-            self.acquisition_service.disable_rc_channels()
+            self.acquisition_service.disable_rc_channels(
+                client_ids=rc_ready_clients,
+            )
             return
 
-        receiver_info = self.acquisition_service.start_receiver(
+        receiver_info = self.acquisition_service.acquisition_receiver_start(
             duration=args.duration,
             suffix=args.suffix,
             acq_type=args.acq_type,
@@ -122,12 +130,18 @@ class AcquisitionOrchestrator:
             force_compile=args.force_compile,
         )
 
-
         if receiver_info is None:
             self.poutput("Failed to start data receiver.")
             self.logger.error("Failed to start data receiver")
-            self.acquisition_service.disable_rc_channels()
+
+            self.acquisition_service.disable_rc_channels(
+                client_ids=rc_ready_clients,
+            )
+            self.acquisition_service.clear_active_clients()
             return
+
+        self.acquisition_service.set_active_clients(rc_ready_clients)
+
 
         self.poutput(
             f"Data receiver started. "
@@ -148,7 +162,13 @@ class AcquisitionOrchestrator:
             )
 
     def stop(self) -> None:
-        client_ids = self.acquisition_service.get_connected_clients()
+        client_ids = self.acquisition_service.get_active_clients()
+
+        if not client_ids:
+            self.poutput(
+                "No active acquisition clients found. "
+                "Stopping/finalizing receiver state only."
+            )
 
         self.acquisition_service.finalize_acquisition(
             client_ids=client_ids,

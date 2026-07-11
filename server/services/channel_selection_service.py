@@ -1,13 +1,13 @@
 from typing import List
 
 from server.utils.logger import get_logger
+from server.services.client_command_service import CommandPlane
 
 
 
 
 class ChannelSelectionService:
-    def __init__(self, control_manager, command_service, output_func=None) -> None:
-        self.control_manager = control_manager
+    def __init__(self, command_service, output_func=None) -> None:
         self.command_service = command_service
         self.poutput = output_func or (lambda message: None)
         self.logger = get_logger("channel_selection_service")
@@ -81,6 +81,7 @@ class ChannelSelectionService:
         self,
         client_id: bytes,
         requested_channels: str | int | list[int] = "all",
+        plane: CommandPlane = CommandPlane.CONTROL
     ) -> List[int]:
         """
         Return RC channels to enable in test mode.
@@ -113,34 +114,53 @@ class ChannelSelectionService:
             client_id=client_id,
             command="set_hv_sync",
             payload={"channels": "all"},
+            plane=plane,
             timeout_s=90.0,
         )
 
         if sync_reply is None:
-            self.logger.warning(
-                f"HV sync unavailable in test mode for client {client_name}: "
-                f"{reason}. Using requested RC channels."
+            if plane == CommandPlane.CONTROL:
+                self.logger.warning(
+                    f"HV sync unavailable in test mode for client {client_name}: "
+                    f"{reason}. Using requested RC channels."
+                )
+                return requested_rc_channels
+
+            self.logger.error(
+                f"HV sync unavailable on acquisition plane for client "
+                f"{client_name}: {reason}"
             )
             self.poutput(
-                f"Client {client_name}: HV sync unavailable; "
-                f"using requested RC channels: {requested_rc_channels}"
+                f"Client {client_name}: cannot determine safe channels "
+                "for acquisition."
             )
-            return requested_rc_channels
+            return []
 
         sync_payload = sync_reply.payload or {}
         sync_result = sync_payload.get("result", {})
         sync_error = sync_payload.get("error")
 
         if sync_error:
-            self.logger.warning(
-                f"HV sync error in test mode for client {client_name}: "
-                f"{sync_error}. Using requested RC channels."
+            if plane==CommandPlane.CONTROL:
+                self.logger.warning(
+                    f"HV sync error in test mode for client {client_name}: "
+                    f"{sync_error}. Using requested RC channels."
+                )
+                self.poutput(
+                    f"Client {client_name}: HV sync error; "
+                    f"using requested RC channels: {requested_rc_channels}"
+                )
+                return requested_rc_channels
+            
+            self.logger.error(
+                f"HV sync error on acquisition plane for client "
+                f"{client_name}: {sync_error}"
             )
             self.poutput(
-                f"Client {client_name}: HV sync error; "
-                f"using requested RC channels: {requested_rc_channels}"
+                f"Client {client_name}: cannot determine safe channels "
+                "for acquisition."
             )
-            return requested_rc_channels
+            return []
 
         ok_hv_channels = sorted(
             set(sync_result.get("ok_channels", []))
@@ -198,7 +218,7 @@ class ChannelSelectionService:
 
         return final_rc_channels
 
-    def prepare_hv_channels_for_acquisition(self) -> dict[bytes, List[int]]:
+    def prepare_hv_channels_for_acquisition(self, plane: CommandPlane = CommandPlane.ACQUISITION,) -> dict[bytes, List[int]]:
         """
         Synchronize HV status and switch ON all OK+OFF channels.
 
@@ -208,10 +228,12 @@ class ChannelSelectionService:
             These are the channels that can be passed to RC register 19.
         """
 
-        client_ids = self.control_manager.server_state.list_connected_clients()
+        client_ids = self.command_service.list_clients_on_plane(plane)
 
         if not client_ids:
-            self.poutput("No connected clients.")
+            self.poutput(
+                f"No clients available on {plane.value} plane."
+            )
             return {}
 
         enabled_channels_by_client = {}
@@ -223,6 +245,7 @@ class ChannelSelectionService:
                 client_id=client_id,
                 command="set_hv_sync",
                 payload={"channels": "all"},
+                plane=plane,
                 timeout_s=90.0,
             )
 
@@ -270,6 +293,7 @@ class ChannelSelectionService:
                     client_id=client_id,
                     command="hv_on_and_wait",
                     payload={"channels": user_ok_off_channels},
+                    plane=plane,
                     timeout_s=300.0,
                 )
 
