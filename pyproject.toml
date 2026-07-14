@@ -5,6 +5,7 @@ requires-python = ">=3.10"
 dependencies = [
     "pyzmq",
     "cmd2",
+    "flask",
 ]
 
 [tool.setuptools.packages.find]

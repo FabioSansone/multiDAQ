@@ -47,7 +47,10 @@ class AcquisitionPlaneManager:
         self.logger.debug("ZMQ Acquisition Server Manager initialized")
 
     def list_connected_clients(self) -> List[bytes]:
-        return self.server_state.list_connected_clients()
+        return list(self.acquisition_clients)
+
+    def is_client_connected(self, client_id: bytes) -> bool:
+        return client_id in self.acquisition_clients
 
     def get_identity(self, client_id: bytes) -> Optional[dict]:
         return self.server_state.get_identity(client_id)

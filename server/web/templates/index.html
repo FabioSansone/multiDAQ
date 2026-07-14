@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>multiDAQ Control</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>multiDAQ Control</h1>
+      <p id="subtitle">Server control panel</p>
+    </div>
+    <div class="status-pill" id="server-mode">mode: ...</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>Server</h2>
+      <div class="grid two">
+        <label>Mode
+          <select id="mode">
+            <option value="test">test</option>
+            <option value="calibration">calibration</option>
+            <option value="multipmt">multipmt</option>
+          </select>
+        </label>
+        <button data-action="mode">Apply Mode</button>
+      </div>
+      <div class="grid three">
+        <label>Clients
+          <input id="num-clients" type="number" min="1" value="1">
+        </label>
+        <label>Control Port
+          <input id="control-port" type="number" value="8888">
+        </label>
+        <label>Acq Port
+          <input id="acq-port" type="number" value="8889">
+        </label>
+      </div>
+      <button data-action="connect">Connect Clients</button>
+      <pre id="status-json"></pre>
+    </section>
+
+    <section class="panel">
+      <h2>Clients</h2>
+      <div id="clients" class="clients"></div>
+    </section>
+
+    <section class="panel">
+      <h2>HV</h2>
+      <div class="grid three">
+        <label>Command
+          <select id="hv-command">
+            <option value="set_hv_sync">sync</option>
+            <option value="hv_on">on</option>
+            <option value="hv_off">off</option>
+            <option value="set_common_voltage">set voltage</option>
+            <option value="set_common_threshold">set threshold</option>
+          </select>
+        </label>
+        <label>Channels
+          <input id="hv-channels" value="all">
+        </label>
+        <label>Value
+          <input id="hv-value" type="number" placeholder="optional">
+        </label>
+      </div>
+      <button data-action="hv">Send HV Command</button>
+    </section>
+
+    <section class="panel">
+      <h2>Run Control</h2>
+      <div class="grid four">
+        <label>Command
+          <select id="rc-command">
+            <option value="rc_acq_start">start channels</option>
+            <option value="rc_reset">reset</option>
+            <option value="rc_boot">boot</option>
+            <option value="rc_read_register">read register</option>
+            <option value="rc_write_register">write register</option>
+          </select>
+        </label>
+        <label>Channels
+          <input id="rc-channels" value="all">
+        </label>
+        <label>Address
+          <input id="rc-address" type="number" placeholder="register">
+        </label>
+        <label>Value
+          <input id="rc-value" type="number" placeholder="value">
+        </label>
+      </div>
+      <button data-action="rc">Send RC Command</button>
+    </section>
+
+    <section class="panel wide">
+      <h2>Acquisition</h2>
+      <div class="grid six">
+        <label>Duration
+          <input id="acq-duration" type="number" step="0.1" placeholder="continuous">
+        </label>
+        <label>Type
+          <input id="acq-type" value="test">
+        </label>
+        <label>Suffix
+          <input id="acq-suffix" placeholder="optional">
+        </label>
+        <label>Run ID
+          <input id="acq-run-id" placeholder="auto">
+        </label>
+        <label>Batch ID
+          <input id="acq-batch-id" placeholder="from client">
+        </label>
+        <label class="checkbox">
+          <input id="acq-force-compile" type="checkbox">
+          force compile
+        </label>
+      </div>
+      <div class="actions">
+        <button data-action="acq-start">Start Acquisition</button>
+        <button data-action="acq-stop" class="danger">Stop Acquisition</button>
+      </div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Grafana</h2>
+      <iframe src="{{ grafana_url }}" title="Grafana dashboard"></iframe>
+    </section>
+
+    <section class="panel wide">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script>
+    window.MULTIDAQ_GRAFANA_URL = "{{ grafana_url }}";
+  </script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
