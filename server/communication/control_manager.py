@@ -320,6 +320,7 @@ class ControlPlaneManager:
             )
             return False
 
+        """
         if self.server_state.get_mode() == "multipmt":
             config_file_service = JsonParser(
                 multipmt_id=multipmt_id,
@@ -352,6 +353,8 @@ class ControlPlaneManager:
                     f"Failed to send multipmt acquisition config to client {client_id!r}"
                 )
                 return False
+        
+        """
             
         self.add_client(client_id, identity_payload)
 

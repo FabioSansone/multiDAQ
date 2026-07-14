@@ -61,10 +61,8 @@ class ClientCommandService:
         else:
             available = self.acquisition_manager.is_client_connected(client_id)
 
-
         if not available:
             client_name = client_id.decode(errors="ignore")
-
             self.logger.error(
                 f"Client {client_name} is not available on "
                 f"{plane.value} plane"
@@ -283,7 +281,6 @@ class ClientCommandService:
         self,
         plane: CommandPlane | str,
     ) -> list[bytes]:
-
         normalized_plane = self._normalize_plane(plane)
 
         if normalized_plane is None:

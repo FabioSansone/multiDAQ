@@ -11,7 +11,7 @@ from server.communication.control_manager import ControlPlaneManager
 from server.communication.acquisition_manager import AcquisitionPlaneManager
 from server.acquisition.receiver_service import DataReceiverService
 from common.constants import ACQUISITION_MODES
-from server.core.server_state import ServerState
+from server.core.server_state import ServerState, ServerFSM
 from server.services.client_command_service import ClientCommandService
 from server.services.channel_selection_service import ChannelSelectionService
 from server.services.acquisition_orchestrator import AcquisitionOrchestrator
@@ -75,6 +75,8 @@ class Server(cmd2.Cmd):
         )
 
         self.prompt = f"Server[{self.mode}]> "
+        
+        self.control_manager.server_state.set_server_state(ServerFSM.DISCONNECTED)
 
         
         #GENERIC COMMANDS#

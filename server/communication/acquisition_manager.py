@@ -1,16 +1,18 @@
-import zmq
 import queue
 import threading
-from typing import Optional, List
+import time
+from typing import List, Optional
 
-from server.core.server_state import ServerState
+import zmq
+
 from common.message_handler import (
+    Channel,
     MessageHandler,
-    ProtocolMessage,
     MessageStatus,
     MessageType,
-    Channel,
+    ProtocolMessage,
 )
+from server.core.server_state import ServerState
 from server.utils.logger import get_logger
 
 
@@ -18,8 +20,11 @@ MAX_RETRIES = 5
 
 
 class AcquisitionPlaneManager:
-
-    def __init__(self, context: zmq.Context, state: ServerState):
+    def __init__(
+        self,
+        context: zmq.Context,
+        state: ServerState,
+    ) -> None:
         self.context = context
         self.socket: Optional[zmq.Socket] = None
         self.endpoint: Optional[str] = None
@@ -27,7 +32,8 @@ class AcquisitionPlaneManager:
 
         self.server_state = state
 
-        self.acquisition_clients: List[bytes] = []
+        self._clients_lock = threading.Lock()
+        self._acquisition_clients: List[bytes] = []
 
         self.message_handler = MessageHandler(
             logger=get_logger("message_handler")
@@ -38,22 +44,64 @@ class AcquisitionPlaneManager:
         self.acq_event_queue = queue.Queue()
 
         self.acq_stop_listening = threading.Event()
-        self.acq_listener_thread: Optional[threading.Thread] = None
 
+        self.acq_listener_thread: Optional[threading.Thread] = None
         self.acq_event_thread: Optional[threading.Thread] = None
         self.acq_event_callback = None
 
         self.logger = get_logger("acquisition_manager")
         self.logger.debug("ZMQ Acquisition Server Manager initialized")
 
+
     def list_connected_clients(self) -> List[bytes]:
-        return self.server_state.list_connected_clients()
+        """
+        Return clients that completed the AcquisitionPlane handshake.
+
+        A copy is returned so callers cannot modify the internal registry.
+        """
+        with self._clients_lock:
+            return list(self._acquisition_clients)
+
+    def is_client_connected(self, client_id: bytes) -> bool:
+        with self._clients_lock:
+            return client_id in self._acquisition_clients
+
+    def add_client(self, client_id: bytes) -> None:
+        with self._clients_lock:
+            if client_id in self._acquisition_clients:
+                return
+
+            self._acquisition_clients.append(client_id)
+
+        self.logger.info(
+            f"AcquisitionPlane client registered: {client_id!r}"
+        )
+
+    def remove_client(self, client_id: bytes) -> None:
+        removed = False
+
+        with self._clients_lock:
+            if client_id in self._acquisition_clients:
+                self._acquisition_clients.remove(client_id)
+                removed = True
+
+        if removed:
+            self.logger.info(
+                f"AcquisitionPlane client removed: {client_id!r}"
+            )
+
+    def clear_clients(self) -> None:
+        with self._clients_lock:
+            self._acquisition_clients.clear()
+
+        self.logger.debug("AcquisitionPlane client registry cleared")
 
     def get_identity(self, client_id: bytes) -> Optional[dict]:
         return self.server_state.get_identity(client_id)
 
+
     def start_connection(self, port: int) -> bool:
-        """Start acquisition ROUTER socket."""
+        """Start the AcquisitionPlane ROUTER socket."""
 
         if self.socket is not None:
             try:
@@ -63,6 +111,7 @@ class AcquisitionPlaneManager:
 
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.close()
+
             self.socket = None
             self.endpoint = None
 
@@ -76,24 +125,31 @@ class AcquisitionPlaneManager:
 
             self.endpoint = f"tcp://*:{port}"
 
-            self.logger.info(f"AcquisitionPlaneManager started on port {port}")
+            self.logger.info(
+                f"AcquisitionPlaneManager started on port {port}"
+            )
             return True
 
-        except zmq.ZMQError as e:
+        except zmq.ZMQError as exc:
             self.socket = None
             self.endpoint = None
+
             self.logger.error(
-                f"ZMQ Exception: failed to bind acquisition socket on port {port}: {e}"
+                "ZMQ Exception: failed to bind acquisition socket "
+                f"on port {port}: {exc}"
             )
             return False
 
-        except Exception as e:
+        except Exception as exc:
             self.socket = None
             self.endpoint = None
+
             self.logger.error(
-                f"Generic Exception: failed to bind acquisition socket on port {port}: {e}"
+                "Generic Exception: failed to bind acquisition socket "
+                f"on port {port}: {exc}"
             )
             return False
+
 
     def receive_message(
         self,
@@ -119,7 +175,9 @@ class AcquisitionPlaneManager:
                 return None, None, "empty multipart message"
 
             if len(frames) < 2:
-                self.logger.error(f"Invalid multipart message format: {frames}")
+                self.logger.error(
+                    f"Invalid multipart message format: {frames}"
+                )
                 return None, None, "invalid multipart format"
 
             client_id = frames[0]
@@ -129,31 +187,37 @@ class AcquisitionPlaneManager:
 
             if message is None:
                 self.logger.error(
-                    f"Failed to deserialize acquisition message "
+                    "Failed to deserialize acquisition message "
                     f"from client {client_id!r}: {reason}"
                 )
                 return client_id, None, reason
 
             self.logger.debug(
                 f"Received acquisition message from client {client_id!r}: "
-                f"type={message.msg_type.value}, request_id={message.request_id}"
+                f"type={message.msg_type.value}, "
+                f"request_id={message.request_id}"
             )
 
             return client_id, message, "ok"
 
-        except zmq.ZMQError as e:
+        except zmq.ZMQError as exc:
             self.logger.error(
-                f"ZMQ error while receiving acquisition message: {e}"
+                f"ZMQ error while receiving acquisition message: {exc}"
             )
-            return None, None, f"zmq error: {e}"
+            return None, None, f"zmq error: {exc}"
 
-        except Exception as e:
+        except Exception as exc:
             self.logger.error(
-                f"Unexpected error while receiving acquisition message: {e}"
+                "Unexpected error while receiving acquisition message: "
+                f"{exc}"
             )
-            return None, None, f"unexpected error: {e}"
+            return None, None, f"unexpected error: {exc}"
 
-    def send_message(self, client_id: bytes, message: ProtocolMessage) -> bool:
+    def send_message(
+        self,
+        client_id: bytes,
+        message: ProtocolMessage,
+    ) -> bool:
 
         if self.socket is None:
             self.logger.error(
@@ -166,7 +230,7 @@ class AcquisitionPlaneManager:
 
             if not message_raw:
                 self.logger.error(
-                    f"Serialization failed for acquisition message "
+                    "Serialization failed for acquisition message "
                     f"with request_id={message.request_id}"
                 )
                 return False
@@ -175,27 +239,33 @@ class AcquisitionPlaneManager:
 
             self.logger.debug(
                 f"Sent acquisition message to client {client_id!r}: "
-                f"type={message.msg_type.value}, request_id={message.request_id}"
+                f"type={message.msg_type.value}, "
+                f"request_id={message.request_id}"
             )
 
             return True
 
-        except zmq.ZMQError as e:
+        except zmq.ZMQError as exc:
             self.logger.error(
-                f"ZMQ error while sending acquisition message "
-                f"to client {client_id!r}: {e}"
+                "ZMQ error while sending acquisition message "
+                f"to client {client_id!r}: {exc}"
+            )
+
+            if exc.errno == zmq.EHOSTUNREACH:
+                self.remove_client(client_id)
+
+            return False
+
+        except Exception as exc:
+            self.logger.error(
+                "Unexpected error while sending acquisition message "
+                f"to client {client_id!r}: {exc}"
             )
             return False
 
-        except Exception as e:
-            self.logger.error(
-                f"Unexpected error while sending acquisition message "
-                f"to client {client_id!r}: {e}"
-            )
-            return False
+
 
     def handshake_core(self, timeout_ms: int = 20000) -> bool:
-
         if self.socket is None:
             self.logger.error(
                 "Communication not yet established. "
@@ -205,35 +275,37 @@ class AcquisitionPlaneManager:
 
         client_id, message, reason = self.receive_message(timeout_ms)
 
-        if message is None:
+        if message is None or client_id is None:
             self.logger.error(
-                f"Acquisition handshake failed while waiting for client hello: {reason}"
+                "Acquisition handshake failed while waiting for "
+                f"client hello: {reason}"
             )
             return False
 
         if client_id not in self.server_state.list_connected_clients():
             self.logger.error(
-                f"Acquisition handshake received from unknown client {client_id!r}"
+                "Acquisition handshake received from unknown "
+                f"ControlPlane client {client_id!r}"
             )
             return False
 
         if message.msg_type != MessageType.HANDSHAKE:
             self.logger.error(
-                f"Unexpected message type during acquisition handshake "
+                "Unexpected message type during acquisition handshake "
                 f"from {client_id!r}: {message.msg_type}"
             )
             return False
 
         if message.phase != "acquisition_hello":
             self.logger.error(
-                f"Unexpected acquisition handshake phase "
+                "Unexpected acquisition handshake phase "
                 f"from {client_id!r}: {message.phase}"
             )
             return False
 
         if message.payload.get("message") != "Acq_hello":
             self.logger.error(
-                f"Unexpected acquisition hello payload "
+                "Unexpected acquisition hello payload "
                 f"from {client_id!r}: {message.payload}"
             )
             return False
@@ -246,49 +318,56 @@ class AcquisitionPlaneManager:
             status=MessageStatus.OK,
         )
 
-        if not self.send_message(client_id=client_id, message=acq_response):
+        if not self.send_message(
+            client_id=client_id,
+            message=acq_response,
+        ):
             self.logger.error(
-                f"Failed to send acquisition ready message to client {client_id!r}"
+                "Failed to send acquisition ready message "
+                f"to client {client_id!r}"
             )
             return False
 
-        if client_id not in self.acquisition_clients:
-            self.acquisition_clients.append(client_id)
+        self.add_client(client_id)
 
         identity = self.server_state.get_identity(client_id) or {}
         multipmt_id = identity.get("multipmt_id", "unknown")
         batch_id = identity.get("batch_id", "unknown")
 
         self.logger.info(
-            f"Acquisition handshake completed successfully with client {client_id!r}, "
-            f"multipmt_id={multipmt_id}, batch_id={batch_id}, "
+            "Acquisition handshake completed successfully with "
+            f"client {client_id!r}, "
+            f"multipmt_id={multipmt_id}, "
+            f"batch_id={batch_id}, "
             f"acq_mode={self.server_state.get_mode()}"
         )
 
         return True
 
     def handshake(self) -> bool:
-
-        target_clients = len(self.server_state.list_connected_clients())
+        target_clients = len(
+            self.server_state.list_connected_clients()
+        )
 
         if target_clients == 0:
             self.logger.warning(
                 "Cannot start acquisition handshake: "
-                "no control-plane clients connected"
+                "no ControlPlane clients connected"
             )
             return False
 
         self.logger.info(
-            f"Waiting for {target_clients} acquisition-plane client(s) to connect..."
+            f"Waiting for {target_clients} "
+            "AcquisitionPlane client(s) to connect..."
         )
 
-        while len(self.acquisition_clients) < target_clients:
+        while len(self.list_connected_clients()) < target_clients:
             retries = 0
             success = False
 
             while retries < MAX_RETRIES and not success:
                 self.logger.info(
-                    f"Trying acquisition handshake "
+                    "Trying acquisition handshake "
                     f"(attempt {retries + 1}/{MAX_RETRIES})"
                 )
 
@@ -302,23 +381,30 @@ class AcquisitionPlaneManager:
 
             if not success:
                 self.logger.warning(
-                    "No more acquisition clients connected after maximum attempts. "
-                    "Server will remain operative with currently connected "
-                    "acquisition clients."
+                    "No more AcquisitionPlane clients connected after "
+                    "maximum attempts. Server will remain operative with "
+                    "currently connected acquisition clients."
                 )
                 break
 
-        if self.acquisition_clients:
+        connected_clients = self.list_connected_clients()
+
+        if connected_clients:
             self.logger.info(
-                f"Acquisition plane ready. Connected acquisition clients: "
-                f"{len(self.acquisition_clients)}/{target_clients}"
+                "Acquisition plane ready. Connected acquisition clients: "
+                f"{len(connected_clients)}/{target_clients}"
             )
             return True
 
-        self.logger.error("No acquisition clients connected.")
+        self.logger.error("No AcquisitionPlane clients connected.")
         return False
 
-    def queue_message(self, client_id: bytes, message: ProtocolMessage) -> None:
+
+    def queue_message(
+        self,
+        client_id: bytes,
+        message: ProtocolMessage,
+    ) -> None:
         self.acq_outgoing_queue.put((client_id, message))
 
     def wait_for_reply(
@@ -328,43 +414,77 @@ class AcquisitionPlaneManager:
         in_reply_to: str,
         timeout_s: float = 10.0,
     ) -> tuple[Optional[ProtocolMessage], str]:
+        """
+        Wait for a reply matching both client_id and in_reply_to.
+
+        Non-matching messages are temporarily removed from the incoming queue
+        and restored before returning. A monotonic deadline guarantees that
+        unrelated messages cannot restart or extend the requested timeout.
+        """
+
+        deadline = time.monotonic() + timeout_s
+        deferred_messages = []
 
         try:
             while True:
-                reply_client_id, message, reason = self.acq_incoming_queue.get(
-                    timeout=timeout_s
-                )
+                remaining_s = deadline - time.monotonic()
+
+                if remaining_s <= 0:
+                    return None, "timeout waiting for reply"
+
+                try:
+                    reply_client_id, message, reason = (
+                        self.acq_incoming_queue.get(
+                            timeout=remaining_s
+                        )
+                    )
+                except queue.Empty:
+                    return None, "timeout waiting for reply"
 
                 if message is None:
                     return None, reason
 
-                if reply_client_id != client_id:
-                    self.acq_incoming_queue.put((reply_client_id, message, reason))
-                    continue
+                if (
+                    reply_client_id == client_id
+                    and message.in_reply_to == in_reply_to
+                ):
+                    return message, "ok"
 
-                if message.in_reply_to != in_reply_to:
-                    self.acq_incoming_queue.put((reply_client_id, message, reason))
-                    continue
+                deferred_messages.append(
+                    (reply_client_id, message, reason)
+                )
 
-                return message, "ok"
+        finally:
+            for deferred_message in deferred_messages:
+                self.acq_incoming_queue.put(deferred_message)
 
-        except queue.Empty:
-            return None, "timeout waiting for reply"
+
 
     def _acquisition_io_loop(self) -> None:
+        """
+        Own the ROUTER socket after completion of the handshake.
+
+        All post-handshake socket receive/send operations are performed by
+        this thread. Other threads communicate through the queues.
+        """
 
         while not self.acq_stop_listening.is_set():
-
-            client_id, message, reason = self.receive_message(timeout_ms=100)
+            client_id, message, reason = self.receive_message(
+                timeout_ms=100
+            )
 
             if message is not None:
                 if message.msg_type == MessageType.EVENT:
-                    self.acq_event_queue.put((client_id, message,))
+                    self.acq_event_queue.put((client_id, message))
                 else:
-                    self.acq_incoming_queue.put((client_id, message, reason))
+                    self.acq_incoming_queue.put(
+                        (client_id, message, reason)
+                    )
 
             elif reason != "timeout elapsed":
-                self.logger.warning(f"Receive problem: {reason}")
+                self.logger.warning(
+                    f"Acquisition receive problem: {reason}"
+                )
 
             while True:
                 try:
@@ -374,57 +494,91 @@ class AcquisitionPlaneManager:
                 except queue.Empty:
                     break
 
+                if not self.is_client_connected(client_id_out):
+                    self.logger.error(
+                        "Cannot send queued acquisition message: "
+                        f"client {client_id_out!r} is not connected"
+                    )
+                    continue
+
                 if not self.send_message(
                     client_id=client_id_out,
                     message=outgoing_message,
                 ):
                     self.logger.error(
-                        f"Failed to send queued message to {client_id_out!r}: "
+                        "Failed to send queued acquisition message "
+                        f"to {client_id_out!r}: "
                         f"request_id={outgoing_message.request_id}"
                     )
 
     def _event_loop(self) -> None:
+        """
+        Process every EVENT received on the AcquisitionPlane.
+
+        The logical channel is preserved: events may concern Acquisition,
+        HV, RC, System, or another supported protocol channel.
+        """
+
         while not self.acq_stop_listening.is_set():
             try:
-                client_id, message = self.acq_event_queue.get(timeout=0.5)
+                client_id, message = self.acq_event_queue.get(
+                    timeout=0.5
+                )
             except queue.Empty:
                 continue
 
-            client_name = client_id.decode(errors="ignore")
-            payload = message.payload
+            try:
+                client_name = client_id.decode(errors="ignore")
+                payload = message.payload or {}
 
-            if message.channel == Channel.ACQUISITION:
                 event = payload.get("event", "unknown_event")
                 severity = payload.get("severity", "info")
+
+                try:
+                    channel_name = message.channel.value
+                except AttributeError:
+                    channel_name = str(message.channel)
 
                 if self.acq_event_callback is not None:
                     try:
                         self.acq_event_callback(message)
-                    except Exception as e:
-                        self.logger.error(f"Event callback failed: {e}")
+                    except Exception as exc:
+                        self.logger.error(
+                            f"Acquisition event callback failed: {exc}"
+                        )
+
+                log_message = (
+                    f"{channel_name} event on AcquisitionPlane "
+                    f"from {client_name}: {event} - {payload}"
+                )
 
                 if severity == "warning":
-                    self.logger.warning(
-                        f"Acquisition warning from {client_name}: {event} - {payload}"
-                    )
-                else:
-                    self.logger.info(
-                        f"Acquisition event from {client_name}: {event} - {payload}"
-                    )
+                    self.logger.warning(log_message)
 
-            self.acq_event_queue.task_done()
+                elif severity == "error":
+                    self.logger.error(log_message)
+
+                else:
+                    self.logger.info(log_message)
+
+            finally:
+                self.acq_event_queue.task_done()
 
     def start_listener(self) -> bool:
-
         if self.socket is None:
-            self.logger.error("Cannot start acquisition listener: socket not initialized")
+            self.logger.error(
+                "Cannot start acquisition listener: "
+                "socket not initialized"
+            )
             return False
 
         if (
-            self.acq_listener_thread
+            self.acq_listener_thread is not None
             and self.acq_listener_thread.is_alive()
         ):
-            self.logger.warning("Acquisition listener already running")
+            self.logger.warning(
+                "Acquisition listener already running"
+            )
             return True
 
         self.acq_stop_listening.clear()
@@ -432,6 +586,7 @@ class AcquisitionPlaneManager:
         self.acq_listener_thread = threading.Thread(
             target=self._acquisition_io_loop,
             daemon=True,
+            name="acquisition-plane-io",
         )
         self.acq_listener_thread.start()
 
@@ -442,6 +597,7 @@ class AcquisitionPlaneManager:
             self.acq_event_thread = threading.Thread(
                 target=self._event_loop,
                 daemon=True,
+                name="acquisition-plane-events",
             )
             self.acq_event_thread.start()
 
@@ -452,36 +608,34 @@ class AcquisitionPlaneManager:
         self.acq_stop_listening.set()
 
         if (
-            self.acq_listener_thread
+            self.acq_listener_thread is not None
             and self.acq_listener_thread.is_alive()
         ):
             self.acq_listener_thread.join(timeout=2.0)
 
         if (
-            self.acq_event_thread
+            self.acq_event_thread is not None
             and self.acq_event_thread.is_alive()
         ):
             self.acq_event_thread.join(timeout=2.0)
 
         self.logger.info("Acquisition listener stopped")
 
-    def clear_clients(self) -> None:
-        self.acquisition_clients.clear()
 
     def clear_queues(self) -> None:
-        while not self.acq_incoming_queue.empty():
+        while True:
             try:
                 self.acq_incoming_queue.get_nowait()
             except queue.Empty:
                 break
 
-        while not self.acq_outgoing_queue.empty():
+        while True:
             try:
                 self.acq_outgoing_queue.get_nowait()
             except queue.Empty:
                 break
 
-        while not self.acq_event_queue.empty():
+        while True:
             try:
                 self.acq_event_queue.get_nowait()
             except queue.Empty:
@@ -500,8 +654,13 @@ class AcquisitionPlaneManager:
             try:
                 self.socket.setsockopt(zmq.LINGER, 0)
                 self.socket.close()
-            except Exception as e:
-                self.logger.warning(f"Error while closing acquisition socket: {e}")
+
+            except Exception as exc:
+                self.logger.warning(
+                    "Error while closing acquisition socket: "
+                    f"{exc}"
+                )
+
             finally:
                 self.socket = None
                 self.endpoint = None

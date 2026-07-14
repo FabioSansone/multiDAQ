@@ -354,10 +354,4 @@ class AcquisitionService:
     ) -> list[bytes]:
         return self.command_service.list_clients_on_plane(plane)
     
-    def list_connected_clients(self) -> list[bytes]:
-        return list(self.acquisition_clients)
-
-
-    def is_client_connected(self, client_id: bytes) -> bool:
-        return client_id in self.acquisition_clients
         
