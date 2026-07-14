@@ -39,7 +39,8 @@ LOGGER_NAMES = {
     'acquisition_service': 'server.services.acquisition',
 
     #Main Application
-    'app': 'server.app'
+    'app': 'server.app',
+    'web': 'server.web',
     
     
     

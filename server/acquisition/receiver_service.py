@@ -174,7 +174,7 @@ class DataReceiverService:
             return None
 
         if run_folder is None:
-            run_folder = self._get_run_folder(
+            run_folder = self.get_run_folder(
                 acq_type=acq_type,
                 batch_id=batch_id,
                 run_id=run_id,
