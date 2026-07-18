@@ -20,6 +20,7 @@ COMMAND_MAP = {
     "set_hv_sync": handle_hv_set_hv_sync,
 
     "hv_on_and_wait": handle_hv_set_on_and_wait,
+    "hv_off_and_wait": handle_hv_off_and_wait,
     
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,

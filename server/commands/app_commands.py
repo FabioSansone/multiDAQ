@@ -3,6 +3,7 @@ import cmd2
 from server.utils.logger import get_logger
 from common.message_handler import Channel
 from server.utils.json_parser import JsonParser
+from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
 
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
@@ -25,6 +26,7 @@ mode_parser.add_argument(
 
 @cmd2.with_argparser(mode_parser)
 @cmd2.with_category("Generic Commands")
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.READY])
 def do_change_mode(self, args):
 
     new_mode = args.mode.lower()
@@ -36,7 +38,7 @@ def do_change_mode(self, args):
         logger.error(f"Invalid acquisition mode requested: {new_mode}")
         return
 
-    client_ids = self.control_manager.server_state.list_connected_clients()
+    client_ids = self.server_state.list_common_plane_clients()
 
     if not client_ids:
         if self.set_mode(new_mode):
@@ -51,17 +53,30 @@ def do_change_mode(self, args):
             self.poutput(f"Failed to update server mode to {new_mode}")
             logger.error(f"Failed to update server mode to '{new_mode}'")
         return
+    
+    started = self.server_state.process_event(
+        event = ServerFSMEvent.CONFIGURATION_STARTED,
+        reason = f"Changing mode to '{new_mode}'",
+        source = "do_change_mode",
+        metadata = {"target_clients": client_ids},
+    )
+    
+    if not started:
+        self.poutput("Cannot start mode change: invalid FSM transition.")
+        logger.error("CONFIGURATION_STARTED rejected by FSM")
+        return
 
-    successful_clients = 0
-    failed_clients = 0
-
+    successful_client_ids: list[bytes] = []
+    failed_client_ids: list[bytes] = []
+    
+    
     for client_id in client_ids:
         client_name = client_id.decode(errors="ignore")
-
-        identity = self.control_manager.server_state.get_identity(client_id)
+        
+        identity = self.server_state.get_identity(client_id)
 
         if identity is None:
-            failed_clients += 1
+            failed_client_ids.append(client_id)
             self.poutput(f"Client {client_name}: missing identity")
             logger.error(f"No identity found for client {client_name}")
             continue
@@ -70,7 +85,7 @@ def do_change_mode(self, args):
         batch_id = identity.get("batch_id")
 
         if not multipmt_id or not batch_id:
-            failed_clients += 1
+            failed_client_ids.append(client_id)
             self.poutput(f"Client {client_name}: incomplete identity")
             logger.error(f"Incomplete identity for client {client_name}: {identity}")
             continue
@@ -94,7 +109,7 @@ def do_change_mode(self, args):
             acq_info = config_file_service.get_ch_configuration(pe_thr=pe_thr)
 
             if acq_info is None:
-                failed_clients += 1
+                failed_client_ids.append(client_id)
                 self.poutput(
                     f"Client {client_name}: cannot build multipmt config "
                     f"(multipmt_id={multipmt_id}, batch_id={batch_id})"
@@ -125,7 +140,7 @@ def do_change_mode(self, args):
         )
 
         if reply is None:
-            failed_clients += 1
+            failed_client_ids.append(client_id)
             self.poutput(f"Client {client_name}: no reply ({reason})")
             logger.error(f"Mode sync failed for client {client_name}: {reason}")
             continue
@@ -136,7 +151,7 @@ def do_change_mode(self, args):
         error = payload.get("error")
 
         if reply_status != "ok" or error:
-            failed_clients += 1
+            failed_client_ids.append(client_id)
             self.poutput(
                 f"Client {client_name}: mode sync failed "
                 f"(mode={reply_mode}, error={error})"
@@ -147,31 +162,44 @@ def do_change_mode(self, args):
             )
             continue
 
-        successful_clients += 1
+        successful_client_ids.append(client_id)
         self.poutput(f"Client {client_name}: mode synchronized to {reply_mode}")
         logger.info(f"Client {client_name} synchronized to mode '{reply_mode}'")
 
     self.poutput(
         f"Mode synchronization completed. "
-        f"Successful clients: {successful_clients}, "
-        f"Failed clients: {failed_clients}"
+        f"Successful clients: {len(successful_client_ids)}, "
+        f"Failed clients: {len(failed_client_ids)}"
     )
-
-    if successful_clients == 0:
+    
+    if not successful_client_ids:
+        self.server_state.process_event(
+            event=ServerFSMEvent.CONFIGURATION_FAILED,
+            reason=f"Mode change to '{new_mode}' failed on all clients",
+            source="do_change_mode",
+            metadata={"failed_clients": failed_client_ids},
+        )
         self.poutput(
             f"Mode change failed on all connected clients. "
             f"Server mode remains '{self.mode}'."
         )
-        logger.error(
-            f"Mode change to '{new_mode}' failed on all connected clients. "
-            f"Server mode remains '{self.mode}'"
-        )
+        logger.error(f"Mode change to '{new_mode}' failed on all connected clients")
         return
+    
+    self.server_state.process_event(
+        event=ServerFSMEvent.CONFIGURATION_SUCCEEDED,
+        reason=f"Mode change to '{new_mode}' completed",
+        source="do_change_mode",
+        metadata={
+            "successful_clients": successful_client_ids,
+            "failed_clients": failed_client_ids,
+        },
+    )
 
-    if failed_clients > 0:
-        self.poutput(f"Warning: {failed_clients} client(s) are not synchronized.")
+    if failed_client_ids:
+        self.poutput(f"Warning: {len(failed_client_ids)} client(s) are not synchronized.")
         logger.warning(
-            f"{failed_clients} client(s) are not synchronized with "
+            f"{len(failed_client_ids)} client(s) are not synchronized with "
             f"server acquisition mode '{new_mode}'"
         )
 
@@ -183,10 +211,24 @@ def do_change_mode(self, args):
     self.poutput(f"Failed to update server mode to {new_mode}")
     logger.error(f"Failed to update server mode to '{new_mode}'")
 
+
 @cmd2.with_category("Generic Commands")
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
 def do_quit(self, _) -> bool:
     """Send quit command to all connected clients"""
 
+    requested = self.server_state.process_event(
+        event=ServerFSMEvent.DISCONNECT_REQUESTED,
+        reason="Quit command issued",
+        source="do_quit",
+    )
+    
+    if not requested:
+        self.poutput("Cannot shut down: invalid FSM transition.")
+        logger.error("DISCONNECT_REQUESTED rejected by FSM")
+        return False
+    
+    self.shutdown_service.power_off_hv_on_shutdown()
     self.shutdown_service.zero_rc_registers_on_shutdown()
 
     success = self.control_manager.notify_shutdown_to_all_clients()
@@ -194,14 +236,26 @@ def do_quit(self, _) -> bool:
         self.poutput("Failed to send quit command to all the clients")
         return False
 
-    list_connected_clients = self.control_manager.server_state.list_connected_clients()
+    list_connected_clients = self.server_state.list_common_plane_clients()
 
     if list_connected_clients:
         self.poutput("Sent quit command to all connected clients.\n Quitting server.")
     else:
         self.poutput("Server shutting down ...")
+    
+    #ATTENZIONE: QUESTO PEZZO VA CAPITO PER GESTIRE BENE LA FASE DI FINALIZING PRIMA DI CHIUDER
+    #IN QUESTO MOMENTO SE STO ACQUISENDO NON FERMO L'ACQUISIZIONE
+    if self.server_state.get_server_state() == ServerFSM.FINALIZING:
+        self.server_state.process_event(
+            event=ServerFSMEvent.FINALIZATION_SUCCEEDED,
+            reason="Shutdown finalization completed",
+            source="do_quit",
+        )
+    
+    self.server_state.reset_to_disconnected()
 
     return True
+
 
 ##################
 #FORCE COMMANDS#

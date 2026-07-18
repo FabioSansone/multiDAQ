@@ -375,6 +375,9 @@ class ServerState:
     ) -> None:
         previous_state = self.client_state_by_id.get(client_id)
         if previous_state is None:
+            self.logger.warning(
+                f"Attempted to set state for unregistered client {client_id!r}: ignored"
+            )
             return
 
         self.client_previous_state_by_id[client_id] = previous_state
@@ -529,6 +532,19 @@ class ServerState:
                     self.logger.error(
                         "A client cannot be both successful and failed in the same "
                         "configuration result"
+                    )
+                    return False
+                
+                expected = set(self.list_clients_in_state(ClientFSM.CONFIGURING))
+                provided = set(successful_clients) | set(failed_clients)
+                
+                if provided != expected:
+                    missing = expected - provided
+                    unexpected = provided - expected
+                    
+                    self.logger.error(
+                        "CONFIGURATION_SUCCEEDED does not match clients under configuration. "
+                        f"Missing: {missing!r}, unexpected: {unexpected!r}"
                     )
                     return False
 
@@ -738,6 +754,22 @@ class ServerState:
             f"{present_state.value} --{event.value}--> {next_state.value}"
         )
         return True
+    
+    def reset_to_disconnected(self, *, reason: str, source: str) -> None:
+        with self._lock:
+            self.previous_state = self.run_state
+            self.run_state = ServerFSM.DISCONNECTED
+            self.operational_clients.clear()
+            self.pending_event = None
+            self.pending_terminal_state = None
+            self.pending_context = None
+            self.last_event_context = {
+                "event": None,
+                "reason": reason,
+                "source": source,
+                "timestamp": datetime.now(timezone.utc),
+            }
+        self.logger.info(f"Server state forcibly reset to DISCONNECTED: {reason}")
 
     def get_pending_transition(
         self,

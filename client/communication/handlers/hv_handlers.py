@@ -131,3 +131,11 @@ def handle_hv_set_on_and_wait(manager, message):
         hv_command="hv_on_and_wait",
         timeout_s=300.0,
     )
+    
+def handle_hv_off_and_wait(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="hv_off_and_wait",
+        timeout_s=150.0,
+    )

@@ -23,6 +23,7 @@ LOGGER_NAMES = {
     
     #Utils
     'json_parser': 'server.utils.json',
+    'server_client_handling': 'server.utils.client_handling',
 
     #Commands
     'generic_commands': 'server.commands.generic',

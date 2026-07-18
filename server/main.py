@@ -25,15 +25,16 @@ from server.services.shutdown_service import ShutdownService
 class Server(cmd2.Cmd):
     "A terminal application to switch and interact with different multiPMTs"
 
-    def __init__(self, acquisition_mode: str, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager) -> None:
+    def __init__(self, server_state: ServerState, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager) -> None:
         super().__init__(allow_cli_args=False)
 
         self.intro = "Welcome to the control interface for the multiPMTs. Type ? or help to list commands."
         self.logger = get_logger("app")
-        self.mode = acquisition_mode
+        self.server_state = server_state
         self.control_manager = control_manager
         self.acq_manager = acquisition_manager
         self.data_receiver_service = DataReceiverService()
+        self.mode = self.server_state.get_mode()
 
         self.client_command_service = ClientCommandService(
             control_manager=self.control_manager,
@@ -47,7 +48,7 @@ class Server(cmd2.Cmd):
         )
 
         self.acquisition_service = AcquisitionService(
-            server_state=self.control_manager.server_state,
+            server_state=self.server_state,
             data_receiver_service=self.data_receiver_service,
             command_service=self.client_command_service,
             output_func=self.poutput,
@@ -76,7 +77,6 @@ class Server(cmd2.Cmd):
 
         self.prompt = f"Server[{self.mode}]> "
         
-        self.control_manager.server_state.set_server_state(ServerFSM.DISCONNECTED)
 
         
         #GENERIC COMMANDS#
@@ -153,7 +153,7 @@ def main() -> int:
         state=server_state
     )
 
-    app = Server(acquisition_mode=mode_selected, control_manager=control_manager, acquisition_manager=acquisition_manager)
+    app = Server(server_state=server_state, acquisition_mode=mode_selected, control_manager=control_manager, acquisition_manager=acquisition_manager)
 
     try:
         app.cmdloop()
