@@ -18,6 +18,7 @@ from server.services.acquisition_orchestrator import AcquisitionOrchestrator
 from server.services.acquisition_service import AcquisitionService
 from server.services.calibration_orchestrator import CalibrationOrchestrator
 from server.services.shutdown_service import ShutdownService
+from server.services.startup_service import StartupService
 
 
 
@@ -46,6 +47,12 @@ class Server(cmd2.Cmd):
             command_service=self.client_command_service,
             output_func=self.poutput,
         )
+        
+        self.startup_service = StartupService(
+            control_manager=self.control_manager,
+            server_state=self.server_state,
+            output_func=self.poutput,
+        )
 
         self.acquisition_service = AcquisitionService(
             server_state=self.server_state,
@@ -58,6 +65,7 @@ class Server(cmd2.Cmd):
             acquisition_service=self.acquisition_service,
             channel_selection_service=self.channel_selection_service,
             get_mode=lambda: self.mode,
+            server_state=self.server_state,
             output_func=self.poutput,
         )
 

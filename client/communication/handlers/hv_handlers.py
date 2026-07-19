@@ -33,12 +33,31 @@ def _handle_hv_command(
         manager.queue_message(reply)
         return
 
-    payload = dict(message.payload)
-    payload["channels"] = channels_definition(
-        payload["channels"],
-        hv_channels=True,
-    )
-
+    try:
+        payload = dict(message.payload)
+        payload["channels"] = channels_definition(
+            payload["channels"],
+            hv_channels=True,
+        )
+    except (ValueError, TypeError, KeyError, Exception) as e:
+        manager.logger.error(f"Invalid payload for HV command {hv_command}: {e}")
+        
+        reply = manager.message_handler.create_reply(
+            channel=Channel.HV,
+            in_reply_to=message.request_id,
+            payload={
+                "hv_request_id": message.request_id,
+                "status": "error",
+                "result": {},
+                "error": f"Invalid channels payload: {e}",
+            },
+            sender="client",
+            status=MessageStatus.ERROR,
+        )
+        manager.queue_message(reply)
+        return
+    
+    
     hv_request = HVRequest(
         protocol_version=message.protocol_version,
         request_id=message.request_id,

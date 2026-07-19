@@ -356,6 +356,7 @@ int run(int duration, const char *output_path, int flag_flush){
     reset_state();
 
     signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
     
 
     FILE *fout = fopen(output_path, flag_flush == 1 ? "a" : "w");

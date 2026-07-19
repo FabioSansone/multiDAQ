@@ -3,6 +3,7 @@ import cmd2
 
 from server.utils.logger import get_logger
 from common.message_handler import Channel
+from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
 
 
 logger = get_logger("rc_commands")
@@ -13,121 +14,87 @@ logger = get_logger("rc_commands")
 ####################
 
 rc_parser = argparse.ArgumentParser()
-rc_subparsers = rc_parser.add_subparsers(
-    dest="parameter",
-    required=True,
-)
+rc_subparsers = rc_parser.add_subparsers(dest="parameter", required=True)
 
 read_parser = rc_subparsers.add_parser("read")
-read_parser.add_argument(
-    "address",
-    type=int,
-    help="RC register address to read",
-)
+read_parser.add_argument("address", type=int, help="RC register address to read")
 
 write_parser = rc_subparsers.add_parser("write")
-write_parser.add_argument(
-    "address",
-    type=int,
-    help="RC register address to write",
-)
-write_parser.add_argument(
-    "value",
-    type=int,
-    help="Value to write into the RC register",
-)
+write_parser.add_argument("address", type=int, help="RC register address to write")
+write_parser.add_argument("value", type=int, help="Value to write into the RC register")
 
 start_parser = rc_subparsers.add_parser("start")
-start_parser.add_argument(
-    "--channels",
-    type=str,
-    help='Channels selected. Can be "all" or comma separated string list',
-    default="all",
-)
+start_parser.add_argument("--channels", type=str, default="all",
+                           help='Channels selected. Can be "all" or comma separated string list')
 
 reset_parser = rc_subparsers.add_parser("reset")
-reset_parser.add_argument(
-    "--channels",
-    type=str,
-    help='Channels selected. Can be "all" or comma separated string list',
-    default="all",
-)
+reset_parser.add_argument("--channels", type=str, default="all",
+                           help='Channels selected. Can be "all" or comma separated string list')
 
 boot_parser = rc_subparsers.add_parser("boot")
-boot_parser.add_argument(
-    "--channels",
-    type=str,
-    help='Channels selected. Can be "all" or comma separated string list',
-    default="all",
-)
+boot_parser.add_argument("--channels", type=str, default="all",
+                          help='Channels selected. Can be "all" or comma separated string list')
 
 program_parser = rc_subparsers.add_parser("program_feb")
-program_parser.add_argument(
-    "--channels",
-    type=str,
-    default="all",
-    help='Channels selected. Can be "all" or comma separated string list',
-)
+program_parser.add_argument("--channels", type=str, default="all",
+                             help='Channels selected. Can be "all" or comma separated string list')
+program_parser.add_argument("--baud", type=int, default=115200, help="UART baudrate for stm32flash")
+program_parser.add_argument("--firmware", type=str, default=None,
+                             help="Firmware path on the client filesystem. If omitted, client uses default firmware near feb_service.py")
+program_parser.add_argument("--port", type=str, default="/dev/ttyPS1", help="UART port used by stm32flash on the client")
+program_parser.add_argument("--standard-addr", type=int, default=None, help="Optional default FEB Modbus address after flashing")
 
-program_parser.add_argument(
-    "--baud",
-    type=int,
-    default=115200,
-    help="UART baudrate for stm32flash",
-)
 
-program_parser.add_argument(
-    "--firmware",
-    type=str,
-    default=None,
-    help="Firmware path on the client filesystem. If omitted, client uses default firmware near feb_service.py",
-)
 
-program_parser.add_argument(
-    "--port",
-    type=str,
-    default="/dev/ttyPS1",
-    help="UART port used by stm32flash on the client",
-)
 
-program_parser.add_argument(
-    "--standard-addr",
-    type=int,
-    default=None,
-    help="Optional default FEB Modbus address after flashing",
-)
+COMMAND_FSM_MAP = {
+    "start": {ServerFSM.READY, ServerFSM.CONNECTED},
+    "reset": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "boot": {ServerFSM.READY, ServerFSM.CONNECTED},
+    "read": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING},
+    "write": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "program_feb": {ServerFSM.READY, ServerFSM.CONNECTED},
+}
+
+COMMAND_MAP = {
+    "start": "rc_acq_start",
+    "reset": "rc_reset",
+    "boot": "rc_boot",
+    "read": "rc_read_register",
+    "write": "rc_write_register",
+    "program_feb": "feb_program",
+}
 
 
 @cmd2.with_argparser(rc_parser)
 @cmd2.with_category("RC Commands")
+@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ACQUIRING, ServerFSM.ERROR])
 def do_rc(self, args: argparse.Namespace) -> None:
     """RunControl commands."""
 
-    command_map = {
-        "start": "rc_acq_start",
-        "reset": "rc_reset",
-        "boot": "rc_boot",
-        "read": "rc_read_register",
-        "write": "rc_write_register",
-        "program_feb": "feb_program",
-    }
+    command = COMMAND_MAP[args.parameter]
 
-    command = command_map[args.parameter]
+    current_state = self.server_state.get_server_state()
+    allowed_states = COMMAND_FSM_MAP[args.parameter]
 
-    client_ids = self.control_manager.server_state.list_connected_clients()
+    if current_state not in allowed_states:
+        allowed_names = ", ".join(sorted(s.value for s in allowed_states))
+        self.poutput(
+            f"Cannot run 'rc {args.parameter}' while server is '{current_state.value}'. "
+            f"Allowed states: {allowed_names}."
+        )
+        logger.error(
+            f"RC command '{args.parameter}' blocked: state={current_state.value}, "
+            f"allowed={allowed_names}"
+        )
+        return
 
-    if args.parameter in {"program_feb", "prog_feb"}:
-            if self.data_receiver_service.is_busy():
-                self.poutput(
-                    "Cannot program FEB while an acquisition is running or finalizing."
-                )
-                logger.error("FEB programming blocked: acquisition receiver is busy")
-                return
+    client_ids = self.server_state.list_connected_clients()
 
     if not client_ids:
         self.poutput("No connected clients.")
         return
-    
+
     if args.parameter == "program_feb":
         payload = {
             "channels": args.channels,
@@ -139,26 +106,18 @@ def do_rc(self, args: argparse.Namespace) -> None:
         timeout_s = 600.0
 
     elif args.parameter == "read":
-        payload = {
-            "address": args.address,
-        }
+        payload = {"address": args.address}
         timeout_s = 35.0
 
     elif args.parameter == "write":
-        payload = {
-            "address": args.address,
-            "value": args.value,
-        }
+        payload = {"address": args.address, "value": args.value}
         timeout_s = 35.0
 
     else:
-        payload = {
-            "channels": args.channels,
-        }
+        payload = {"channels": args.channels}
         timeout_s = 35.0
 
     for client_id in client_ids:
-            
         rc_command = self.control_manager.message_handler.create_command(
             channel=Channel.RC,
             command=command,
@@ -177,36 +136,25 @@ def do_rc(self, args: argparse.Namespace) -> None:
         client_name = client_id.decode(errors="ignore")
 
         if reply is None:
-            logger.error(
-                f"RC command {command} failed for client {client_name}: {reason}"
-            )
+            logger.error(f"RC command {command} failed for client {client_name}: {reason}")
             self.poutput(f"No reply from client {client_name}. Reason: {reason}")
             continue
 
-        payload = reply.payload
-        status = payload.get("status")
-        result = payload.get("result", {})
-        error = payload.get("error")
-        
-        
+        reply_payload = reply.payload
+        status = reply_payload.get("status")
+        result = reply_payload.get("result", {})
+        error = reply_payload.get("error")
+
         if args.parameter == "program_feb":
-            result = payload.get("result", {})
             successful = result.get("successful_channels", [])
             failed = result.get("failed_channels", [])
 
             if status == "ok":
-                self.poutput(
-                    f"Client {client_name}: FEB programming completed. "
-                    f"Successful channels: {successful}"
-                )
+                self.poutput(f"Client {client_name}: FEB programming completed. Successful channels: {successful}")
             else:
-                self.poutput(
-                    f"Client {client_name}: FEB programming failed. "
-                    f"Successful: {successful}, failed: {failed}"
-                )
+                self.poutput(f"Client {client_name}: FEB programming failed. Successful: {successful}, failed: {failed}")
                 if error:
                     self.poutput(f"Client {client_name}: error: {error}")
-
             continue
 
         if args.parameter == "read":
@@ -214,19 +162,13 @@ def do_rc(self, args: argparse.Namespace) -> None:
             address = result.get("address", args.address)
 
             if status != "ok":
-                logger.error(
-                    f"RC read register failed for client {client_name}: {error}"
-                )
-                self.poutput(
-                    f"Client {client_name}: failed to read register {address}."
-                )
+                logger.error(f"RC read register failed for client {client_name}: {error}")
+                self.poutput(f"Client {client_name}: failed to read register {address}.")
                 if error:
                     self.poutput(f"Client {client_name}: error: {error}")
                 continue
 
-            self.poutput(
-                f"Client {client_name}: register {address} = {value}"
-            )
+            self.poutput(f"Client {client_name}: register {address} = {value}")
             continue
 
         if args.parameter == "write":
@@ -234,19 +176,13 @@ def do_rc(self, args: argparse.Namespace) -> None:
             value = result.get("value", args.value)
 
             if status != "ok":
-                logger.error(
-                    f"RC write register failed for client {client_name}: {error}"
-                )
-                self.poutput(
-                    f"Client {client_name}: failed to write register {address}."
-                )
+                logger.error(f"RC write register failed for client {client_name}: {error}")
+                self.poutput(f"Client {client_name}: failed to write register {address}.")
                 if error:
                     self.poutput(f"Client {client_name}: error: {error}")
                 continue
 
-            self.poutput(
-                f"Client {client_name}: register {address} written with value {value}"
-            )
+            self.poutput(f"Client {client_name}: register {address} written with value {value}")
             continue
 
         failed = result.get("failed_channels", [])
@@ -254,47 +190,28 @@ def do_rc(self, args: argparse.Namespace) -> None:
         if args.parameter == "start":
             successful = result.get("started_channels", [])
             action = "started in acquisition mode"
-
         elif args.parameter == "boot":
             successful = result.get("boot_channels", [])
             action = "started in boot mode"
-
         elif args.parameter == "reset":
             successful = result.get("reset_channels", [])
             action = "reset"
-
         else:
             successful = []
             action = args.parameter
 
         if status != "ok":
-            logger.error(
-                f"RC command {command} returned error from client {client_name}: {error}"
-            )
-
+            logger.error(f"RC command {command} returned error from client {client_name}: {error}")
             self.poutput(f"Client {client_name}: RC command failed.")
-
             if successful:
-                self.poutput(
-                    f"Client {client_name}: channels {action}: {successful}."
-                )
-
+                self.poutput(f"Client {client_name}: channels {action}: {successful}.")
             if failed:
-                self.poutput(
-                    f"Client {client_name}: failed channels: {failed}."
-                )
-
+                self.poutput(f"Client {client_name}: failed channels: {failed}.")
             if error:
                 self.poutput(f"Client {client_name}: error: {error}")
-
             continue
 
         if failed:
-            self.poutput(
-                f"Client {client_name}: channels {action}: {successful}. "
-                f"Failed: {failed}."
-            )
+            self.poutput(f"Client {client_name}: channels {action}: {successful}. Failed: {failed}.")
         else:
-            self.poutput(
-                f"Client {client_name}: channels {action}: {successful}."
-            )
+            self.poutput(f"Client {client_name}: channels {action}: {successful}.")

@@ -4,6 +4,8 @@ import time
 
 from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
+from server.core.server_state import ServerFSM, ServerFSMEvent
+
 
 
 class AcquisitionService:
@@ -26,35 +28,12 @@ class AcquisitionService:
 
         self._finalize_lock = threading.Lock()
         self._finalized = False
-
-        self._active_clients_lock = threading.Lock()
-        self._active_client_ids: list[bytes] = []
+        self._last_finalize_success = True
         
-        
-    def set_active_clients(self, client_ids: List[bytes]) -> None:
-        with self._active_clients_lock:
-            self._active_client_ids = list(dict.fromkeys(client_ids))
-
-        client_names = [
-            client_id.decode(errors="ignore")
-            for client_id in self._active_client_ids
-        ]
-
-        self.logger.info(
-            f"Active acquisition clients set: {client_names}"
-        )
-
 
     def get_active_clients(self) -> list[bytes]:
-        with self._active_clients_lock:
-            return list(self._active_client_ids)
+        return self.server_state.get_operational_clients()
 
-
-    def clear_active_clients(self) -> None:
-        with self._active_clients_lock:
-            self._active_client_ids.clear()
-
-        self.logger.info("Active acquisition clients cleared")
 
     
     def reset_acquisition_state(self) -> None:
@@ -131,7 +110,15 @@ class AcquisitionService:
         self,
         client_ids: List[bytes] | None,
         reason: str,
-    ) -> None:
+    ) -> bool:
+        """
+        Finalize an acquisition: disable RC channels, stop the receiver, run the
+        final hardware flush. Always resolves the FSM out of FINALIZING
+        (FINALIZATION_SUCCEEDED or FINALIZATION_FAILED), regardless of whether
+        it was reached via a manual stop or an automatic timed completion.
+
+        Returns True if finalization completed cleanly, False otherwise.
+        """
 
         with self._finalize_lock:
             if self._finalized:
@@ -139,7 +126,7 @@ class AcquisitionService:
                     f"Acquisition finalization already completed. "
                     f"Ignoring request: {reason}"
                 )
-                return
+                return self._last_finalize_success
 
             self._finalized = True
 
@@ -147,6 +134,8 @@ class AcquisitionService:
             client_ids = self.get_active_clients()
         else:
             client_ids = list(client_ids)
+
+        success = True
 
         try:
             self.poutput(f"Finalizing acquisition: {reason}")
@@ -161,7 +150,8 @@ class AcquisitionService:
                     self.poutput("Acquisition stopped.")
                 else:
                     self.poutput("Failed to stop acquisition.")
-                    return
+                    success = False
+                    return success
             else:
                 self.poutput(
                     "Data receiver is not running. Continuing finalization."
@@ -171,18 +161,17 @@ class AcquisitionService:
                 self.poutput(
                     "No active clients. Final hardware flush skipped."
                 )
-                return
+                return success
 
             self.poutput("Starting final flush receiver...")
 
-            flush_info = self.data_receiver_service.start_flush(
-                duration=30.0,
-            )
+            flush_info = self.data_receiver_service.start_flush(duration=30.0)
 
             if flush_info is None:
                 self.poutput("Failed to start final flush receiver.")
                 self.logger.error("Failed to start final flush receiver")
-                return
+                success = False
+                return success
 
             flush_thread = threading.Thread(
                 target=self.flush_clients,
@@ -199,13 +188,41 @@ class AcquisitionService:
             self.poutput("Final flush completed.")
             self.logger.info("Final flush completed")
 
+            return success
+
         finally:
+            self._last_finalize_success = success
             self.data_receiver_service.clear_finalizing()
-            self.clear_active_clients()
+
+
+            if self.server_state.get_server_state() == ServerFSM.FINALIZING:
+                if success:
+                    self.server_state.process_event(
+                        event=ServerFSMEvent.FINALIZATION_SUCCEEDED,
+                        reason=reason,
+                        source="acquisition_service.finalize_acquisition",
+                    )
+                else:
+                    self.server_state.process_event(
+                        event=ServerFSMEvent.FINALIZATION_FAILED,
+                        reason=f"{reason} (finalization error)",
+                        source="acquisition_service.finalize_acquisition",
+                    )
 
     def watch_acquisition_completion(self, client_ids: List[bytes]) -> None:
-        while self.data_receiver_service.is_running():
+        while (self.data_receiver_service.is_running() and self.server_state.get_server_state() == ServerFSM.ACQUIRING):
             time.sleep(0.5)
+
+        receiver_completed = self.server_state.process_event(
+            event=ServerFSMEvent.RECEIVER_COMPLETED,
+            reason="Data receiver completed its configured duration",
+            source="acquisition_service.watch_acquisition_completion",
+        )
+
+        if not receiver_completed:
+            self.logger.error(
+                "RECEIVER_COMPLETED rejected by FSM; finalizing hardware anyway."
+            )
 
         self.finalize_acquisition(
             client_ids=client_ids,

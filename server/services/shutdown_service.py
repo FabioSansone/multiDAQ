@@ -1,4 +1,5 @@
 from server.utils.logger import get_logger
+from server.utils.channels import *
 from server.services.client_command_service import CommandPlane
 
 SHUTDOWN_ZERO_REGISTERS = [19, 15, 1, 0, 39, 16, 18]
@@ -91,7 +92,7 @@ class ShutdownService:
                 continue
 
 
-            on_channels_external = [ch - 1 for ch in on_channels_hv]
+            on_channels_external = hv_to_user_channels(on_channels_hv)
 
             self.logger.info(
                 f"Client {client_name}: powering OFF HV channels (HV numbering) "

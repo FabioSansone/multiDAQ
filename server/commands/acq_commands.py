@@ -1,6 +1,9 @@
 import argparse
 import cmd2
+from server.core.server_state import command_guard, ServerFSM
+from server.utils.logger import get_logger
 
+logger = get_logger('acquisition_commands')
 
 ########################
 # ACQUISITION COMMANDS #
@@ -70,6 +73,7 @@ stop_parser = acquisition_subparsers.add_parser(
 
 @cmd2.with_argparser(acquisition_parser)
 @cmd2.with_category("Acquisition Commands")
+@command_guard([ServerFSM.READY])
 def do_acquisition(self, args: argparse.Namespace) -> None:
     """Acquisition commands: acquisition start, acquisition stop."""
 
@@ -80,4 +84,5 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
     if args.command == "stop":
         self.acquisition_orchestrator.stop()
         return
+
     

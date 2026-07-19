@@ -319,42 +319,6 @@ class ControlPlaneManager:
                 f"Already mapped to {existing_client_id!r}"
             )
             return False
-
-        """
-        if self.server_state.get_mode() == "multipmt":
-            config_file_service = JsonParser(
-                multipmt_id=multipmt_id,
-                batch_id=batch_id,
-            )
-
-            channels_acq_info = config_file_service.get_ch_configuration(pe_thr=1)
-
-            if channels_acq_info is None:
-                self.logger.error(
-                    f"Cannot build multipmt acquisition configuration for "
-                    f"multipmt_id={multipmt_id}, batch_id={batch_id}"
-                )
-                return False
-
-            acq_mode_message = self.message_handler.create_handshake(
-                phase="multipmt_acq_config",
-                payload={
-                    "message": "ChannelsConfig",
-                    "pe_thr": 1,
-                    "acquisition_configuration": channels_acq_info,
-                },
-                in_reply_to=startup_message.request_id,
-                sender="server",
-                status=MessageStatus.OK,
-            )
-
-            if not self.send_message(client_id=client_id, message=acq_mode_message):
-                self.logger.error(
-                    f"Failed to send multipmt acquisition config to client {client_id!r}"
-                )
-                return False
-        
-        """
             
         self.add_client(client_id, identity_payload)
 

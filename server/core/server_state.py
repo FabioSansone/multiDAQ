@@ -270,6 +270,7 @@ class ServerState:
         self.pending_event: ServerFSMEvent | None = None
         self.pending_terminal_state: ServerFSM | None = None
         self.pending_context: dict | None = None
+        self.pending_configuration_source: ServerFSM | None = None
 
         self.last_event_context: dict | None = None
         self.error_context: dict | None = None

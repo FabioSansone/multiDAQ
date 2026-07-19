@@ -1,6 +1,7 @@
 from typing import List
 
 from server.utils.logger import get_logger
+from server.utils.channels import *
 from server.services.client_command_service import CommandPlane
 
 
@@ -13,9 +14,6 @@ class ChannelSelectionService:
         self.logger = get_logger("channel_selection_service")
         self.logger.debug("Channels Selection Service initialized")
 
-    @staticmethod
-    def hv_to_user_channels(channels: List[int]) -> List[int]:
-        return [ch - 1 for ch in channels]
     
     @staticmethod
     def parse_user_channels(
@@ -170,8 +168,8 @@ class ChannelSelectionService:
             set(sync_result.get("bad_channels", []))
         )
 
-        available_rc_channels = self.hv_to_user_channels(ok_hv_channels)
-        bad_rc_channels = self.hv_to_user_channels(bad_hv_channels)
+        available_rc_channels = hv_to_user_channels(ok_hv_channels)
+        bad_rc_channels = hv_to_user_channels(bad_hv_channels)
 
         if bad_rc_channels:
             self.poutput(
@@ -274,7 +272,7 @@ class ChannelSelectionService:
             if bad_channels:
                 self.poutput(
                     f"Client {client_name}: BAD HV channels excluded: "
-                    f"{self.hv_to_user_channels(sorted(bad_channels))}"
+                    f"{hv_to_user_channels(sorted(bad_channels))}"
                 )
 
             if not ok_channels:
@@ -282,7 +280,7 @@ class ChannelSelectionService:
                 continue
 
             if ok_off_channels:
-                user_ok_off_channels = self.hv_to_user_channels(ok_off_channels)
+                user_ok_off_channels = hv_to_user_channels(ok_off_channels)
 
                 self.poutput(
                     f"Client {client_name}: switching ON HV channels "
@@ -330,19 +328,19 @@ class ChannelSelectionService:
                 if successful_on:
                     self.poutput(
                         f"Client {client_name}: HV channels UP: "
-                        f"{self.hv_to_user_channels(sorted(successful_on))}"
+                        f"{hv_to_user_channels(sorted(successful_on))}"
                     )
 
                 if failed_on:
                     self.poutput(
                         f"Client {client_name}: HV channels failed to go UP: "
-                        f"{self.hv_to_user_channels(sorted(failed_on))}"
+                        f"{hv_to_user_channels(sorted(failed_on))}"
                     )
 
                 if bad_after_on:
                     self.poutput(
                         f"Client {client_name}: HV channels moved to BAD: "
-                        f"{self.hv_to_user_channels(sorted(bad_after_on))}"
+                        f"{hv_to_user_channels(sorted(bad_after_on))}"
                     )
 
                 final_hv_channels = sorted(set(ok_on_channels) | successful_on)
@@ -353,7 +351,7 @@ class ChannelSelectionService:
                     f"Client {client_name}: all usable OK channels already ON."
                 )
 
-            final_user_channels = self.hv_to_user_channels(final_hv_channels)
+            final_user_channels = hv_to_user_channels(final_hv_channels)
 
             if not final_user_channels:
                 self.poutput(

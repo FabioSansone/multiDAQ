@@ -27,6 +27,7 @@ LOGGER_NAMES = {
 
     #Commands
     'generic_commands': 'server.commands.generic',
+    'acquisition_commands': 'server.commands.acquisition',
     'hv_commands': 'server.commands.hv',
     'rc_commands': 'server.commands.rc',
     'acq_commands': 'server.commands.acq',

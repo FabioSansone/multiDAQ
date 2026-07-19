@@ -1,6 +1,7 @@
 import argparse
 import cmd2
 from server.utils.logger import get_logger
+from server.utils.channels import *
 from common.message_handler import Channel
 from server.utils.json_parser import JsonParser
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
@@ -222,19 +223,23 @@ def do_quit(self, _) -> bool:
         reason="Quit command issued",
         source="do_quit",
     )
-    
+
     if not requested:
         self.poutput("Cannot shut down: invalid FSM transition.")
         logger.error("DISCONNECT_REQUESTED rejected by FSM")
         return False
-    
+
+   
+    if self.server_state.get_server_state() == ServerFSM.FINALIZING:
+        self.acquisition_orchestrator.stop()
+
     self.shutdown_service.power_off_hv_on_shutdown()
     self.shutdown_service.zero_rc_registers_on_shutdown()
 
     success = self.control_manager.notify_shutdown_to_all_clients()
     if not success:
         self.poutput("Failed to send quit command to all the clients")
-        return False
+        logger.error("notify_shutdown_to_all_clients failed; proceeding with local shutdown anyway")
 
     list_connected_clients = self.server_state.list_common_plane_clients()
 
@@ -242,17 +247,6 @@ def do_quit(self, _) -> bool:
         self.poutput("Sent quit command to all connected clients.\n Quitting server.")
     else:
         self.poutput("Server shutting down ...")
-    
-    #ATTENZIONE: QUESTO PEZZO VA CAPITO PER GESTIRE BENE LA FASE DI FINALIZING PRIMA DI CHIUDER
-    #IN QUESTO MOMENTO SE STO ACQUISENDO NON FERMO L'ACQUISIZIONE
-    if self.server_state.get_server_state() == ServerFSM.FINALIZING:
-        self.server_state.process_event(
-            event=ServerFSMEvent.FINALIZATION_SUCCEEDED,
-            reason="Shutdown finalization completed",
-            source="do_quit",
-        )
-    
-    self.server_state.reset_to_disconnected()
 
     return True
 
@@ -262,18 +256,15 @@ def do_quit(self, _) -> bool:
 ##################
 
 ########HELPERS###############
-def _hv_to_user(channels):
-    return [ch - 1 for ch in channels]
-
 
 def _print_hv_lists(self, client_name: str, result: dict):
     self.poutput(f"\nClient {client_name}: HV sync completed.")
-    self.poutput(f"  OK  channels: {_hv_to_user(result.get('ok_channels', []))}")
-    self.poutput(f"  BAD channels: {_hv_to_user(result.get('bad_channels', []))}")
-    self.poutput(f"  ON  channels: {_hv_to_user(result.get('on_channels', []))}")
-    self.poutput(f"  OFF channels: {_hv_to_user(result.get('off_channels', []))}")
+    self.poutput(f"  OK  channels: {hv_to_user_channels(result.get('ok_channels', []))}")
+    self.poutput(f"  BAD channels: {hv_to_user_channels(result.get('bad_channels', []))}")
+    self.poutput(f"  ON  channels: {hv_to_user_channels(result.get('on_channels', []))}")
+    self.poutput(f"  OFF channels: {hv_to_user_channels(result.get('off_channels', []))}")
     
-########HELPERS###############
+########END HELPERS###############
 
 force_parser = argparse.ArgumentParser()
 force_subparsers = force_parser.add_subparsers(dest="command", required=True)
@@ -287,9 +278,9 @@ force_subparsers.add_parser(
     "hv_sync",
     help="Force HV bad recovery and power-state synchronization",
 )
-
 @cmd2.with_argparser(force_parser)
 @cmd2.with_category("Generic Commands")
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
 def do_force(self, args: argparse.Namespace) -> bool:
     """
     Force operations that do not depend on client replies.
@@ -297,37 +288,81 @@ def do_force(self, args: argparse.Namespace) -> bool:
 
     if args.command == "quit":
 
+        requested = self.server_state.process_event(
+            event=ServerFSMEvent.DISCONNECT_REQUESTED,
+            reason="Force quit command issued",
+            source="do_force_quit",
+        )
+
+        if not requested:
+            self.poutput("Cannot shut down: invalid FSM transition.")
+            logger.error("DISCONNECT_REQUESTED rejected by FSM for force quit")
+            return False
+
+        if self.server_state.get_server_state() == ServerFSM.FINALIZING:
+            try:
+                self.acquisition_orchestrator.stop()
+            except Exception as e:
+                logger.error(f"Force quit: failed to stop acquisition orchestrator: {e}")
+                self.poutput(f"Warning: failed to cleanly stop acquisition: {e}")
+
+        try:
+            self.shutdown_service.power_off_hv_on_shutdown()
+        except Exception as e:
+            logger.error(f"Force quit: failed to power off HV: {e}")
+            self.poutput(f"Warning: failed to power off HV: {e}")
+
+        try:
+            self.shutdown_service.zero_rc_registers_on_shutdown()
+        except Exception as e:
+            logger.error(f"Force quit: failed to zero RC registers: {e}")
+            self.poutput(f"Warning: failed to zero RC registers: {e}")
+
         try:
             self.control_manager.notify_shutdown_to_all_clients()
 
-            connected_clients = self.control_manager.server_state.list_connected_clients()
+            connected_clients = self.server_state.list_common_plane_clients()
 
             if connected_clients:
-                self.poutput(
-                    "Force quit command sent to all connected clients."
-                )
+                self.poutput("Force quit command sent to all connected clients.")
             else:
-                self.poutput(
-                    "No connected clients. Forcing server shutdown."
-                )
+                self.poutput("No connected clients. Forcing server shutdown.")
 
         except Exception as e:
-            self.logger.warning(
-                f"Force quit: failed to notify clients: {e}"
-            )
-            self.poutput(
-                f"Warning: failed to notify clients: {e}"
-            )
+            logger.warning(f"Force quit: failed to notify clients: {e}")
+            self.poutput(f"Warning: failed to notify clients: {e}")
 
         self.poutput("Forcing server shutdown...")
         return True
 
     if args.command == "hv_sync":
-        client_ids = self.control_manager.server_state.list_connected_clients()
+
+        current_state = self.server_state.get_server_state()
+
+        if current_state == ServerFSM.DISCONNECTED:
+            self.poutput("It is not possible to sync hardware while not connected.")
+            return
+
+        client_ids = self.server_state.list_common_plane_clients()
 
         if not client_ids:
             self.poutput("No connected clients.")
             return
+
+        started = self.server_state.process_event(
+            event=ServerFSMEvent.CONFIGURATION_STARTED,
+            reason="Force hv_sync issued",
+            source="do_force_hv_sync",
+            metadata={"target_clients": client_ids},
+        )
+
+        if not started:
+            self.poutput("Cannot run hv_sync: invalid FSM transition.")
+            logger.error("CONFIGURATION_STARTED rejected by FSM for force hv_sync")
+            return False
+
+        successful_client_ids: list[bytes] = []
+        failed_client_ids: list[bytes] = []
 
         for client_id in client_ids:
             hv_sync_command = self.control_manager.message_handler.create_command(
@@ -348,10 +383,9 @@ def do_force(self, args: argparse.Namespace) -> bool:
             client_name = client_id.decode(errors="ignore")
 
             if reply is None:
-                logger.error(
-                    f"HV sync failed for client {client_name}: {reason}"
-                )
+                logger.error(f"HV sync failed for client {client_name}: {reason}")
                 self.poutput(f"No reply from client {client_name}. Reason: {reason}")
+                failed_client_ids.append(client_id)
                 continue
 
             payload = reply.payload
@@ -362,8 +396,29 @@ def do_force(self, args: argparse.Namespace) -> bool:
                 logger.error(f"HV sync error from client {client_name}: {error}")
                 self.poutput(f"Client {client_name}: HV sync error: {error}")
 
+
+            successful_client_ids.append(client_id)
             _print_hv_lists(self, client_name, result)
 
+        if not successful_client_ids:
+            self.server_state.process_event(
+                event=ServerFSMEvent.CONFIGURATION_FAILED,
+                reason="Force hv_sync failed on all clients",
+                source="do_force_hv_sync",
+                metadata={"failed_clients": failed_client_ids},
+            )
+            self.poutput("hv_sync failed on all connected clients.")
+            return
+
+        self.server_state.process_event(
+            event=ServerFSMEvent.CONFIGURATION_SUCCEEDED,
+            reason="Force hv_sync completed",
+            source="do_force_hv_sync",
+            metadata={
+                "successful_clients": successful_client_ids,
+                "failed_clients": failed_client_ids,
+            },
+        )
         return
 
 
@@ -378,6 +433,7 @@ connect_parser.add_argument("--acq_port", type=int, help="Selects the port to es
 
 @cmd2.with_argparser(connect_parser)
 @cmd2.with_category("Connection Commands")
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONTROL_CONNECTED])
 def do_connect(self, args: argparse.Namespace) -> None:
     """Wait for one or more clients to connect through the control and acquisition planes."""
 
@@ -394,7 +450,6 @@ def do_connect(self, args: argparse.Namespace) -> None:
         self.control_manager.listener_thread is not None
         and self.control_manager.listener_thread.is_alive()
     )
-
     acq_listener_was_running = (
         self.acq_manager.acq_listener_thread is not None
         and self.acq_manager.acq_listener_thread.is_alive()
@@ -412,21 +467,14 @@ def do_connect(self, args: argparse.Namespace) -> None:
         started = self.control_manager.start_connection(port=args.control_port)
         if not started:
             self.poutput("Failed to start control connection.")
-            logger.error(
-                f"Failed to start control connection on port {args.control_port}"
-            )
-
+            logger.error(f"Failed to start control connection on port {args.control_port}")
             if control_listener_was_running:
                 self.control_manager.start_listener()
-
             if acq_listener_was_running:
                 self.acq_manager.start_listener()
-
             return
 
-    already_connected = len(
-        self.control_manager.server_state.list_connected_clients()
-    )
+    already_connected = len(self.server_state.list_connected_clients())
     target_total = max(requested_clients, already_connected)
 
     self.control_manager.num_multi_clients = target_total
@@ -438,71 +486,86 @@ def do_connect(self, args: argparse.Namespace) -> None:
     )
 
     control_ready = self.control_manager.handshake()
-
-    connected = self.control_manager.server_state.list_connected_clients()
-    decoded_clients = [cid.decode(errors="ignore") for cid in connected]
+    connected = self.server_state.list_connected_clients()
 
     if not control_ready or not connected:
+        self.server_state.process_event(
+            event=ServerFSMEvent.CONTROL_CONNECTION_FAILED,
+            reason="No clients connected during control-plane handshake",
+            source="do_connect",
+        )
         self.poutput("No clients connected.")
         logger.warning("No clients connected after control-plane handshake.")
-
         if control_listener_was_running:
             self.control_manager.start_listener()
-
         if acq_listener_was_running:
             self.acq_manager.start_listener()
-
         return
 
-    self.poutput(
-        f"Control plane ready with {len(connected)}/{target_total} client(s)."
+    control_transitioned = self.server_state.process_event(
+        event=ServerFSMEvent.CONTROL_CONNECTION_SUCCEEDED,
+        reason=f"Control plane ready with {len(connected)} client(s)",
+        source="do_connect",
     )
-    self.poutput(f"Connected clients: {decoded_clients}")
 
+    if not control_transitioned:
+        self.poutput("Cannot proceed: invalid FSM transition on control plane.")
+        logger.error("CONTROL_CONNECTION_SUCCEEDED rejected by FSM")
+        return
+
+    decoded_clients = [cid.decode(errors="ignore") for cid in connected]
+
+    self.poutput(f"Control plane ready with {len(connected)}/{target_total} client(s).")
+    self.poutput(f"Connected clients: {decoded_clients}")
     logger.info(
-        f"Control plane ready with {len(connected)}/{target_total} clients: "
-        f"{decoded_clients}"
+        f"Control plane ready with {len(connected)}/{target_total} clients: {decoded_clients}"
     )
 
     if self.acq_manager.socket is None:
         started = self.acq_manager.start_connection(port=args.acq_port)
         if not started:
             self.poutput("Failed to start acquisition connection.")
-            logger.error(
-                f"Failed to start acquisition connection on port {args.acq_port}"
-            )
-
+            logger.error(f"Failed to start acquisition connection on port {args.acq_port}")
             if control_listener_was_running:
                 self.control_manager.start_listener()
-
             if acq_listener_was_running:
                 self.acq_manager.start_listener()
-
             return
 
     self.acq_manager.clear_queues()
-
     self.poutput("Starting acquisition-plane handshake...")
 
     acq_ready = self.acq_manager.handshake()
 
     if not acq_ready:
+        self.server_state.process_event(
+            event=ServerFSMEvent.ACQUISITION_CONNECTION_FAILED,
+            reason="Acquisition plane handshake failed",
+            source="do_connect",
+        )
         self.poutput("Acquisition plane handshake failed.")
         logger.error("Acquisition plane handshake failed.")
-
         if control_listener_was_running:
             self.control_manager.start_listener()
-
         if acq_listener_was_running:
             self.acq_manager.start_listener()
+        return
 
+    acq_transitioned = self.server_state.process_event(
+        event=ServerFSMEvent.ACQUISITION_CONNECTION_SUCCEEDED,
+        reason=f"Acquisition plane ready with {len(self.acq_manager.acquisition_clients)} client(s)",
+        source="do_connect",
+    )
+
+    if not acq_transitioned:
+        self.poutput("Cannot proceed: invalid FSM transition on acquisition plane.")
+        logger.error("ACQUISITION_CONNECTION_SUCCEEDED rejected by FSM")
         return
 
     self.poutput(
         f"Acquisition plane ready with "
         f"{len(self.acq_manager.acquisition_clients)}/{len(connected)} client(s)."
     )
-
     logger.info(
         f"Acquisition plane ready with "
         f"{len(self.acq_manager.acquisition_clients)}/{len(connected)} clients."
@@ -521,6 +584,9 @@ def do_connect(self, args: argparse.Namespace) -> None:
         self.poutput("Failed to start acquisition listener")
         return
 
+
+    client_ids = self.server_state.list_common_plane_clients()
+    self.startup_service.configure_clients(client_ids=client_ids, mode=self.mode)
 #####################################
 #HANDLING EVENT MESSAGES FROM CLIENT#
 #####################################
@@ -578,7 +644,7 @@ def _print_power_alignment_event(self, payload):
             f"  CH {ch}: software ON -> hardware DOWN, moved to OFF"
         )
 
-########HELPERS###############
+########END HELPERS###############
 
 def handle_event(self, message):
     payload = message.payload

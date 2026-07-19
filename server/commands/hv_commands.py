@@ -2,8 +2,21 @@ import argparse
 import cmd2
 from server.utils.logger import get_logger
 from common.message_handler import Channel
+from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
+
 
 logger = get_logger("hv_commands")
+
+
+COMMAND_FSM_MAP = {
+    "on": {ServerFSM.READY, ServerFSM.CONNECTED},
+    "off": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "set_common": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "voltage": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "threshold": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+}
+
+
 
 ############
 #HV HELPERS#
@@ -70,7 +83,7 @@ hv_subparsers = hv_parser.add_subparsers(
     required=True,
 )
 
-# hv on
+
 on_parser = hv_subparsers.add_parser("on")
 on_parser.add_argument(
     "--channels",
@@ -79,7 +92,7 @@ on_parser.add_argument(
     help='Channels selected. Can be "all" or comma separated string list',
 )
 
-# hv off
+
 off_parser = hv_subparsers.add_parser("off")
 off_parser.add_argument(
     "--channels",
@@ -88,7 +101,7 @@ off_parser.add_argument(
     help='Channels selected. Can be "all" or comma separated string list',
 )
 
-# hv set_common ...
+
 set_common_parser = hv_subparsers.add_parser("set_common")
 set_common_subparsers = set_common_parser.add_subparsers(
     dest="parameter",
@@ -115,9 +128,25 @@ threshold_parser.add_argument(
 
 @cmd2.with_argparser(hv_parser)
 @cmd2.with_category("HV Commands")
+@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR])
 def do_hv(self, args: argparse.Namespace) -> None:
     """HV commands: hv on, hv off, hv set_common voltage, hv set_common threshold."""
 
+    current_state = self.server_state.get_server_state()
+    allowed_states = COMMAND_FSM_MAP[args.command_group]
+
+    if current_state not in allowed_states:
+        allowed_names = ", ".join(sorted(s.value for s in allowed_states))
+        self.poutput(
+            f"Cannot run 'hv {args.command_group}' while server is '{current_state.value}'. "
+            f"Allowed states: {allowed_names}."
+        )
+        logger.error(
+            f"HV command '{args.command_group}' blocked: state={current_state.value}, "
+            f"allowed={allowed_names}"
+        )
+        return
+    
     if args.command_group == "on":
         command = "hv_on"
         value = None
@@ -159,7 +188,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
         self.poutput(f"Unknown HV command group: {args.command_group}")
         return
 
-    client_ids = self.control_manager.server_state.list_connected_clients()
+    client_ids = self.server_state.list_connected_clients()
 
     if not client_ids:
         self.poutput("No connected clients.")

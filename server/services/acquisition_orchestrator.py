@@ -4,7 +4,7 @@ import threading
 
 from server.utils.logger import get_logger
 from server.services.client_command_service import CommandPlane
-
+from server.core.server_state import ServerFSM, ServerFSMEvent
 
 
 class AcquisitionOrchestrator:
@@ -12,12 +12,14 @@ class AcquisitionOrchestrator:
         self,
         acquisition_service,
         channel_selection_service,
+        server_state,
         get_mode,
         output_func=None,
     ) -> None:
         self.acquisition_service = acquisition_service
         self.channel_selection_service = channel_selection_service
         self.get_mode = get_mode
+        self.server_state = server_state
         self.poutput = output_func or (lambda message: None)
         self.logger = get_logger("acquisition_orchestrator")
         self.logger.debug("Acquisition Orchestrator initialized")
@@ -28,16 +30,17 @@ class AcquisitionOrchestrator:
 
     def start(self, args) -> None:
         self.poutput("Acquisition start command received.")
+        
+        operational = set(self.server_state.get_operational_clients())
 
-        client_ids = self.acquisition_service.get_connected_clients(
-            plane=CommandPlane.ACQUISITION
-        )
+        client_ids = [cid for cid in self.acquisition_service.get_connected_clients(plane=CommandPlane.ACQUISITION) 
+                      if cid in operational]
 
         if not client_ids:
-            self.poutput("No connected clients.")
+            self.poutput("No operational clients ready for acquisition.")
             return
 
-        if self.acquisition_service.check_acquisition_busy():
+        if (self.server_state.get_server_state() == ServerFSM.ACQUIRING or self.server_state.get_server_state() == ServerFSM.FINALIZING):
             self.poutput("Data receiver is already running or finalizing.")
             return
         
@@ -139,8 +142,23 @@ class AcquisitionOrchestrator:
             )
             self.acquisition_service.clear_active_clients()
             return
+        
+        started = self.server_state.process_event(
+            event=ServerFSMEvent.ACQUISITION_STARTED,
+            reason="Acquisition started",
+            source="acquisition_orchestrator",
+            metadata={"active_clients": rc_ready_clients},
+        )
 
-        self.acquisition_service.set_active_clients(rc_ready_clients)
+        if not started:
+            self.poutput("FSM rejected acquisition start; stopping receiver.")
+            self.logger.error("ACQUISITION_STARTED rejected by FSM after hardware start")
+            self.acquisition_service.finalize_acquisition(
+                client_ids=rc_ready_clients,
+                reason="FSM rejected ACQUISITION_STARTED",
+            )
+            return
+
 
 
         self.poutput(
@@ -170,11 +188,31 @@ class AcquisitionOrchestrator:
                 "Stopping/finalizing receiver state only."
             )
 
+        current_state = self.server_state.get_server_state()
+
+        if current_state == ServerFSM.ACQUIRING:
+            stop_requested = self.server_state.process_event(
+                event=ServerFSMEvent.STOP_REQUESTED,
+                reason="Manual stop command",
+                source="acquisition_orchestrator",
+            )
+
+            if not stop_requested:
+                self.poutput("Cannot register stop in FSM; stopping hardware anyway.")
+                self.logger.error("STOP_REQUESTED rejected by FSM")
+
+        elif current_state != ServerFSM.FINALIZING:
+            self.logger.warning(
+                f"acquisition_orchestrator.stop() called while server is "
+                f"'{current_state.value}', not ACQUIRING/FINALIZING. "
+                "Proceeding with hardware finalization anyway."
+            )
+
+
         self.acquisition_service.finalize_acquisition(
             client_ids=client_ids,
             reason="manual stop command",
         )
-        
     
     
     
