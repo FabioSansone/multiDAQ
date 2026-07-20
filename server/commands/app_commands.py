@@ -231,7 +231,7 @@ def do_quit(self, _) -> bool:
 
    
     if self.server_state.get_server_state() == ServerFSM.FINALIZING:
-        self.acquisition_orchestrator.stop()
+        self.acquisition_orchestrator.stop(wait = True, wait_timeout = 60.0)
 
     self.shutdown_service.power_off_hv_on_shutdown()
     self.shutdown_service.zero_rc_registers_on_shutdown()
@@ -378,7 +378,7 @@ def do_force(self, args: argparse.Namespace) -> bool:
 
         if self.server_state.get_server_state() == ServerFSM.FINALIZING:
             try:
-                self.acquisition_orchestrator.stop()
+                self.acquisition_orchestrator.stop(wait = True, wait_timeout = 6.0)
             except Exception as e:
                 logger.error(f"Force quit: failed to stop acquisition orchestrator: {e}")
                 self.poutput(f"Warning: failed to cleanly stop acquisition: {e}")

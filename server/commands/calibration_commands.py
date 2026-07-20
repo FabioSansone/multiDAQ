@@ -88,8 +88,8 @@ scan_ttp_parser.add_argument(
 @cmd2.with_category("Calibration Commands")
 @command_guard([ServerFSM.READY])
 def do_calibration(self, args: argparse.Namespace) -> None:
-    """Calibration commands: calibration scan_ttp."""
-    
+    """Calibration commands: calibration scan_ttp ..."""
+
     if args.command == "scan_ttp":
         self.calibration_orchestrator.scan_ttp(args)
         return

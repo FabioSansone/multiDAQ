@@ -216,7 +216,7 @@ class AcquisitionOrchestrator:
                 "will run when the receiver duration elapses."
             )
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = False, wait_timeout: float | None = None) -> None:
         client_ids = self.acquisition_service.get_active_clients()
 
         if not client_ids:
@@ -246,10 +246,21 @@ class AcquisitionOrchestrator:
             )
 
 
-        self.acquisition_service.finalize_acquisition(
-            client_ids=client_ids,
-            reason="manual stop command",
+        finalize_thread = threading.Thread(
+            target=self.acquisition_service.finalize_acquisition,
+            kwargs={"client_ids": client_ids, "reason": "manual stop command"},
+            daemon=True,
         )
-    
+        finalize_thread.start()
+
+        if wait:
+            completed = self.acquisition_service.wait_for_finalize(timeout=wait_timeout)
+            if completed:
+                self.poutput("Finalization completed.")
+            else:
+                self.poutput(f"Finalization did not complete within {wait_timeout}s.")
+        else:
+            self.poutput("Stop requested. Finalization running in background.")
+        
     
     

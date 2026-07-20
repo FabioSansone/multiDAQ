@@ -71,11 +71,28 @@ stop_parser = acquisition_subparsers.add_parser(
 
 
 
+COMMAND_FSM_MAP = {
+    "start": {ServerFSM.READY},
+    "stop": {ServerFSM.ACQUIRING, ServerFSM.FINALIZING, ServerFSM.READY},
+}
+
 @cmd2.with_argparser(acquisition_parser)
 @cmd2.with_category("Acquisition Commands")
-@command_guard([ServerFSM.READY])
+@command_guard([ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.FINALIZING])
 def do_acquisition(self, args: argparse.Namespace) -> None:
     """Acquisition commands: acquisition start, acquisition stop."""
+
+    current_state = self.server_state.get_server_state()
+    allowed_states = COMMAND_FSM_MAP[args.command]
+
+    if current_state not in allowed_states:
+        allowed_names = ", ".join(sorted(s.value for s in allowed_states))
+        self.poutput(
+            f"Cannot run 'acquisition {args.command}' while server is "
+            f"'{current_state.value}'. Allowed states: {allowed_names}."
+        )
+        logger.error(f"Acquisition command '{args.command}' blocked: state={current_state.value}")
+        return
 
     if args.command == "start":
         self.acquisition_orchestrator.start(args)

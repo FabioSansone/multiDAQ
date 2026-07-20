@@ -29,6 +29,9 @@ class AcquisitionService:
         self._finalize_lock = threading.Lock()
         self._finalized = False
         self._last_finalize_success = True
+
+        self._finalize_complete_event = threading.Event()
+        self._finalize_complete_event.set()
         
 
     def get_active_clients(self) -> list[bytes]:
@@ -213,6 +216,14 @@ class AcquisitionService:
                         reason=f"{reason} (finalization error)",
                         source="acquisition_service.finalize_acquisition",
                     )
+            
+            self._finalize_complete_event.set()
+        
+    
+
+    def wait_for_finalize(self, timeout: float | None = None) -> bool:
+        """Blocca finché qualunque finalize_acquisition() in corso non è completata."""
+        return self._finalize_complete_event.wait(timeout=timeout)
 
     def watch_acquisition_completion(self, client_ids: List[bytes]) -> None:
         while (self.data_receiver_service.is_running() and self.server_state.get_server_state() == ServerFSM.ACQUIRING):
