@@ -562,6 +562,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
         f"Currently connected: {already_connected}."
     )
 
+    current_state = self.server_state.get_server_state()
     control_ready = self.control_manager.handshake()
     connected = self.server_state.list_connected_clients()
 
@@ -579,16 +580,17 @@ def do_connect(self, args: argparse.Namespace) -> None:
             self.acq_manager.start_listener()
         return
 
-    control_transitioned = self.server_state.process_event(
-        event=ServerFSMEvent.CONTROL_CONNECTION_SUCCEEDED,
-        reason=f"Control plane ready with {len(connected)} client(s)",
-        source="do_connect",
-    )
+    if current_state == ServerFSM.DISCONNECTED:
+        control_transitioned = self.server_state.process_event(
+            event=ServerFSMEvent.CONTROL_CONNECTION_SUCCEEDED,
+            reason=f"Control plane ready with {len(connected)} client(s)",
+            source="do_connect",
+        )
 
-    if not control_transitioned:
-        self.poutput("Cannot proceed: invalid FSM transition on control plane.")
-        logger.error("CONTROL_CONNECTION_SUCCEEDED rejected by FSM")
-        return
+        if not control_transitioned:
+            self.poutput("Cannot proceed: invalid FSM transition on control plane.")
+            logger.error("CONTROL_CONNECTION_SUCCEEDED rejected by FSM")
+            return
 
     decoded_clients = [cid.decode(errors="ignore") for cid in connected]
 
@@ -630,7 +632,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
 
     acq_transitioned = self.server_state.process_event(
         event=ServerFSMEvent.ACQUISITION_CONNECTION_SUCCEEDED,
-        reason=f"Acquisition plane ready with {len(self.acq_manager.acquisition_clients)} client(s)",
+        reason=f"Acquisition plane ready with {len(self.server_state.list_acquisition_clients())} client(s)",
         source="do_connect",
     )
 
@@ -641,11 +643,11 @@ def do_connect(self, args: argparse.Namespace) -> None:
 
     self.poutput(
         f"Acquisition plane ready with "
-        f"{len(self.acq_manager.acquisition_clients)}/{len(connected)} client(s)."
+        f"{len(self.server_state.list_acquisition_clients())}/{len(connected)} client(s)."
     )
     logger.info(
         f"Acquisition plane ready with "
-        f"{len(self.acq_manager.acquisition_clients)}/{len(connected)} clients."
+        f"{len(self.server_state.list_acquisition_clients())}/{len(connected)} clients."
     )
 
     self.control_manager.clear_queues()

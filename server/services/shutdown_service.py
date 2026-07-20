@@ -16,7 +16,7 @@ class ShutdownService:
         self.logger = get_logger("shutdown_service")
         self.logger.debug("Shutdown Service initialized")
 
-    def zero_rc_registers_on_shutdown(self) -> None:
+    def zero_rc_registers_on_shutdown(self, timeout_s: float = 10.0) -> None:
         client_ids = self.server_state.list_common_plane_clients()
 
         if not client_ids:
@@ -31,7 +31,7 @@ class ShutdownService:
                     client_id=client_id,
                     address=address,
                     value=0,
-                    timeout_s=10.0,
+                    timeout_s=timeout_s,
                 )
 
                 if not ok:
@@ -48,6 +48,7 @@ class ShutdownService:
     def power_off_hv_on_shutdown(
         self,
         plane: CommandPlane = CommandPlane.CONTROL,
+        timeout_s: float = 120.0
     ) -> None:
 
 
@@ -65,7 +66,7 @@ class ShutdownService:
                 command="set_hv_sync",
                 payload={"channels": "all"},
                 plane=plane,
-                timeout_s=90.0,
+                timeout_s=timeout_s,
             )
 
             if sync_reply is None:
@@ -105,11 +106,11 @@ class ShutdownService:
                 command="hv_off_and_wait",
                 payload={
                     "channels": on_channels_external,
-                    "timeout_s": 120.0,
+                    "timeout_s": timeout_s,
                     "poll_s": 2.0,
                 },
                 plane=plane,
-                timeout_s=150.0,
+                timeout_s=timeout_s,
             )
 
             if off_reply is None:
