@@ -230,9 +230,14 @@ def do_quit(self, _) -> bool:
         return False
 
    
-    if self.server_state.get_server_state() == ServerFSM.FINALIZING:
-        self.acquisition_orchestrator.stop(wait = True, wait_timeout = 60.0)
-
+    self.acquisition_orchestrator.stop()
+    self.acquisition_service.wait_for_session_end(timeout=60.0)
+    self.acquisition_orchestrator.stop()
+    completed = self.acquisition_service.wait_for_session_end(timeout=60.0)
+    if not completed:
+        logger.error("Acquisition finalization did not complete within timeout during quit")
+    elif not self.acquisition_service.get_last_finalize_success():
+        logger.warning("Acquisition finalization completed but reported failure during quit")
     self.shutdown_service.power_off_hv_on_shutdown()
     self.shutdown_service.zero_rc_registers_on_shutdown()
 
@@ -251,7 +256,6 @@ def do_quit(self, _) -> bool:
     return True
 
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
 def do_snapshot(self, _) -> None:
     """Print a formatted snapshot of the server FSM state."""
 
@@ -376,13 +380,9 @@ def do_force(self, args: argparse.Namespace) -> bool:
             logger.error("DISCONNECT_REQUESTED rejected by FSM for force quit")
             return False
 
-        if self.server_state.get_server_state() == ServerFSM.FINALIZING:
-            try:
-                self.acquisition_orchestrator.stop(wait = True, wait_timeout = 6.0)
-            except Exception as e:
-                logger.error(f"Force quit: failed to stop acquisition orchestrator: {e}")
-                self.poutput(f"Warning: failed to cleanly stop acquisition: {e}")
-
+        self.acquisition_orchestrator.stop()
+        self.acquisition_service.wait_for_session_end(timeout=5.0)
+    
         try:
             self.shutdown_service.power_off_hv_on_shutdown()
         except Exception as e:

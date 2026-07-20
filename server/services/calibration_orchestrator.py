@@ -42,10 +42,9 @@ class CalibrationOrchestrator:
         """
         Derive RC channels for every client ONCE, before the scan starts.
         Each call triggers a full HV/Modbus scan (set_hv_sync, up to 90s per
-        client) — doing this once per scan instead of once per point is what
-        keeps the participating channel set stable and consistent across the
-        whole scan (see prior discussion on why per-point re-derivation is
-        undesirable for calibration data).
+        client) — doing this once per scan instead of once per point keeps
+        the participating channel set stable and consistent across the
+        whole scan.
         """
         channels_by_client: dict[bytes, list[int]] = {}
 
@@ -84,44 +83,6 @@ class CalibrationOrchestrator:
             ready_clients.append(client_id)
         return ready_clients
 
-    def _run_single_ttp_point(
-        self,
-        args,
-        client_ids: list[bytes],
-        ttp_value: int,
-        scan_run_folder,
-        resolved_batch_id,
-    ) -> None:
-        base_suffix = args.suffix.strip() if args.suffix else ""
-        suffix = f"ttp_{ttp_value}" if base_suffix in {"", "ttp"} else f"{base_suffix}_ttp_{ttp_value}"
-
-        receiver_info = self.acquisition_service.acquisition_receiver_start(
-            duration=args.duration,
-            suffix=suffix,
-            acq_type=args.acq_type,
-            run_id=args.run_id,
-            batch_id=resolved_batch_id,
-            force_compile=args.force_compile,
-            run_folder=scan_run_folder,
-        )
-
-        if receiver_info is None:
-            self.poutput(f"Failed to start data receiver for TTP={ttp_value}.")
-            self.acquisition_service.disable_rc_channels(client_ids=client_ids)
-            return
-
-        self.poutput(f"TTP={ttp_value}: data receiver started. PID={receiver_info['pid']}, file={receiver_info['file']}")
-
-        while self.acquisition_service.check_acquisition_running():
-            time.sleep(0.5)
-
-        self.acquisition_service.reset_acquisition_state()
-        self.acquisition_service.finalize_acquisition(
-            client_ids=client_ids,
-            reason=f"TTP scan point completed, ttp={ttp_value}",
-            close_fsm=False,
-        )
-
     def scan_ttp(self, args) -> None:
         self.poutput("TTP scan command received.")
 
@@ -145,9 +106,8 @@ class CalibrationOrchestrator:
             self.poutput("No connected clients.")
             return
 
-        # Fail-fast: valida i valori TTP PRIMA di fare 90s di scan Modbus
-        # per client — non ha senso pagare quel costo per poi scoprire che
-        # gli argomenti erano invalidi.
+        # Fail-fast: valida i valori TTP prima di pagare fino a 90s di scan
+        # Modbus per client.
         try:
             ttp_values = self._parse_ttp_values(args)
         except Exception as e:
@@ -168,8 +128,6 @@ class CalibrationOrchestrator:
             return
 
         self.poutput(f"Starting TTP scan in test mode: values={ttp_values}")
-
-        self.acquisition_service.reset_acquisition_state()
 
         resolved_batch_id = self.acquisition_service.resolve_batch_id(args, rc_ready_clients)
         if resolved_batch_id is None:
@@ -194,6 +152,8 @@ class CalibrationOrchestrator:
             self.acquisition_service.disable_rc_channels(client_ids=rc_ready_clients)
             return
 
+        self.acquisition_service.begin_session()
+
         scan_thread = threading.Thread(
             target=self._run_ttp_scan_loop,
             args=(args, rc_ready_clients, ttp_values, scan_run_folder, resolved_batch_id),
@@ -207,42 +167,49 @@ class CalibrationOrchestrator:
         )
 
     def _run_ttp_scan_loop(self, args, client_ids, ttp_values, scan_run_folder, resolved_batch_id) -> None:
+        overall_success = True
+
         for ttp_value in ttp_values:
             if self.server_state.get_server_state() != ServerFSM.ACQUIRING:
-                self.poutput(f"Scan interrupted before TTP={ttp_value}: server left ACQUIRING (likely a manual stop).")
-                return
+                self.poutput(f"Scan interrupted before TTP={ttp_value}: external stop.")
+                break
 
             self.poutput(f"\nStarting TTP scan point: register 10 = {ttp_value}")
-
             ttp_ready_clients = self._set_ttp_register(client_ids=client_ids, ttp_value=ttp_value)
             if not ttp_ready_clients:
                 self.poutput(f"No clients accepted TTP={ttp_value}. Skipping point.")
                 continue
 
-            self._run_single_ttp_point(
-                args=args,
-                client_ids=ttp_ready_clients,
-                ttp_value=ttp_value,
-                scan_run_folder=scan_run_folder,
-                resolved_batch_id=resolved_batch_id,
+            receiver_info = self.acquisition_service.acquisition_receiver_start(
+                duration=args.duration, suffix=f"ttp_{ttp_value}", acq_type=args.acq_type,
+                run_id=args.run_id, batch_id=resolved_batch_id,
+                force_compile=args.force_compile, run_folder=scan_run_folder,
             )
 
-        if self.server_state.get_server_state() != ServerFSM.ACQUIRING:
-            self.poutput("TTP scan ended (already stopped externally).")
-            return
+            if receiver_info is None:
+                self.poutput(f"Failed to start data receiver for TTP={ttp_value}.")
+                continue
 
-        stop_requested = self.server_state.process_event(
-            event=ServerFSMEvent.STOP_REQUESTED,
-            reason="TTP scan completed",
-            source="calibration_orchestrator",
-        )
-        if not stop_requested:
-            self.logger.error("STOP_REQUESTED rejected by FSM at end of TTP scan")
+            self.poutput(f"TTP={ttp_value}: data receiver started. PID={receiver_info['pid']}")
 
-        self.acquisition_service.reset_acquisition_state()
-        self.acquisition_service.finalize_acquisition(
-            client_ids=client_ids,
-            reason="TTP scan completed",
-        )
+            while (
+                self.acquisition_service.check_acquisition_running()
+                and self.server_state.get_server_state() == ServerFSM.ACQUIRING
+            ):
+                time.sleep(0.5)
 
+            point_success = self.acquisition_service.run_hardware_stop_and_flush(
+                ttp_ready_clients, reason=f"TTP scan point completed, ttp={ttp_value}"
+            )
+            if not point_success:
+                overall_success = False
+
+        if self.server_state.get_server_state() == ServerFSM.ACQUIRING:
+            self.server_state.process_event(
+                event=ServerFSMEvent.STOP_REQUESTED,
+                reason="TTP scan completed",
+                source="calibration_orchestrator",
+            )
+
+        self.acquisition_service.close_session(success=overall_success, reason="TTP scan completed")
         self.poutput("TTP scan completed.")
