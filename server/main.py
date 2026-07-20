@@ -86,6 +86,7 @@ class Server(cmd2.Cmd):
 
         self.shutdown_service = ShutdownService(
             control_manager=self.control_manager,
+            server_state=self.server_state,
             command_service=self.client_command_service,
             output_func=self.poutput,
         )
@@ -99,6 +100,7 @@ class Server(cmd2.Cmd):
         self.do_connect = app_commands.do_connect.__get__(self, Server)
         self.do_quit = app_commands.do_quit.__get__(self, Server)
         self.do_force = app_commands.do_force.__get__(self, Server)
+        self.do_snapshot = app_commands.do_snapshot.__get__(self, Server)
         
         #HV COMMANDS#
         self.do_hv = hv_commands.do_hv.__get__(self, Server)
