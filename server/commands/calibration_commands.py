@@ -1,6 +1,6 @@
 import argparse
 import cmd2
-
+from server.core.server_state import command_guard, ServerFSM
 
 ########################
 # CALIBRATION COMMANDS #
@@ -86,6 +86,7 @@ scan_ttp_parser.add_argument(
 
 @cmd2.with_argparser(calibration_parser)
 @cmd2.with_category("Calibration Commands")
+@command_guard([ServerFSM.READY])
 def do_calibration(self, args: argparse.Namespace) -> None:
     """Calibration commands: calibration scan_ttp."""
     

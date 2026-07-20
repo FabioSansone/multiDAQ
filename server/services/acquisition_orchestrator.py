@@ -31,6 +31,12 @@ class AcquisitionOrchestrator:
     def start(self, args) -> None:
         self.poutput("Acquisition start command received.")
         
+
+        current_state = self.server_state.get_server_state()
+        if current_state != ServerFSM.READY:
+            self.poutput(f"Cannot start acquisition: server is '{current_state.value}', expected READY.")
+            return
+
         operational = set(self.server_state.get_operational_clients())
 
         client_ids = [cid for cid in self.acquisition_service.get_connected_clients(plane=CommandPlane.ACQUISITION) 
@@ -46,7 +52,18 @@ class AcquisitionOrchestrator:
         
 
         self.acquisition_service.reset_acquisition_state()
-        self.acquisition_service.clear_active_clients()
+
+        started = self.server_state.process_event(
+            event=ServerFSMEvent.CONFIGURATION_STARTED,
+            reason="Preparing RC/HV channels for acquisition",
+            source="acquisition_orchestrator",
+            metadata={"target_clients": client_ids},
+        )
+
+        if not started:
+            self.poutput("Cannot start acquisition: invalid FSM transition (CONFIGURATION_STARTED).")
+            self.logger.error("CONFIGURATION_STARTED rejected by FSM in acquisition start")
+            return
 
         rc_ready_clients = []
         mode = self.get_mode()
@@ -86,6 +103,13 @@ class AcquisitionOrchestrator:
 
             if not enabled_channels_by_client:
                 self.poutput("No HV channels available for acquisition.")
+                failed_clients = client_ids
+                self.server_state.process_event(
+                    event=ServerFSMEvent.CONFIGURATION_FAILED,
+                    reason="No HV channels available for acquisition",
+                    source="acquisition_orchestrator",
+                    metadata={"failed_clients": failed_clients},
+                )
                 return
 
             for client_id, channels in enabled_channels_by_client.items():
@@ -113,7 +137,21 @@ class AcquisitionOrchestrator:
 
         if not rc_ready_clients:
             self.poutput("No clients ready for acquisition.")
+            self.server_state.process_event(
+                event=ServerFSMEvent.CONFIGURATION_FAILED,
+                reason="No clients ready for acquisition after RC/HV preparation",
+                source="acquisition_orchestrator",
+                metadata={"failed_clients": failed_clients},
+            )
+            self.poutput("No clients ready for acquisition.")
             return
+        
+        self.server_state.process_event(
+            event=ServerFSMEvent.CONFIGURATION_SUCCEEDED,
+            reason="RC/HV channels prepared for acquisition",
+            source="acquisition_orchestrator",
+            metadata={"successful_clients": rc_ready_clients, "failed_clients": failed_clients},
+        )
         
         resolved_batch_id = self.acquisition_service.resolve_batch_id(args, rc_ready_clients)
 
@@ -140,7 +178,6 @@ class AcquisitionOrchestrator:
             self.acquisition_service.disable_rc_channels(
                 client_ids=rc_ready_clients,
             )
-            self.acquisition_service.clear_active_clients()
             return
         
         started = self.server_state.process_event(

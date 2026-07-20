@@ -421,11 +421,12 @@ class ControlPlaneManager:
                 self.logger.info(f"Handshake attempt {attempt}/{max_retries}")
 
             if self.handshake_core(timeout_ms=timeout_ms):
-                return self.runtime.acquisition_service.apply_acquisition_mode(
-                    new_mode=self.runtime.acq_mode,
-                    acq_info=self.runtime.acq_info,
-                    pe_thr=self.runtime.start_thr,
-                )
+                # return self.runtime.acquisition_service.apply_acquisition_mode(
+                #     new_mode=self.runtime.acq_mode,
+                #     acq_info=self.runtime.acq_info,
+                #     pe_thr=self.runtime.start_thr,
+                # )
+                return True
 
             self.logger.warning("Handshake attempt failed, retrying...")
             time.sleep(retry_delay_s)

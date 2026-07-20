@@ -58,6 +58,11 @@ class DataReceiverService:
         if Path("/swgo").exists():
             return Path("/swgo")
         return Path.home()
+    
+    def get_exit_code(self) -> int | None:
+        if self.process is None:
+            return None
+        return self.process.poll()
 
     def get_run_folder(self, acq_type: str, batch_id: str | int | None = None, run_id: str | int | None = None) -> Path:
         batch_name = str(batch_id)

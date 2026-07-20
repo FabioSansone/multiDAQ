@@ -241,6 +241,7 @@ class ServerState:
         ServerFSM.DISCONNECTED,
         ServerFSM.CONTROL_CONNECTED,
         ServerFSM.CONNECTED,
+        ServerFSM.ERROR,
     }
 
     def __init__(self, initial_mode: str = "test"):
@@ -469,6 +470,15 @@ class ServerState:
                 )
                 return False
 
+            if event == ServerFSMEvent.CONFIGURATION_STARTED and next_state == ServerFSM.CONFIGURING:
+                self.pending_configuration_source = present_state
+
+            if (
+                present_state == ServerFSM.CONFIGURING
+                and event == ServerFSMEvent.CONFIGURATION_FAILED
+            ):
+                next_state = self.pending_configuration_source or ServerFSM.CONNECTED
+
 
             if (
                 present_state == ServerFSM.FINALIZING
@@ -673,6 +683,12 @@ class ServerState:
                 self.pending_event = None
                 self.pending_terminal_state = None
                 self.pending_context = None
+            
+            if present_state == ServerFSM.CONFIGURING and event in {
+                ServerFSMEvent.CONFIGURATION_SUCCEEDED,
+                ServerFSMEvent.CONFIGURATION_FAILED,
+            }:
+                self.pending_configuration_source = None
 
         if present_state == next_state:
             self.logger.info(

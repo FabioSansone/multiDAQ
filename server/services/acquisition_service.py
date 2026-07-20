@@ -110,12 +110,17 @@ class AcquisitionService:
         self,
         client_ids: List[bytes] | None,
         reason: str,
+        close_fsm: bool = True
     ) -> bool:
         """
         Finalize an acquisition: disable RC channels, stop the receiver, run the
         final hardware flush. Always resolves the FSM out of FINALIZING
         (FINALIZATION_SUCCEEDED or FINALIZATION_FAILED), regardless of whether
         it was reached via a manual stop or an automatic timed completion.
+
+        close_fsm: if True (default), set FSM in finalizing if possible. If False, finalize_acquisition executes 
+        only the hardware/firmware flush without involving the FSM - used for scanned acquisitions with many
+        intermediate steps where the FSM stays in ACQUIRING.
 
         Returns True if finalization completed cleanly, False otherwise.
         """
@@ -195,7 +200,7 @@ class AcquisitionService:
             self.data_receiver_service.clear_finalizing()
 
 
-            if self.server_state.get_server_state() == ServerFSM.FINALIZING:
+            if close_fsm and self.server_state.get_server_state() == ServerFSM.FINALIZING:
                 if success:
                     self.server_state.process_event(
                         event=ServerFSMEvent.FINALIZATION_SUCCEEDED,
@@ -213,10 +218,29 @@ class AcquisitionService:
         while (self.data_receiver_service.is_running() and self.server_state.get_server_state() == ServerFSM.ACQUIRING):
             time.sleep(0.5)
 
+        if self.server_state.get_server_state() != ServerFSM.ACQUIRING:
+            self.logger.info(
+                "watch_acquisition_completion: FSM already left ACQUIRING "
+                "(likely a concurrent manual stop); exiting watcher without action."
+            )
+            return
+        
+        exit_code = self.data_receiver_service.get_exit_code()
+        crashed = exit_code is not None and exit_code != 0
+
+        if crashed:
+            reason = f"Data receiver crashed unexpectedly (exit code {exit_code})"
+            self.logger.error(reason)
+        else:
+            reason = "Data receiver completed its configured duration"
+
         receiver_completed = self.server_state.process_event(
             event=ServerFSMEvent.RECEIVER_COMPLETED,
-            reason="Data receiver completed its configured duration",
+            reason=reason,
             source="acquisition_service.watch_acquisition_completion",
+            error=f"evreceiver exit code {exit_code}" if crashed else None,
+            metadata={"exit_code": exit_code, "crashed": crashed},
+            requested_terminal_state=ServerFSM.ERROR if crashed else None,
         )
 
         if not receiver_completed:

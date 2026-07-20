@@ -12,8 +12,6 @@ COMMAND_FSM_MAP = {
     "on": {ServerFSM.READY, ServerFSM.CONNECTED},
     "off": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "set_common": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
-    "voltage": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
-    "threshold": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
 }
 
 

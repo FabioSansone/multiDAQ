@@ -11,7 +11,7 @@ from server.communication.control_manager import ControlPlaneManager
 from server.communication.acquisition_manager import AcquisitionPlaneManager
 from server.acquisition.receiver_service import DataReceiverService
 from common.constants import ACQUISITION_MODES
-from server.core.server_state import ServerState, ServerFSM
+from server.core.server_state import ServerState, ServerFSMEvent
 from server.services.client_command_service import ClientCommandService
 from server.services.channel_selection_service import ChannelSelectionService
 from server.services.acquisition_orchestrator import AcquisitionOrchestrator
@@ -35,6 +35,12 @@ class Server(cmd2.Cmd):
         self.control_manager = control_manager
         self.acq_manager = acquisition_manager
         self.data_receiver_service = DataReceiverService()
+        if not self.data_receiver_service.receiver_ready:
+            self.server_state.process_event(
+                event=ServerFSMEvent.FATAL_ERROR,
+                reason="evreceiver compilation failed at startup; acquisition subsystem unusable",
+                source="server_init",
+            )
         self.mode = self.server_state.get_mode()
 
         self.client_command_service = ClientCommandService(
@@ -70,6 +76,7 @@ class Server(cmd2.Cmd):
         )
 
         self.calibration_orchestrator = CalibrationOrchestrator(
+            server_state=self.server_state,
             acquisition_service=self.acquisition_service,
             channel_selection_service=self.channel_selection_service,
             command_service=self.client_command_service,
@@ -124,7 +131,20 @@ class Server(cmd2.Cmd):
 
         self.logger.info(f"Mode changed to {self.mode}")
         return True
-
+    
+    def onecmd_plus_hooks(self, *args, **kwargs):
+        try:
+            return super().onecmd_plus_hooks(*args, **kwargs)
+        except Exception as e:
+            self.logger.error(f"Unhandled exception during command execution: {e}")
+            self.server_state.process_event(
+                event=ServerFSMEvent.FATAL_ERROR,
+                reason=f"Unhandled exception during command execution: {e}",
+                source="command_dispatch",
+                error=e,
+            )
+            self.poutput(f"Internal error: {e}. Server moved to ERROR state.")
+            return False
 
 def main() -> int:
 
@@ -161,7 +181,7 @@ def main() -> int:
         state=server_state
     )
 
-    app = Server(server_state=server_state, acquisition_mode=mode_selected, control_manager=control_manager, acquisition_manager=acquisition_manager)
+    app = Server(server_state=server_state, control_manager=control_manager, acquisition_manager=acquisition_manager)
 
     try:
         app.cmdloop()
