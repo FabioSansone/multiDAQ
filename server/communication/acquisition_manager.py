@@ -32,8 +32,6 @@ class AcquisitionPlaneManager:
 
         self.server_state = state
 
-        self._clients_lock = threading.Lock()
-        self._acquisition_clients: List[bytes] = []
 
         self.message_handler = MessageHandler(
             logger=get_logger("message_handler")
@@ -52,49 +50,28 @@ class AcquisitionPlaneManager:
         self.logger = get_logger("acquisition_manager")
         self.logger.debug("ZMQ Acquisition Server Manager initialized")
 
-
     def list_connected_clients(self) -> List[bytes]:
-        """
-        Return clients that completed the AcquisitionPlane handshake.
-
-        A copy is returned so callers cannot modify the internal registry.
-        """
-        with self._clients_lock:
-            return list(self._acquisition_clients)
+        return self.server_state.list_acquisition_clients()
 
     def is_client_connected(self, client_id: bytes) -> bool:
-        with self._clients_lock:
-            return client_id in self._acquisition_clients
+        return client_id in self.server_state.list_acquisition_clients()
+
 
     def add_client(self, client_id: bytes) -> None:
-        with self._clients_lock:
-            if client_id in self._acquisition_clients:
-                return
-
-            self._acquisition_clients.append(client_id)
-
-        self.logger.info(
-            f"AcquisitionPlane client registered: {client_id!r}"
-        )
+        try:
+            self.server_state.add_acquisition_client(client_id)
+        except ValueError as e:
+            self.logger.error(f"Cannot register acquisition client {client_id!r}: {e}")
+            return
 
     def remove_client(self, client_id: bytes) -> None:
-        removed = False
-
-        with self._clients_lock:
-            if client_id in self._acquisition_clients:
-                self._acquisition_clients.remove(client_id)
-                removed = True
-
-        if removed:
-            self.logger.info(
-                f"AcquisitionPlane client removed: {client_id!r}"
-            )
+        self.server_state.remove_acquisition_client(client_id)
+        self.logger.info(f"AcquisitionPlane client removed: {client_id!r}")
 
     def clear_clients(self) -> None:
-        with self._clients_lock:
-            self._acquisition_clients.clear()
-
+        self.server_state.clear_acquisition_clients()
         self.logger.debug("AcquisitionPlane client registry cleared")
+
 
     def get_identity(self, client_id: bytes) -> Optional[dict]:
         return self.server_state.get_identity(client_id)

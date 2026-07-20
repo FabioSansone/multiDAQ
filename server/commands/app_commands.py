@@ -214,7 +214,7 @@ def do_change_mode(self, args):
 
 
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
 def do_quit(self, _) -> bool:
     """Send quit command to all connected clients"""
 
@@ -250,6 +250,83 @@ def do_quit(self, _) -> bool:
 
     return True
 
+@cmd2.with_category("Generic Commands")
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
+def do_snapshot(self, _) -> None:
+    """Print a formatted snapshot of the server FSM state."""
+
+    snap = self.server_state.snapshot()
+
+    def _decode(client_ids):
+        return [cid.decode(errors="ignore") for cid in client_ids]
+
+    lines = []
+    lines.append("=" * 60)
+    lines.append(f"  SERVER STATE SNAPSHOT")
+    lines.append("=" * 60)
+    lines.append(f"  Mode:              {snap['mode']}")
+    lines.append(f"  State:             {snap['state'].value}")
+    lines.append(
+        f"  Previous state:    "
+        f"{snap['previous_state'].value if snap['previous_state'] else '-'}"
+    )
+    lines.append("-" * 60)
+    lines.append(f"  Control clients ({len(snap['control_clients'])}):")
+    lines.append(f"    {_decode(snap['control_clients']) or '(none)'}")
+    lines.append(f"  Acquisition clients ({len(snap['acquisition_clients'])}):")
+    lines.append(f"    {_decode(snap['acquisition_clients']) or '(none)'}")
+    lines.append(f"  Common plane clients ({len(snap['common_clients'])}):")
+    lines.append(f"    {_decode(snap['common_clients']) or '(none)'}")
+    lines.append(f"  Operational clients ({len(snap['operational_clients'])}):")
+    lines.append(f"    {_decode(snap['operational_clients']) or '(none)'}")
+    lines.append("-" * 60)
+    lines.append(f"  Per-client states:")
+
+    if snap["client_states"]:
+        for client_id, state in snap["client_states"].items():
+            client_name = client_id.decode(errors="ignore")
+            lines.append(f"    {client_name:30s} {state.value}")
+    else:
+        lines.append("    (no clients registered)")
+
+    lines.append("-" * 60)
+
+    pending_terminal = snap["pending_terminal_state"]
+    pending_event = snap["pending_event"]
+
+    if pending_terminal is not None or pending_event is not None:
+        lines.append(
+            f"  Pending transition:  "
+            f"event={pending_event.value if pending_event else '-'}, "
+            f"target={pending_terminal.value if pending_terminal else '-'}"
+        )
+        lines.append("-" * 60)
+
+    last_event = snap["last_event_context"]
+    if last_event is not None:
+        lines.append(f"  Last event:")
+        lines.append(f"    event:     {last_event['event'].value if last_event['event'] else '-'}")
+        lines.append(f"    reason:    {last_event['reason']}")
+        lines.append(f"    source:    {last_event['source']}")
+        lines.append(f"    timestamp: {last_event['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        if last_event.get("error"):
+            lines.append(f"    error:     {last_event['error']}")
+
+    error_context = snap["error_context"]
+    if error_context is not None:
+        lines.append("-" * 60)
+        lines.append(f"  ERROR context:")
+        lines.append(
+            f"    previous_state: {error_context['previous_state'].value}"
+        )
+        lines.append(f"    reason:         {error_context['reason']}")
+        lines.append(f"    source:         {error_context['source']}")
+        if error_context.get("error"):
+            lines.append(f"    error:          {error_context['error']}")
+
+    lines.append("=" * 60)
+
+    self.poutput("\n".join(lines))
 
 ##################
 #FORCE COMMANDS#
@@ -280,7 +357,7 @@ force_subparsers.add_parser(
 )
 @cmd2.with_argparser(force_parser)
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
 def do_force(self, args: argparse.Namespace) -> bool:
     """
     Force operations that do not depend on client replies.
@@ -587,6 +664,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
 
     client_ids = self.server_state.list_common_plane_clients()
     self.startup_service.configure_clients(client_ids=client_ids, mode=self.mode)
+
 #####################################
 #HANDLING EVENT MESSAGES FROM CLIENT#
 #####################################

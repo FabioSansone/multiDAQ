@@ -845,6 +845,30 @@ class ServerState:
     def add_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
         self.add_control_client(client_id, identity)
 
+    def remove_acquisition_client(self, client_id: bytes) -> None:
+        """Remove a client from the Acquisition Plane only, keeping its
+        Control Plane registration and identity intact."""
+        with self._lock:
+            removed = client_id in self.acquisition_clients
+            if removed:
+                self.acquisition_clients.remove(client_id)
+            if client_id in self.operational_clients:
+                self.operational_clients.remove(client_id)
+
+        if removed:
+            self.logger.info(
+                f"Acquisition client {client_id.decode(errors='ignore')} removed "
+                "(Control Plane registration retained)"
+            )
+
+    def clear_acquisition_clients(self) -> None:
+        with self._lock:
+            for client_id in list(self.acquisition_clients):
+                if client_id in self.operational_clients:
+                    self.operational_clients.remove(client_id)
+            self.acquisition_clients.clear()
+        self.logger.debug("Acquisition Plane client registry cleared")
+
     def add_acquisition_client(self, client_id: bytes) -> None:
         if not isinstance(client_id, bytes) or not client_id:
             raise ValueError("client_id must be non-empty bytes")

@@ -2,10 +2,10 @@ import zmq
 from typing import Optional, List
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
 from server.utils.logger import get_logger
-from server.utils.json_parser import JsonParser
 from server.core.server_state import ServerState
 import threading
 import queue
+import time
 
 MAX_RETRIES = 5
 
@@ -168,9 +168,9 @@ class ControlPlaneManager:
             return True
 
         except zmq.ZMQError as e:
-            self.logger.error(
-                f"ZMQ error while sending message to client {client_id!r}: {e}"
-            )
+            self.logger.error(f"ZMQ error while sending message to client {client_id!r}: {e}")
+            if e.errno == zmq.EHOSTUNREACH:
+                self.remove_client(client_id)
             return False
 
         except Exception as e:
@@ -410,26 +410,40 @@ class ControlPlaneManager:
         in_reply_to: str,
         timeout_s: float = 10.0,
     ) -> tuple[Optional[ProtocolMessage], str]:
+        """
+        Wait for a reply matching both client_id and in_reply_to.
+
+        Non-matching messages are temporarily removed from the incoming queue
+        and restored before returning. A monotonic deadline guarantees that
+        unrelated messages cannot restart or extend the requested timeout.
+        """
+
+        deadline = time.monotonic() + timeout_s
+        deferred_messages = []
 
         try:
             while True:
-                reply_client_id, message, reason = self.incoming_queue.get(timeout=timeout_s)
+                remaining_s = deadline - time.monotonic()
+
+                if remaining_s <= 0:
+                    return None, "timeout waiting for reply"
+
+                try:
+                    reply_client_id, message, reason = self.incoming_queue.get(timeout=remaining_s)
+                except queue.Empty:
+                    return None, "timeout waiting for reply"
 
                 if message is None:
                     return None, reason
 
-                if reply_client_id != client_id:
-                    self.incoming_queue.put((reply_client_id, message, reason))
-                    continue
+                if reply_client_id == client_id and message.in_reply_to == in_reply_to:
+                    return message, "ok"
 
-                if message.in_reply_to != in_reply_to:
-                    self.incoming_queue.put((reply_client_id, message, reason))
-                    continue
+                deferred_messages.append((reply_client_id, message, reason))
 
-                return message, "ok"
-
-        except queue.Empty:
-            return None, "timeout waiting for reply"
+        finally:
+            for deferred_message in deferred_messages:
+                self.incoming_queue.put(deferred_message)
         
     def _control_io_loop(self) -> None:
         """
