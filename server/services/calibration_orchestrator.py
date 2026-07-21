@@ -106,8 +106,7 @@ class CalibrationOrchestrator:
             self.poutput("No connected clients.")
             return
 
-        # Fail-fast: valida i valori TTP prima di pagare fino a 90s di scan
-        # Modbus per client.
+
         try:
             ttp_values = self._parse_ttp_values(args)
         except Exception as e:

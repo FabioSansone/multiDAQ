@@ -53,6 +53,70 @@ class AcquisitionService:
     
     def get_receiver_exit_code(self) -> int | None:
         return self.data_receiver_service.get_exit_code()
+    
+    def flush_client(self, client_id: bytes) -> bool:
+        client_name = client_id.decode(errors="ignore")
+
+        read_prev = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=15,
+            plane=CommandPlane.ACQUISITION
+        )
+
+        if read_prev is None:
+            self.poutput(
+                f"Client {client_name}: flush skipped, no valid read from register 15."
+            )
+            return False
+
+        if not self.command_service.write_rc_register(
+            client_id=client_id,
+            address=15,
+            value=read_prev + 32,
+            plane=CommandPlane.ACQUISITION
+        ):
+            self.poutput(
+                f"Client {client_name}: flush failed while writing register 15."
+            )
+            return False
+
+        time.sleep(2.0)
+
+        read_now = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=15,
+            plane=CommandPlane.ACQUISITION
+        )
+
+        if read_now is None:
+            self.poutput(f"Client {client_name}: flush failed, missing final read.")
+            return False
+
+        if read_now - read_prev - 32 == 64:
+            self.poutput(f"Client {client_name}: data flushing ended successfully.")
+
+            self.command_service.write_rc_register(
+                client_id=client_id,
+                address=15,
+                value=read_prev,
+                plane=CommandPlane.ACQUISITION
+            )
+
+            return True
+
+        self.poutput(f"Client {client_name}: flush error. Please check.")
+        self.logger.error(
+            f"Flush check failed for client {client_name}: "
+            f"prev={read_prev}, now={read_now}"
+        )
+
+        return False
+
+    def flush_clients(self, client_ids: List[bytes]) -> None:
+        time.sleep(10.0)
+
+        for client_id in client_ids:
+            self.flush_client(client_id=client_id)
 
     def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str) -> bool:
         self.poutput(f"Finalizing: {reason}")
