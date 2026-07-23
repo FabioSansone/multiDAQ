@@ -40,12 +40,12 @@ def _print_hv_reply(self, client_name: str, command: str, args: argparse.Namespa
     result = payload.get("result", {})
     error = payload.get("error")
 
-    successful = result.get("successful_channels", [])
-    failed = result.get("failed_channels", [])
-    skipped = result.get("skipped_channels", [])
-    not_responding = result.get("not_responding_channels", [])
-    bad = result.get("bad_channels", [])
-    fixed_bad = result.get("fixed_bad_channels", [])
+    successful = hv_to_user_channels(result.get("successful_channels", []))
+    failed = hv_to_user_channels(result.get("failed_channels", []))
+    skipped = hv_to_user_channels(result.get("skipped_channels", []))
+    not_responding = hv_to_user_channels(result.get("not_responding_channels", []))
+    bad = hv_to_user_channels(result.get("bad_channels", []))
+    fixed_bad = hv_to_user_channels(result.get("fixed_bad_channels", []))
 
     not_done = sorted(set(failed + skipped + not_responding))
 
