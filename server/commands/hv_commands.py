@@ -274,6 +274,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
             return
         target_client_ids = resolved
         payload = {"channels": args.channels}
+        timeout_s = 35.0
     
     elif args.command_group == "unmark_bad":
         command = "unmark_bad"
@@ -282,6 +283,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
             return
         target_client_ids = resolved
         payload = {"channels": args.channels}
+        timeout_s = 35.0
 
     else:
         self.poutput(f"Unknown HV command group: {args.command_group}")
