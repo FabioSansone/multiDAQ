@@ -403,6 +403,7 @@ def command_hv_sync(
             "bad_channels": hv_interface.getBadChannels(),
             "on_channels": hv_interface.getOnChannels(),
             "off_channels": hv_interface.getOffChannels(),
+            "fixed_bad_channels": hv_interface.getFixedBad(),
         },
     )
     
@@ -434,11 +435,88 @@ def command_feb_change_address(
         error=None if result.get("success") else result.get("error"),
     )
 
+def command_hv_set_user_bad(
+        protocol_version: int,
+        hv_interface: HV,
+        hv_request: HVRequest
+) -> HVResponse:
+    
+    channels = hv_request.payload.get("channels", "all")
+    try:
+        defined_channels = hv_interface.hv_channels_definition(channels=channels, n_channels=7)
+    except Exception as e:
+        return HVResponse(
+            protocol_version=protocol_version,
+            request_id=hv_request.request_id,
+            in_reply_to=hv_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error=f"Invalid channels for hv_set_user_bad: {e}",
+        )
+
+    for ch in defined_channels:
+        hv_interface.moveToFixedBad(channel=ch)
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.OK,
+        result={
+            "requested_channels": channels,
+            "fixed_bad_channels": hv_interface.getFixedBad(),
+            "bad_channels": hv_interface.getBadChannels(),
+            "ok_channels": hv_interface.getOkChannels(),
+            "on_channels": hv_interface.getOnChannels(),
+            "off_channels": hv_interface.getOffChannels(),
+        },
+    )
+
+def command_hv_unset_user_bad(
+        protocol_version: int,
+        hv_interface: HV,
+        hv_request: HVRequest
+) -> HVResponse:
+    
+    channels = hv_request.payload.get("channels", "all")
+    try:
+        defined_channels = hv_interface.hv_channels_definition(channels=channels, n_channels=7)
+    except Exception as e:
+        return HVResponse(
+            protocol_version=protocol_version,
+            request_id=hv_request.request_id,
+            in_reply_to=hv_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error=f"Invalid channels for hv_set_user_bad: {e}",
+        )
+
+    for ch in defined_channels:
+        hv_interface.removeFromFixedBad(channel=ch)
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.OK,
+        result={
+            "requested_channels": channels,
+            "fixed_bad_channels": hv_interface.getFixedBad(),
+            "bad_channels": hv_interface.getBadChannels(),
+            "ok_channels": hv_interface.getOkChannels(),
+            "on_channels": hv_interface.getOnChannels(),
+            "off_channels": hv_interface.getOffChannels(),
+        },
+    )
+
 
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
     "set_common_threshold": command_common_threshold,
     "set_acquisition_configuration": command_acquisition_configuration,
+
+    "hv_set_user_bad": command_hv_set_user_bad,
+    "hv_unset_user_bad": command_hv_unset_user_bad,
     
     "hv_on": command_hv_on,
     "hv_off": command_hv_off,

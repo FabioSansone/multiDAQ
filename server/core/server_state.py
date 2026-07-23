@@ -264,6 +264,7 @@ class ServerState:
 
         self.identity_by_client_id: dict[bytes, dict] = {}
         self.client_id_by_multipmt_id: dict[str, bytes] = {}
+        self.client_id_by_batch_id: dict[str, bytes] = {}
 
         self.run_state = ServerFSM.DISCONNECTED
         self.previous_state: ServerFSM | None = None
@@ -839,8 +840,11 @@ class ServerState:
                 normalized_identity = dict(identity)
                 self.identity_by_client_id[client_id] = normalized_identity
                 multipmt_id = normalized_identity.get("multipmt_id")
+                batch_id = normalized_identity.get("batch_id")
                 if multipmt_id:
                     self.client_id_by_multipmt_id[str(multipmt_id)] = client_id
+                if batch_id:
+                    self.client_id_by_batch_id[str(batch_id)] = client_id
 
     def add_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
         self.add_control_client(client_id, identity)
@@ -906,6 +910,9 @@ class ServerState:
             multipmt_id = identity.get("multipmt_id")
             if self.client_id_by_multipmt_id.get(str(multipmt_id)) == client_id:
                 self.client_id_by_multipmt_id.pop(str(multipmt_id), None)
+            batch_id = identity.get("batch_id")
+            if self.client_id_by_batch_id.get(str(batch_id)) == client_id:
+                self.client_id_by_batch_id.pop(str(batch_id), None)
 
         self.client_state_by_id.pop(client_id, None)
         self.client_previous_state_by_id.pop(client_id, None)
@@ -931,8 +938,6 @@ class ServerState:
     def remove_control_client(self, client_id: bytes) -> None:
         self.remove_client(client_id)
 
-    def remove_acquisition_client(self, client_id: bytes) -> None:
-        self.remove_client(client_id)
 
     def set_operational_clients(self, client_ids: Iterable[bytes]) -> None:
         """Set clients admitted by the latest successful configuration.
@@ -986,6 +991,10 @@ class ServerState:
     def get_client_id_by_multipmt_id(self, multipmt_id: str) -> Optional[bytes]:
         with self._lock:
             return self.client_id_by_multipmt_id.get(str(multipmt_id))
+    
+    def get_client_id_by_batch_id(self, batch_id: str) -> Optional[bytes]:
+        with self._lock:
+            return self.client_id_by_batch_id.get(str(batch_id))
 
     def snapshot(self) -> dict:
         with self._lock:

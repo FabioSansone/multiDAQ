@@ -65,7 +65,7 @@ class ClientRunTime:
             return True
 
         try:
-            self.hv_service = HVService(hv_port=self.hv_port, state_change_callback=self.sync_rc_register_39_with_hv,)
+            self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=self.identity.get_fixed_bad_channels(), state_change_callback=self.sync_rc_register_39_with_hv,)
             self.logger.info("HVService initialized")
             return True
 

@@ -344,6 +344,7 @@ def _print_hv_lists(self, client_name: str, result: dict):
     self.poutput(f"  BAD channels: {hv_to_user_channels(result.get('bad_channels', []))}")
     self.poutput(f"  ON  channels: {hv_to_user_channels(result.get('on_channels', []))}")
     self.poutput(f"  OFF channels: {hv_to_user_channels(result.get('off_channels', []))}")
+    self.poutput(f"  FIXED BAD channels: {hv_to_user_channels(result.get('fixed_bad_channels', []))}")
     
 ########END HELPERS###############
 
@@ -497,6 +498,42 @@ def do_force(self, args: argparse.Namespace) -> bool:
             },
         )
         return
+
+@cmd2.with_category("Generic Commands")
+def do_list_clients(self, _) -> None:
+    """List all connected clients with their identity and current state."""
+
+    client_ids = self.server_state.list_connected_clients()
+
+    if not client_ids:
+        self.poutput("No connected clients.")
+        return
+
+    operational = set(self.server_state.get_operational_clients())
+
+    lines = []
+    lines.append("=" * 70)
+    lines.append(f"  CONNECTED CLIENTS ({len(client_ids)})")
+    lines.append("=" * 70)
+
+    for client_id in client_ids:
+        client_name = client_id.decode(errors="ignore")
+        identity = self.server_state.get_identity(client_id) or {}
+        state = self.server_state.get_client_state(client_id)
+
+        multipmt_id = identity.get("multipmt_id", "-")
+        batch_id = identity.get("batch_id", "-")
+        state_name = state.value if state else "unknown"
+        op_flag = "yes" if client_id in operational else "no"
+
+        lines.append(f"  {client_name}")
+        lines.append(f"    multipmt_id: {multipmt_id}")
+        lines.append(f"    batch_id:    {batch_id}")
+        lines.append(f"    state:       {state_name}")
+        lines.append(f"    operational: {op_flag}")
+        lines.append("-" * 70)
+
+    self.poutput("\n".join(lines))
 
 
 #####################

@@ -40,14 +40,14 @@ class HVService:
     RECOVERY_CHECK_DEADLINE_S = 30.0
     POWER_CHECK_PERIOD_S = 300.0
 
-    def __init__(self, hv_port: str, state_change_callback=None, hv_policy: str = HV_POLICY_FULL_CONTROL):
+    def __init__(self, hv_port: str, fixed_bad_channels: list[int] | None = None, state_change_callback=None, hv_policy: str = HV_POLICY_FULL_CONTROL):
         self.logger = get_logger("hv_service")
         self.logger.debug("HV Service Initialized")
 
-        self.hv = HV(hv_port=hv_port)
+        self.hv = HV(hv_port=hv_port, fixed_bad_channels=fixed_bad_channels)
         self.hv_policy = hv_policy
 
-        self.input_queue: queue.PriorityQueue = queue.PriorityQueue()
+        self.input_queue: queue.PriorityQueue = queue.PriorityQueue() 
         self._counter = itertools.count()
 
         self.stop_event = threading.Event()

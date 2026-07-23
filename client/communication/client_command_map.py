@@ -21,6 +21,9 @@ COMMAND_MAP = {
 
     "hv_on_and_wait": handle_hv_set_on_and_wait,
     "hv_off_and_wait": handle_hv_off_and_wait,
+
+    "mark_bad": handle_hv_set_user_bad,
+    "unmark_bad": handle_hv_unset_user_bad,
     
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,

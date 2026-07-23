@@ -74,6 +74,9 @@ def _handle_hv_command(
         timeout_s=timeout_s,
     )
 
+    if hv_command in {"hv_set_user_bad", "hv_unset_user_bad"} and hv_response.status == MessageStatus.OK:
+        manager.runtime.identity.set_fixed_bad_channels(hv_response.result.get("fixed_bad_channels", []))
+
     reply = manager.message_handler.create_reply(
         channel=Channel.HV,
         in_reply_to=message.request_id,
@@ -156,5 +159,21 @@ def handle_hv_off_and_wait(manager, message):
         manager,
         message,
         hv_command="hv_off_and_wait",
+        timeout_s=150.0,
+    )
+
+def handle_hv_set_user_bad(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="hv_set_user_bad",
+        timeout_s=150.0,
+    )
+
+def handle_hv_unset_user_bad(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="hv_unset_user_bad",
         timeout_s=150.0,
     )

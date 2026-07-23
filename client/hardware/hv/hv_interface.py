@@ -1,4 +1,3 @@
-from client.utils.channels import channels_definition
 from client.hardware.hv.hvmodbus import HVModBus
 from client.utils.logger import get_logger
 import threading
@@ -9,14 +8,20 @@ import time
 
 class HV:
     
-    def __init__(self, hv_port):
+    def __init__(self, hv_port, fixed_bad_channels):
         self.logger = get_logger('hv')
         self.hv = HVModBus(hv_port)
         
         self.channels_lock = threading.Lock()
-        self.ok_ch, self.bad_ch = self.checkChannel(channels="all")
         self.on_ch = []
         self.off_ch = []
+        self.fixed_bad = []
+
+        scan_channels = [ch for ch in range(1, 8) if ch not in (fixed_bad_channels or [])]
+        self.ok_ch, self.bad_ch = self.checkChannel(channels=scan_channels)
+
+        for ch in (fixed_bad_channels or []):
+            self.moveToFixedBad(ch)
         
         self.sync_power_state(channels=self.ok_ch)
         
@@ -37,6 +42,10 @@ class HV:
     def getOffChannels(self):
         with self.channels_lock:
             return list(self.off_ch)
+    
+    def getFixedBad(self):
+        with self.channels_lock:
+            return list(self.fixed_bad)
 
     def moveToOk(self, channel: int) -> None:
         with self.channels_lock:
@@ -96,6 +105,34 @@ class HV:
 
             self.on_ch = sorted(self.on_ch)
             self.off_ch = sorted(self.off_ch)
+    
+    def moveToFixedBad(self, channel: int) -> None:
+        with self.channels_lock:
+            if channel in self.on_ch:
+                self.on_ch.remove(channel)
+
+            elif channel in self.off_ch:
+                self.off_ch.remove(channel)
+            
+            elif channel in self.ok_ch:
+                self.ok_ch.remove(channel)
+            
+            elif channel in self.bad_ch:
+                self.bad_ch.remove(channel)
+            
+            if channel not in self.fixed_bad:
+                self.fixed_bad.append(channel)
+
+            self.on_ch = sorted(self.on_ch)
+            self.off_ch = sorted(self.off_ch)
+            self.ok_ch = sorted(self.ok_ch)
+            self.bad_ch = sorted(self.bad_ch)
+    
+    def removeFromFixedBad(self, channel:int) -> None:
+        with self.channels_lock:
+            if channel in self.fixed_bad:
+                self.fixed_bad.remove(channel)
+        self.moveToBad(channel)
     
     def sync_power_state(self, channels):
         for ch in channels:

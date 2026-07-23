@@ -1,5 +1,6 @@
 import argparse
 import cmd2
+from typing import List
 from server.utils.logger import get_logger
 from common.message_handler import Channel
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
@@ -12,6 +13,8 @@ COMMAND_FSM_MAP = {
     "on": {ServerFSM.READY, ServerFSM.CONNECTED},
     "off": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "set_common": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "mark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "unmark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
 }
 
 
@@ -71,6 +74,68 @@ def _print_hv_reply(self, client_name: str, command: str, args: argparse.Namespa
             f"Client {client_name}: HV command completed successfully."
         )
 
+
+def _parse_comma_separated_strings(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _resolve_mark_bad_targets(self, args, connected_client_ids: list[bytes]) -> list[bytes] | None:
+    """
+    Resolve which clients 'hv mark_bad' should target.
+    Returns None (and prints an error) if resolution fails or is ambiguous.
+    """
+    provided_groups = [
+        (name, value) for name, value in (
+            ("client_ids", args.client_ids),
+            ("batch_ids", args.batch_ids),
+            ("multipmt_ids", args.multipmt_ids),
+        ) if value is not None
+    ]
+
+    if len(provided_groups) > 1:
+        names = ", ".join(f"--{name}" for name, _ in provided_groups)
+        self.poutput(f"Specify only ONE of --client_ids, --batch_ids, --multipmt_ids (got: {names}).")
+        return None
+
+    if not provided_groups:
+        return list(connected_client_ids)
+
+    group_name, group_value = provided_groups[0]
+    raw_ids = _parse_comma_separated_strings(group_value)
+
+    if not raw_ids:
+        self.poutput(f"No valid values provided for --{group_name}.")
+        return None
+
+    resolved_client_ids: list[bytes] = []
+    unresolved: list[str] = []
+
+    for raw_id in raw_ids:
+        if group_name == "client_ids":
+            candidate = raw_id.encode()
+            resolved = candidate if candidate in connected_client_ids else None
+        elif group_name == "batch_ids":
+            resolved = self.server_state.get_client_id_by_batch_id(raw_id)
+        else:  # multipmt_ids
+            resolved = self.server_state.get_client_id_by_multipmt_id(raw_id)
+
+        if resolved is None:
+            unresolved.append(raw_id)
+        else:
+            resolved_client_ids.append(resolved)
+
+    if unresolved:
+        self.poutput(f"Could not resolve {group_name}: {unresolved}")
+        logger.error(f"mark_bad: unresolved {group_name}: {unresolved}")
+
+    if not resolved_client_ids:
+        self.poutput("No clients resolved for mark_bad. Aborting.")
+        return None
+
+    return resolved_client_ids
+
 #################
 # HV COMMANDS
 #################
@@ -98,6 +163,18 @@ off_parser.add_argument(
     default="all",
     help='Channels selected. Can be "all" or comma separated string list',
 )
+
+mark_parser = hv_subparsers.add_parser("mark_bad")
+mark_parser.add_argument("--channels", type=str, default="all", help='Channels selected. Can be "all" or comma separated string list')
+mark_parser.add_argument("--client_ids", type=str, default=None, help='Comma separated string of client_ids')
+mark_parser.add_argument("--batch_ids", type=str, default=None, help='Comma separated string of batch_ids to identify the clients')
+mark_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma separated string of multipmt_ids to identify the clients')
+
+unmark_parser = hv_subparsers.add_parser("unmark_bad")
+unmark_parser.add_argument("--channels", type=str, default="all", help='Channels selected. Can be "all" or comma separated string list')
+unmark_parser.add_argument("--client_ids", type=str, default=None, help='Comma separated string of client_ids')
+unmark_parser.add_argument("--batch_ids", type=str, default=None, help='Comma separated string of batch_ids to identify the clients')
+unmark_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma separated string of multipmt_ids to identify the clients')
 
 
 set_common_parser = hv_subparsers.add_parser("set_common")
@@ -144,6 +221,14 @@ def do_hv(self, args: argparse.Namespace) -> None:
             f"allowed={allowed_names}"
         )
         return
+
+    client_ids = self.server_state.list_connected_clients()
+
+    if not client_ids:
+        self.poutput("No connected clients.")
+        return
+    
+    target_client_ids = client_ids
     
     if args.command_group == "on":
         command = "hv_on"
@@ -181,18 +266,29 @@ def do_hv(self, args: argparse.Namespace) -> None:
             payload_key: value,
         }
         timeout_s = 35.0
+    
+    elif args.command_group == "mark_bad":
+        command = "mark_bad"
+        resolved = _resolve_mark_bad_targets(self, args, client_ids)
+        if resolved is None:
+            return
+        target_client_ids = resolved
+        payload = {"channels": args.channels}
+    
+    elif args.command_group == "unmark_bad":
+        command = "unmark_bad"
+        resolved = _resolve_mark_bad_targets(self, args, client_ids)
+        if resolved is None:
+            return
+        target_client_ids = resolved
+        payload = {"channels": args.channels}
 
     else:
         self.poutput(f"Unknown HV command group: {args.command_group}")
         return
 
-    client_ids = self.server_state.list_connected_clients()
 
-    if not client_ids:
-        self.poutput("No connected clients.")
-        return
-
-    for client_id in client_ids:
+    for client_id in target_client_ids:
         hv_command = self.control_manager.message_handler.create_command(
             channel=Channel.HV,
             command=command,
