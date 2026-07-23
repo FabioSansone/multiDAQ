@@ -118,7 +118,6 @@ class CalibrationOrchestrator:
             self.poutput("No TTP values selected.")
             return
 
-        # Derivazione canali UNA VOLTA SOLA per l'intero scan.
         channels_by_client = self._resolve_scan_channels(args, client_ids)
         rc_ready_clients = list(channels_by_client.keys())
 
@@ -155,7 +154,7 @@ class CalibrationOrchestrator:
 
         scan_thread = threading.Thread(
             target=self._run_ttp_scan_loop,
-            args=(args, rc_ready_clients, ttp_values, scan_run_folder, resolved_batch_id),
+            args=(args, channels_by_client, ttp_values, scan_run_folder, resolved_batch_id),
             daemon=True,
         )
         scan_thread.start()
@@ -165,7 +164,8 @@ class CalibrationOrchestrator:
             "use 'acquisition stop' to abort early."
         )
 
-    def _run_ttp_scan_loop(self, args, client_ids, ttp_values, scan_run_folder, resolved_batch_id) -> None:
+    def _run_ttp_scan_loop(self, args, channels_by_client, ttp_values, scan_run_folder, resolved_batch_id) -> None:
+        base_client_ids = list(channels_by_client.keys())
         overall_success = True
 
         for ttp_value in ttp_values:
@@ -174,9 +174,25 @@ class CalibrationOrchestrator:
                 break
 
             self.poutput(f"\nStarting TTP scan point: register 10 = {ttp_value}")
-            ttp_ready_clients = self._set_ttp_register(client_ids=client_ids, ttp_value=ttp_value)
+            ttp_ready_clients = self._set_ttp_register(client_ids=base_client_ids, ttp_value=ttp_value)
             if not ttp_ready_clients:
                 self.poutput(f"No clients accepted TTP={ttp_value}. Skipping point.")
+                continue
+
+            rc_ready_clients = []
+            for client_id in ttp_ready_clients:
+                client_name = client_id.decode(errors="ignore")
+                rc_ok = self.acquisition_service.enable_rc_channels(
+                    client_id=client_id,
+                    channels=channels_by_client[client_id],
+                )
+                if not rc_ok:
+                    self.poutput(f"Client {client_name}: RC channel re-enable failed for TTP={ttp_value}")
+                    continue
+                rc_ready_clients.append(client_id)
+
+            if not rc_ready_clients:
+                self.poutput(f"No clients ready (RC re-enable failed) for TTP={ttp_value}. Skipping point.")
                 continue
 
             receiver_info = self.acquisition_service.acquisition_receiver_start(
