@@ -28,6 +28,8 @@ MONITOR_ONLY_ALLOWED_COMMANDS = {
     "hv_off",
     "hv_off_and_wait",
     "feb_change_address",
+    "hv_set_user_bad",
+    "hv_unset_user_bad",
 }
 
 
