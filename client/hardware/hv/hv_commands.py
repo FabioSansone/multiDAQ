@@ -343,7 +343,12 @@ def command_hv_sync(
     hv_request: HVRequest,
 ) -> HVResponse:
 
-    channels = hv_request.payload.get("channels", "all")
+    requested_channels = hv_request.payload.get("channels", "all")
+    resolved_channels = hv_interface.hv_channels_definition(channels=requested_channels)
+
+    fixed_bad = set(hv_interface.getFixedBad())
+    active_channels = [ch for ch in resolved_channels if ch not in fixed_bad]
+
 
     recovery_request = HVRequest(
         protocol_version=hv_request.protocol_version,
@@ -358,7 +363,7 @@ def command_hv_sync(
         protocol_version=hv_request.protocol_version,
         request_id=f"{hv_request.request_id}:presence",
         command="check_channel_presence",
-        payload={"channels": channels},
+        payload={"channels": active_channels},
         sender=hv_request.sender,
         status=hv_request.status,
     )
@@ -367,7 +372,7 @@ def command_hv_sync(
         protocol_version=hv_request.protocol_version,
         request_id=f"{hv_request.request_id}:power",
         command="check_channel_power",
-        payload={"channels": channels},
+        payload={"channels": active_channels},
         sender=hv_request.sender,
         status=hv_request.status,
     )

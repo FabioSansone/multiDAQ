@@ -5,6 +5,7 @@ from server.utils.channels import *
 from common.message_handler import Channel
 from server.utils.json_parser import JsonParser
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
+from server.commands.hv_commands import _print_hv_lists
 
 
 POSSIBLE_MODES = ['test', 'calibration', 'multipmt']
@@ -336,17 +337,6 @@ def do_snapshot(self, _) -> None:
 #FORCE COMMANDS#
 ##################
 
-########HELPERS###############
-
-def _print_hv_lists(self, client_name: str, result: dict):
-    self.poutput(f"\nClient {client_name}: HV sync completed.")
-    self.poutput(f"  OK  channels: {hv_to_user_channels(result.get('ok_channels', []))}")
-    self.poutput(f"  BAD channels: {hv_to_user_channels(result.get('bad_channels', []))}")
-    self.poutput(f"  ON  channels: {hv_to_user_channels(result.get('on_channels', []))}")
-    self.poutput(f"  OFF channels: {hv_to_user_channels(result.get('off_channels', []))}")
-    self.poutput(f"  FIXED BAD channels: {hv_to_user_channels(result.get('fixed_bad_channels', []))}")
-    
-########END HELPERS###############
 
 force_parser = argparse.ArgumentParser()
 force_subparsers = force_parser.add_subparsers(dest="command", required=True)

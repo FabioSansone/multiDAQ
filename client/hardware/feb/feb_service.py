@@ -120,7 +120,7 @@ class FEBService:
             return False
 
         return True
-    
+
     def _restore_after_programming(self, successful_channels: list[int]) -> tuple[bool, bool]:
         """
         Restore RC/HV state after FEB programming according to acquisition mode.
@@ -238,27 +238,14 @@ class FEBService:
             f"Starting FEB programming: channels={channels}, baud={baud}, "
             f"firmware={firmware}, port={port}, standard_addr={standard_addr}"
         )
-
-        channel_list = channels_definition(
-            channels=channels,
-            n_channels=7,
-        )
-
-        if not channel_list:
+        
+        if self.runtime.hv_service is None:
             return {
                 "success": False,
                 "successful_channels": [],
                 "failed_channels": [],
                 "skipped_bad_channels": [],
-                "error": "No valid RC channels selected",
-            }
-
-        if self.runtime.hv_service is None:
-            return {
-                "success": False,
-                "successful_channels": [],
-                "failed_channels": channel_list,
-                "skipped_bad_channels": [],
+                "skipped_fixed_bad_channels": [],
                 "error": (
                     "HVService unavailable. Apply acquisition mode before "
                     "programming FEB."
@@ -266,6 +253,35 @@ class FEBService:
             }
 
         hv = self.runtime.hv_service.hv
+
+        requested_channels = channels_definition(
+            channels=channels,
+            n_channels=7,
+        )
+
+        fixed_bad_set = set(hv.getFixedBad())
+        skipped_fixed_bad_channels = [
+            ch for ch in requested_channels if (ch + 1) in fixed_bad_set
+        ]
+        channel_list = [
+            ch for ch in requested_channels if (ch + 1) not in fixed_bad_set
+        ]
+
+        if skipped_fixed_bad_channels:
+            self.logger.info(
+                f"Skipping FEB programming on fixed-bad channels: "
+                f"{skipped_fixed_bad_channels}"
+            )
+
+        if not channel_list:
+            return {
+                "success": False,
+                "successful_channels": [],
+                "failed_channels": [],
+                "skipped_bad_channels": [],
+                "skipped_fixed_bad_channels": skipped_fixed_bad_channels,
+                "error": "No valid RC channels selected",
+            }
 
         successful_channels = []
         failed_channels = []
@@ -295,6 +311,7 @@ class FEBService:
                     "successful_channels": [],
                     "failed_channels": channel_list,
                     "skipped_bad_channels": [],
+                    "skipped_fixed_bad_channels": skipped_fixed_bad_channels,
                     "data_mode_ok": False,
                     "hv_restore_ok": False,
                     "acq_mode": self.runtime.acq_mode,
@@ -413,6 +430,7 @@ class FEBService:
             "successful_channels": successful_channels,
             "failed_channels": failed_channels,
             "skipped_bad_channels": skipped_bad_channels,
+            "skipped_fixed_bad_channels": skipped_fixed_bad_channels,
             "data_mode_ok": data_mode_ok,
             "hv_restore_ok": hv_restore_ok,
             "acq_mode": self.runtime.acq_mode,

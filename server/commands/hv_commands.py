@@ -3,8 +3,8 @@ import cmd2
 from typing import List
 from server.utils.logger import get_logger
 from common.message_handler import Channel
-from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
-
+from server.core.server_state import command_guard, ServerFSM
+from server.utils.channels import hv_to_user_channels
 
 logger = get_logger("hv_commands")
 
@@ -15,6 +15,7 @@ COMMAND_FSM_MAP = {
     "set_common": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "mark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "unmark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "status": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
 }
 
 
@@ -22,6 +23,16 @@ COMMAND_FSM_MAP = {
 ############
 #HV HELPERS#
 ############
+
+
+
+def _print_hv_lists(self, client_name: str, result: dict):
+    self.poutput(f"\nClient {client_name}: HV sync completed.")
+    self.poutput(f"  OK  channels: {hv_to_user_channels(result.get('ok_channels', []))}")
+    self.poutput(f"  BAD channels: {hv_to_user_channels(result.get('bad_channels', []))}")
+    self.poutput(f"  ON  channels: {hv_to_user_channels(result.get('on_channels', []))}")
+    self.poutput(f"  OFF channels: {hv_to_user_channels(result.get('off_channels', []))}")
+    self.poutput(f"  FIXED BAD channels: {hv_to_user_channels(result.get('fixed_bad_channels', []))}")
 
 def _print_hv_reply(self, client_name: str, command: str, args: argparse.Namespace, reply) -> None:
     payload = reply.payload
@@ -34,6 +45,7 @@ def _print_hv_reply(self, client_name: str, command: str, args: argparse.Namespa
     skipped = result.get("skipped_channels", [])
     not_responding = result.get("not_responding_channels", [])
     bad = result.get("bad_channels", [])
+    fixed_bad = result.get("fixed_bad_channels", [])
 
     not_done = sorted(set(failed + skipped + not_responding))
 
@@ -62,6 +74,8 @@ def _print_hv_reply(self, client_name: str, command: str, args: argparse.Namespa
         self.poutput(
             f"Client {client_name}: current bad channels: {bad}."
         )
+    if fixed_bad:
+        self.poutput(f"Client {client_name}: current FIXED BAD channels: {fixed_bad}.")
 
     if error:
         logger.error(
@@ -81,10 +95,11 @@ def _parse_comma_separated_strings(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _resolve_mark_bad_targets(self, args, connected_client_ids: list[bytes]) -> list[bytes] | None:
+def _resolve_hv_targets(self, args, connected_client_ids: list[bytes], command_label: str) -> list[bytes] | None:
     """
-    Resolve which clients 'hv mark_bad' should target.
-    Returns None (and prints an error) if resolution fails or is ambiguous.
+    Resolve which clients an hv subcommand should target, based on
+    --client_ids / --batch_ids / --multipmt_ids. Returns None (and prints
+    an error) if resolution fails or is ambiguous.
     """
     provided_groups = [
         (name, value) for name, value in (
@@ -118,7 +133,7 @@ def _resolve_mark_bad_targets(self, args, connected_client_ids: list[bytes]) -> 
             resolved = candidate if candidate in connected_client_ids else None
         elif group_name == "batch_ids":
             resolved = self.server_state.get_client_id_by_batch_id(raw_id)
-        else:  # multipmt_ids
+        else:
             resolved = self.server_state.get_client_id_by_multipmt_id(raw_id)
 
         if resolved is None:
@@ -128,10 +143,10 @@ def _resolve_mark_bad_targets(self, args, connected_client_ids: list[bytes]) -> 
 
     if unresolved:
         self.poutput(f"Could not resolve {group_name}: {unresolved}")
-        logger.error(f"mark_bad: unresolved {group_name}: {unresolved}")
+        logger.error(f"{command_label}: unresolved {group_name}: {unresolved}")
 
     if not resolved_client_ids:
-        self.poutput("No clients resolved for mark_bad. Aborting.")
+        self.poutput(f"No clients resolved for {command_label}. Aborting.")
         return None
 
     return resolved_client_ids
@@ -175,6 +190,12 @@ unmark_parser.add_argument("--channels", type=str, default="all", help='Channels
 unmark_parser.add_argument("--client_ids", type=str, default=None, help='Comma separated string of client_ids')
 unmark_parser.add_argument("--batch_ids", type=str, default=None, help='Comma separated string of batch_ids to identify the clients')
 unmark_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma separated string of multipmt_ids to identify the clients')
+
+status_parser = hv_subparsers.add_parser("status")
+status_parser.add_argument("--channels", type=str, default="all", help='Channels selected. Can be "all" or comma separated string list')
+status_parser.add_argument("--client_ids", type=str, default=None, help='Comma separated string of client_ids')
+status_parser.add_argument("--batch_ids", type=str, default=None, help='Comma separated string of batch_ids to identify the clients')
+status_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma separated string of multipmt_ids to identify the clients')
 
 
 set_common_parser = hv_subparsers.add_parser("set_common")
@@ -269,7 +290,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
     
     elif args.command_group == "mark_bad":
         command = "mark_bad"
-        resolved = _resolve_mark_bad_targets(self, args, client_ids)
+        resolved = _resolve_hv_targets(self, args, client_ids, "mark_bad")
         if resolved is None:
             return
         target_client_ids = resolved
@@ -278,12 +299,21 @@ def do_hv(self, args: argparse.Namespace) -> None:
     
     elif args.command_group == "unmark_bad":
         command = "unmark_bad"
-        resolved = _resolve_mark_bad_targets(self, args, client_ids)
+        resolved = _resolve_hv_targets(self, args, client_ids, "unmark_bad")
         if resolved is None:
             return
         target_client_ids = resolved
         payload = {"channels": args.channels}
         timeout_s = 35.0
+
+    elif args.command_group == "status":
+        command = "set_hv_sync"
+        resolved = _resolve_hv_targets(self, args, client_ids, "status")
+        if resolved is None:
+            return
+        target_client_ids = resolved
+        payload = {"channels": args.channels}
+        timeout_s = 90.0
 
     else:
         self.poutput(f"Unknown HV command group: {args.command_group}")
@@ -315,10 +345,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
             self.poutput(f"No reply from client {client_name}. Reason: {reason}")
             continue
 
-        _print_hv_reply(
-            self=self,
-            client_name=client_name,
-            command=command,
-            args=args,
-            reply=reply,
-        )
+        if args.command_group == "status":
+            _print_hv_lists(self, client_name, reply.payload.get("result", {}))
+        else:
+            _print_hv_reply(self=self, client_name=client_name, command=command, args=args, reply=reply)
