@@ -514,6 +514,31 @@ def command_hv_unset_user_bad(
         },
     )
 
+def command_set_pmt_serials(protocol_version, hv_interface, hv_request) -> HVResponse:
+    serials = hv_request.payload.get("serials", {})
+    successful = []
+    failed = []
+    
+    for channel, serial in serials.items():
+        try:
+            hv_interface.set_pmt_serial(channel=int(channel), serial=serial)
+            successful.append(int(channel))
+        except Exception as e:
+            hv_interface.logger.error(f"Failed to write PMT serial for channel {channel}: {e}")
+            failed.append(int(channel))
+
+    status = MessageStatus.OK if not failed else MessageStatus.ERROR
+    
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=status,
+        result={"successful_channels": successful, "failed_channels": failed},
+        error=f"Failed to write serial for channels: {failed}" if failed else None,
+    )
+    
+
 
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
@@ -530,6 +555,8 @@ COMMAND_HANDLERS = {
     "hv_off_and_wait": command_hv_off_and_wait,
     
     "set_hv_sync": command_hv_sync,
+    
+    "set_pmt_serials": command_set_pmt_serials,
     
     "feb_change_address": command_feb_change_address,
     

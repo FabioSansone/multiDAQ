@@ -16,6 +16,7 @@ COMMAND_FSM_MAP = {
     "mark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "unmark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "status": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "set_serial": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR}
 }
 
 
@@ -151,6 +152,20 @@ def _resolve_hv_targets(self, args, connected_client_ids: list[bytes], command_l
 
     return resolved_client_ids
 
+def _parse_channel_serial_map(value: str) -> dict[int, str] | None:
+    pairs: dict[int, str] = {}
+    
+    for item in _parse_comma_separated_strings(value):
+        if ":" not in item:
+            return None
+        channel_str, serial = item.split(":", 1)
+        try:
+            channel = int(channel_str.strip())
+        except ValueError:
+            return None
+        pairs[channel] = serial.strip()
+    return pairs
+
 #################
 # HV COMMANDS
 #################
@@ -221,6 +236,19 @@ threshold_parser.add_argument(
     default="all",
     help='Channels selected. Can be "all" or comma separated string list',
 )
+
+
+set_serial_parser = hv_subparsers.add_parser("set_serial")
+set_serial_subparsers = set_serial_parser.add_subparsers(
+    dest="parameter",
+    required=True,
+)
+
+pmt_parser = set_serial_subparsers.add_parser("pmt")
+pmt_parser.add_argument("--map", type=str, required=True, help='Comma separated channel:serial pairs, e.g. "1:ABC123,2:DEF456"')
+pmt_parser.add_argument("--client_ids", type=str, default=None, help='Comma separated string of client_ids')
+pmt_parser.add_argument("--batch_ids", type=str, default=None, help='Comma separated string of batch_ids')
+pmt_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma separated string of multipmt_ids')
 
 @cmd2.with_argparser(hv_parser)
 @cmd2.with_category("HV Commands")
@@ -314,6 +342,31 @@ def do_hv(self, args: argparse.Namespace) -> None:
         target_client_ids = resolved
         payload = {"channels": args.channels}
         timeout_s = 90.0
+    
+    elif args.command_group == "set_serial":
+        if args.parameter == "pmt":
+            channel_serial_map = _parse_channel_serial_map(args.map)
+            if channel_serial_map is None:
+                self.poutput('Invalid --map format. Use "channel:serial,channel:serial,...".')
+                return
+            
+            resolved = _resolve_hv_targets(self, args, client_ids, "set_serial_pmt")
+            if resolved is None:
+                return
+            if len(resolved) != 1:
+                self.poutput(
+                    f"'hv set_serial pmt' requires exactly one target client "
+                    f"(each detector has its own physical PMTs); resolved {len(resolved)}."
+                )   
+                return
+            
+            command = "set_pmt_serials"
+            target_client_ids = resolved
+            payload = {"serials": channel_serial_map}
+            timeout_s = 120.0
+        else:
+            self.poutput(f"Unknown set_serial parameter: {args.parameter}")
+            return
 
     else:
         self.poutput(f"Unknown HV command group: {args.command_group}")

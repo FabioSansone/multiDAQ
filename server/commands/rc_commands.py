@@ -19,6 +19,8 @@ rc_subparsers = rc_parser.add_subparsers(dest="parameter", required=True)
 read_parser = rc_subparsers.add_parser("read")
 read_parser.add_argument("address", type=int, help="RC register address to read")
 
+read_acq_registers = rc_subparsers.add_parser("get_rc_acq")
+
 write_parser = rc_subparsers.add_parser("write")
 write_parser.add_argument("address", type=int, help="RC register address to write")
 write_parser.add_argument("value", type=int, help="Value to write into the RC register")
@@ -54,6 +56,7 @@ COMMAND_FSM_MAP = {
     "read": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING},
     "write": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "program_feb": {ServerFSM.READY, ServerFSM.CONNECTED},
+    "get_rc_acq": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING}
 }
 
 COMMAND_MAP = {
@@ -63,6 +66,7 @@ COMMAND_MAP = {
     "read": "rc_read_register",
     "write": "rc_write_register",
     "program_feb": "feb_program",
+    "get_rc_acq": "rc_read_acq_registers"
 }
 
 
@@ -111,6 +115,10 @@ def do_rc(self, args: argparse.Namespace) -> None:
 
     elif args.parameter == "write":
         payload = {"address": args.address, "value": args.value}
+        timeout_s = 35.0
+    
+    elif args.parameter == "get_rc_acq":
+        payload = {"rc_acq_registers": [0,1,10,15,16,18,19,31,39]}
         timeout_s = 35.0
 
     else:
@@ -170,6 +178,7 @@ def do_rc(self, args: argparse.Namespace) -> None:
 
             self.poutput(f"Client {client_name}: register {address} = {value}")
             continue
+        
 
         if args.parameter == "write":
             address = result.get("address", args.address)
@@ -183,6 +192,29 @@ def do_rc(self, args: argparse.Namespace) -> None:
                 continue
 
             self.poutput(f"Client {client_name}: register {address} written with value {value}")
+            continue
+        
+        if args.parameter == "get_rc_acq":
+            if status != "ok":
+                logger.error(f"RC get_rc_acq failed for client {client_name}: {error}")
+                self.poutput(f"Client {client_name}: failed to read RC acquisition registers.")
+                if error:
+                    self.poutput(f"Client {client_name}: error: {error}")
+                continue
+
+            register_values = result.get("value", {})
+
+            normalized_values = {
+                int(address): value for address, value in register_values.items()
+            }
+
+            lines = [f"Client {client_name}: RC acquisition registers:"]
+            for address in sorted(normalized_values.keys()):
+                value = normalized_values[address]
+                value_str = str(value) if value is not None else "READ FAILED"
+                lines.append(f"  reg {address:>2} = {value_str}")
+
+            self.poutput("\n".join(lines))
             continue
 
         failed = result.get("failed_channels", [])

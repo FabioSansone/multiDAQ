@@ -1028,6 +1028,11 @@ class HV:
                 "new_address": new_address,
                 "error": str(e),
             }
+    
+    def set_pmt_serial(self, channel: int, serial: str) -> None:
+        if channel < 1 or channel > self.hv.num_channels:
+            raise ValueError(f"Invalid HV channel: {channel}")
+        self.hv.setPMTSerialNumber(serial, slave=channel)
 
 
 

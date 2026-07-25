@@ -344,6 +344,9 @@ class HVModBus:
         except ModbusException as e:
             self.logger.error(f"Error occured getting info of channel {self.ch_addr}:{e}")
             raise e
+        except Exception as e:
+            self.logger.error(f"Error occured getting info of channel {self.ch_addr}:{e}")
+            raise e
     
     def readMonRegisters(self, slave=None):
         slave = self.addr if slave==None else slave
@@ -443,5 +446,25 @@ class HVModBus:
             except Exception:
                 continue
         return None
+    
+    @staticmethod
+    def _pack_sn_to_registers(sn: str):
+        b = sn.encode("utf-8")[:12].ljust(12, b"\x00")
+        return list(struct.unpack(">6H", b))
+
+    def setPMTSerialNumber(self, sn, slave=None):
+        slave = self.ch_addr if slave is None else slave
+        data = self._pack_sn_to_registers(sn)
+        self._safe_write_multiple(address=0x08, values=data, slave=slave, desc="write pmt serial")
+
+    def setHVSerialNumber(self, sn, slave=None):
+        slave = self.ch_addr if slave is None else slave
+        data = self._pack_sn_to_registers(sn)
+        self._safe_write_multiple(address=0x0E, values=data, slave=slave, desc = "write hv serial")
+
+    def setFEBSerialNumber(self, sn, slave=None):
+        slave = self.ch_addr if slave is None else slave
+        data = self._pack_sn_to_registers(sn)
+        self._safe_write_multiple(address=0x14, values=data, slave=slave, desc = "write feb serial")
     
 

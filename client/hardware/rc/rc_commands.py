@@ -154,6 +154,37 @@ def command_read_register(
     )
 
 
+def command_read_acq_registers(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    addresses = rc_request.payload.get("rc_acq_registers")
+
+    if addresses is None:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error="Missing RC register address",
+        )
+
+    result = rc_interface.read_acq_registers(
+        addresses=addresses,
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix=f"Failed to read acquisition related RC registers {addresses}",
+    )
+    
+    
+
 def command_write_register(
     protocol_version: int,
     rc_interface: RC,
@@ -352,6 +383,7 @@ COMMAND_HANDLERS = {
 
     "rc_read_register": command_read_register,
     "rc_write_register": command_write_register,
+    "rc_read_acq_registers": command_read_acq_registers,
 
     "rc_free_rate_monitoring": command_free_rate_monitoring,
     "rc_trg_rate_monitoring": command_trg_rate_monitoring,

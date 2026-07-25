@@ -1,12 +1,12 @@
 import threading
 from typing import List
 import time
-
+from datetime import datetime, timezone
 from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 from server.core.server_state import ServerFSM, ServerFSMEvent
 
-
+ACQ_REGISTER_ADDRESSES = [0, 1, 10, 15, 16, 18, 19, 31, 39]
 
 class AcquisitionService:
     def __init__(
@@ -35,8 +35,62 @@ class AcquisitionService:
 
     def get_active_clients(self) -> list[bytes]:
         return self.server_state.get_operational_clients()
+    
+    def _read_client_acq_registers(self, client_id: bytes) -> dict[int, int | None]:
+        reply, reason = self.command_service.send_rc_command(
+            client_id=client_id,
+            command="rc_read_acq_registers",
+            payload={"rc_acq_registers": ACQ_REGISTER_ADDRESSES},
+            plane=CommandPlane.ACQUISITION,
+            timeout_s=30.0,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"Failed to read acquisition RC registers for {client_id!r}: {reason}"
+            )
+            return {addr: None for addr in ACQ_REGISTER_ADDRESSES}
+
+        result = reply.payload.get("result", {})
+        raw_values = result.get("value", {})
+
+       
+        return {int(address): value for address, value in raw_values.items()}
 
 
+    def build_run_metadata(
+        self,
+        client_ids: list[bytes],
+        acq_mode: str,
+        acq_type: str,
+        acq_type_param=None,
+    ) -> dict[bytes, dict]: 
+        
+        start_timestamp = int(time.time())  
+        start_timestamp_utc = datetime.now(timezone.utc) 
+        
+        metadata_by_client: dict[bytes, dict] = {}
+        
+        for client_id in client_ids:
+            register_values = self._read_client_acq_registers(client_id)
+            metadata = {
+                "version": 1,
+                "start_timestamp": start_timestamp,
+                "acq_mode": acq_mode,
+                "acq_type": acq_type,
+                "acq_type_param": acq_type_param if acq_type_param is not None else "",
+            }
+            
+            for address in ACQ_REGISTER_ADDRESSES:
+                value = register_values.get(address)
+                metadata[f"reg_{address}_value"] = value if value is not None else ""
+                
+            for ch in range(7):
+                metadata[f"pmt_serial_ch{ch}"] = ""
+
+            metadata_by_client[client_id] = metadata
+        
+        return metadata_by_client
     
     def begin_session(self) -> None:
         """To be called once at the start of a new acquisition"""

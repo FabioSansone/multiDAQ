@@ -82,6 +82,24 @@ class RC:
             "value": value,
             "message": f"Register {address} read successfully",
         }
+    
+    def read_acq_registers(self, addresses: list) -> dict:
+        result = {}
+        for address in addresses:
+            value = self.read(address)
+            if address not in result:
+                if value is not None:
+                    result[address] = value
+                else:
+                    result[address] = None
+    
+
+        return {
+            "success": True,
+            "addresses": addresses,
+            "value": result,
+            "message": f"Register {addresses} read successfully",
+        }
 
 
     def write_register(self, address: int, value: int) -> dict:

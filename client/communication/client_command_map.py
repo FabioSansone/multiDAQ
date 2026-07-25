@@ -25,6 +25,8 @@ COMMAND_MAP = {
     "mark_bad": handle_hv_set_user_bad,
     "unmark_bad": handle_hv_unset_user_bad,
     
+    "set_pmt_serials": handle_hv_set_pmt_serials,
+    
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,
     "rc_boot": handle_rc_boot_mode,
@@ -32,6 +34,7 @@ COMMAND_MAP = {
 
     "rc_read_register": handle_rc_read_register,
     "rc_write_register": handle_rc_write_register,
+    "rc_read_acq_registers": handle_rc_read_acq_registers,
     
     #FEB Handlers
     "feb_program": handle_feb_program,

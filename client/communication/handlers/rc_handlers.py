@@ -83,3 +83,11 @@ def handle_rc_write_register(manager, message):
         rc_command="rc_write_register",
         timeout_s=30.0,
     )
+    
+def handle_rc_read_acq_registers(manager, message):
+    _handle_rc_command(
+            manager,
+            message,
+            rc_command="rc_read_acq_registers",
+            timeout_s=30.0,
+        )
