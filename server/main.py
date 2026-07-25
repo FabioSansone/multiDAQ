@@ -19,7 +19,7 @@ from server.services.acquisition_service import AcquisitionService
 from server.services.calibration_orchestrator import CalibrationOrchestrator
 from server.services.shutdown_service import ShutdownService
 from server.services.startup_service import StartupService
-
+from server.web.web_app import start_web_server
 
 
 
@@ -161,6 +161,29 @@ def main() -> int:
         help="Acquisition Mode (test (no HV); calibration, multiPMT)",
         default="test"
     )
+    server_parser.add_argument(
+        "--no-web",
+        action="store_true",
+        help="Disable the Flask web control panel",
+    )
+    server_parser.add_argument(
+        "--web-host",
+        type=str,
+        default="0.0.0.0",
+        help="Flask web control panel host",
+    )
+    server_parser.add_argument(
+        "--web-port",
+        type=int,
+        default=5000,
+        help="Flask web control panel port",
+    )
+    server_parser.add_argument(
+        "--grafana-url",
+        type=str,
+        default=None,
+        help="Grafana URL to embed in the web control panel",
+    )
     args = server_parser.parse_args()
 
     mode_selected = args.start_mode.lower()
@@ -186,6 +209,10 @@ def main() -> int:
 
     app = Server(server_state=server_state, control_manager=control_manager, acquisition_manager=acquisition_manager)
 
+    if not args.no_web:
+        start_web_server(server=app, host=args.web_host, port=args.web_port, grafana_url=args.grafana_url)
+        app.poutput(f"Web control panel available at http://{args.web_host}:{args.web_port}")
+        
     try:
         app.cmdloop()
     except KeyboardInterrupt:

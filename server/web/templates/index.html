@@ -1,0 +1,61 @@
+          </select>
+        </label>
+        <label>Channels
+          <input id="rc-channels" value="all">
+        </label>
+        <label>Address
+          <input id="rc-address" type="number" placeholder="register">
+        </label>
+        <label>Value
+          <input id="rc-value" type="number" placeholder="value">
+        </label>
+      </div>
+      <button data-action="rc">Send RC Command</button>
+    </section>
+ 
+    <section class="panel wide">
+      <h2>Acquisition</h2>
+      <div class="grid six">
+        <label>Duration
+          <input id="acq-duration" type="number" step="0.1" placeholder="continuous">
+        </label>
+        <label>Type
+          <input id="acq-type" value="test">
+        </label>
+        <label>Suffix
+          <input id="acq-suffix" placeholder="optional">
+        </label>
+        <label>Run ID
+          <input id="acq-run-id" placeholder="auto">
+        </label>
+        <label>Batch ID
+          <input id="acq-batch-id" placeholder="from client">
+        </label>
+        <label class="checkbox">
+          <input id="acq-force-compile" type="checkbox">
+          force compile
+        </label>
+      </div>
+      <div class="actions">
+        <button data-action="acq-start">Start Acquisition</button>
+        <button data-action="acq-stop" class="danger">Stop Acquisition</button>
+      </div>
+    </section>
+ 
+    <section class="panel wide">
+      <h2>Grafana</h2>
+      <iframe src="{{ grafana_url }}" title="Grafana dashboard"></iframe>
+    </section>
+ 
+    <section class="panel wide">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+ 
+  <script>
+    window.MULTIDAQ_GRAFANA_URL = "{{ grafana_url }}";
+  </script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,180 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, Segoe UI, Arial, sans-serif;
+  background: #f4f6f8;
+  color: #17202a;
+}
+
+body {
+  margin: 0;
+}
+
+.topbar {
+  align-items: center;
+  background: #16212f;
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  padding: 18px 24px;
+}
+
+h1, h2, p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 16px;
+  margin-bottom: 14px;
+}
+
+#subtitle {
+  color: #b8c5d6;
+  margin-top: 4px;
+}
+
+.status-pill {
+  background: #1f8f6a;
+  border-radius: 999px;
+  font-weight: 700;
+  padding: 8px 14px;
+}
+
+.layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 16px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+.grid {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.six {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+label {
+  color: #4c5d70;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 5px;
+  text-transform: uppercase;
+}
+
+input, select, button {
+  border: 1px solid #c9d3df;
+  border-radius: 6px;
+  box-sizing: border-box;
+  font: inherit;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+button {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: white;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+button:hover {
+  background: #185abd;
+}
+
+.danger {
+  background: #c43c3c;
+  border-color: #c43c3c;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+.checkbox {
+  align-items: center;
+  flex-direction: row;
+  justify-content: center;
+  text-transform: none;
+}
+
+.checkbox input {
+  min-height: auto;
+  width: auto;
+}
+
+.clients {
+  display: grid;
+  gap: 8px;
+}
+
+.client {
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.client strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+pre {
+  background: #0f1720;
+  border-radius: 6px;
+  color: #dce7f3;
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px;
+}
+
+iframe {
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  height: 520px;
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .layout,
+  .two,
+  .three,
+  .four,
+  .six {
+    grid-template-columns: 1fr;
+  }
+}
