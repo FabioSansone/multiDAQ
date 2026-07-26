@@ -177,7 +177,7 @@ def handle_hv_unset_user_bad(manager, message):
         hv_command="hv_unset_user_bad",
         timeout_s=150.0,
     )
-    
+        
 def handle_hv_set_pmt_serials(manager, message):
     if manager.runtime.hv_service is None:
         manager.logger.error(
@@ -202,7 +202,6 @@ def handle_hv_set_pmt_serials(manager, message):
     
     try:
         raw_serials = message.payload.get("serials", {})
-        
         converted_serials = {int(ch) + 1: serial for ch, serial in raw_serials.items()}
     except (TypeError, ValueError) as e:
         manager.logger.error(
@@ -242,4 +241,12 @@ def handle_hv_set_pmt_serials(manager, message):
         status=hv_response.status,
     )
     manager.queue_message(reply)
+
+def handle_get_serial_map(manager, message):
+    _handle_hv_command(
+        manager,
+        message,
+        hv_command="get_serial_map",
+        timeout_s=60.0,
+    )
               

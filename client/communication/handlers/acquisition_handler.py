@@ -30,12 +30,15 @@ def handle_set_acq_mode_sync(manager, message):
         f"Received acquisition mode sync request: {new_mode}"
     )
 
-    success = manager.runtime.acquisition_service.apply_acquisition_mode(
+    result = manager.runtime.acquisition_service.apply_acquisition_mode(
         new_mode=new_mode,
         acq_info=acq_info,
         pe_thr=pe_thr,
     )
 
+    success = result.get("success", False)
+    missing_serial_channels = result.get("missing_serial_channels", [])
+    
     if success:
         manager.logger.info(
             f"Acquisition mode synchronized successfully: {new_mode}"
@@ -58,6 +61,7 @@ def handle_set_acq_mode_sync(manager, message):
             "status": status_text,
             "acq_mode": new_mode,
             "error": error,
+            "missing_serial_channels": missing_serial_channels,
         },
         sender="client",
         status=status,

@@ -27,6 +27,8 @@ COMMAND_MAP = {
     
     "set_pmt_serials": handle_hv_set_pmt_serials,
     
+    "get_serial_map": handle_get_serial_map,
+    
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,
     "rc_boot": handle_rc_boot_mode,

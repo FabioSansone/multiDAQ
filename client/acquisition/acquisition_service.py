@@ -15,7 +15,7 @@ class AcquisitionService:
         new_mode: str,
         acq_info: dict | None = None,
         pe_thr: int | float | None = None,
-    ) -> bool:
+    ) -> dict:
 
         runtime = self.runtime
         new_mode = new_mode.lower()
@@ -27,22 +27,17 @@ class AcquisitionService:
 
         if new_mode not in ACQUISITION_MODES:
             self.logger.error(f"Unknown acquisition mode: {new_mode}")
-            return False
+            return {"success": False, "missing_serial_channels": []}
 
         if new_mode == "test":
             return self._apply_test_mode()
-
         if new_mode == "calibration":
             return self._apply_calibration_mode()
-
         if new_mode == "multipmt":
-            return self._apply_multipmt_mode(
-                acq_info=acq_info,
-                pe_thr=pe_thr,
-            )
-
+            return self._apply_multipmt_mode(acq_info=acq_info, pe_thr=pe_thr)
+        
         self.logger.error(f"Unhandled acquisition mode: {new_mode}")
-        return False
+        return {"success": False, "missing_serial_channels": []}
 
     def _submit_hv_command(
         self,
@@ -87,7 +82,7 @@ class AcquisitionService:
                 f"Cannot apply test mode: failed to enable RC channels: "
                 f"{rc_response.error}"
             )
-            return False
+            return {"success": False, "missing_serial_channels": []}
 
         if runtime.ensure_hv_service():
             runtime.hv_service.set_policy("monitor_only")
@@ -105,7 +100,7 @@ class AcquisitionService:
         )
 
         runtime.evproducer.start(runtime.server_ip)
-        return True
+        return {"success": True, "missing_serial_channels": []}
 
     def _apply_calibration_mode(self) -> bool:
         runtime = self.runtime
@@ -118,32 +113,38 @@ class AcquisitionService:
 
         if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply calibration mode: HVService unavailable")
-            return False
+            return {"success": False, "missing_serial_channels": []}
         
         runtime.hv_service.set_policy("full_control")
 
         runtime.hv_service.start()
-
+        
+        missing_result = runtime.hv_service.hv.check_missing_serial(
+                runtime.hv_service.hv.getOkChannels()
+            )
+        
+        missing_serial_channels = missing_result.get("missing_serial_channels", [])
+        
         if not self._submit_hv_command(
             command="set_common_voltage",
             payload={"channels": "all", "common_voltage": 1200},
             timeout_s=35.0,
         ):
-            return False
+            return {"success": False, "missing_serial_channels": missing_serial_channels}
 
         if not self._submit_hv_command(
             command="set_common_threshold",
             payload={"channels": "all", "common_threshold": 400},
             timeout_s=35.0,
         ):
-            return False
+            return {"success": False, "missing_serial_channels": missing_serial_channels}
 
         if not self._submit_hv_command(
             command="hv_on",
             payload={"channels": "all"},
             timeout_s=90.0,
         ):
-            return False
+            return {"success": False, "missing_serial_channels": missing_serial_channels}
 
         runtime.evproducer.start(runtime.server_ip)
 
@@ -153,7 +154,7 @@ class AcquisitionService:
             start_thr=None,
         )
 
-        return True
+        return {"success": True, "missing_serial_channels": missing_serial_channels}
 
     def _apply_multipmt_mode(
         self,
@@ -166,7 +167,7 @@ class AcquisitionService:
             self.logger.error(
                 "Cannot apply multipmt mode: missing acquisition configuration"
             )
-            return False
+            return {"success": False, "missing_serial_channels": []}
 
         runtime.rc_service._submit_command(
             command="rc_acq_start",
@@ -176,12 +177,18 @@ class AcquisitionService:
 
         if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply multipmt mode: HVService unavailable")
-            return False
+            return {"success": False, "missing_serial_channels": []}
         
         runtime.hv_service.set_policy("full_control")
 
         runtime.hv_service.start()
-
+        
+        missing_result = runtime.hv_service.hv.check_missing_serial(
+                runtime.hv_service.hv.getOkChannels()
+            )
+        
+        missing_serial_channels = missing_result.get("missing_serial_channels", [])
+        
         if not self._submit_hv_command(
             command="set_acquisition_configuration",
             payload={
@@ -190,14 +197,14 @@ class AcquisitionService:
             },
             timeout_s=300.0,
         ):
-            return False
+            return {"success": False, "missing_serial_channels": missing_serial_channels}
 
         if not self._submit_hv_command(
             command="hv_on",
             payload={"channels": "all"},
             timeout_s=90.0,
         ):
-            return False
+            return {"success": False, "missing_serial_channels": missing_serial_channels}
 
         runtime.evproducer.start(runtime.server_ip)
 
@@ -207,4 +214,4 @@ class AcquisitionService:
             start_thr=pe_thr,
         )
 
-        return True
+        return {"success": True, "missing_serial_channels": missing_serial_channels}

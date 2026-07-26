@@ -16,7 +16,8 @@ COMMAND_FSM_MAP = {
     "mark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "unmark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "status": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
-    "set_serial": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR}
+    "set_serial": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "get_serial_map": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
 }
 
 
@@ -34,6 +35,7 @@ def _print_hv_lists(self, client_name: str, result: dict):
     self.poutput(f"  ON  channels: {hv_to_user_channels(result.get('on_channels', []))}")
     self.poutput(f"  OFF channels: {hv_to_user_channels(result.get('off_channels', []))}")
     self.poutput(f"  FIXED BAD channels: {hv_to_user_channels(result.get('fixed_bad_channels', []))}")
+    self.poutput(f"  MISSING SERIAL channels: {hv_to_user_channels(result.get('missing_serial_channels', []))}")
 
 def _print_hv_reply(self, client_name: str, command: str, args: argparse.Namespace, reply) -> None:
     payload = reply.payload
@@ -166,6 +168,21 @@ def _parse_channel_serial_map(value: str) -> dict[int, str] | None:
         pairs[channel] = serial.strip()
     return pairs
 
+def _print_serial_map(self, client_name: str, result: dict) -> None:
+    serial_map = result.get("serial_map", {})
+    self.poutput(f"\nClient {client_name}: PMT serial map")
+
+    if not serial_map:
+        self.poutput("  (no channels)")
+        return
+
+    for ch_key in sorted(serial_map.keys(), key=lambda x: int(x)):
+        hv_channel = int(ch_key)          
+        user_channel = hv_channel - 1     
+        serial = serial_map[ch_key]
+        display = serial if serial and serial != "0" else "(missing)"
+        self.poutput(f"  channel {user_channel}: {display}")
+
 #################
 # HV COMMANDS
 #################
@@ -212,6 +229,11 @@ status_parser.add_argument("--client_ids", type=str, default=None, help='Comma s
 status_parser.add_argument("--batch_ids", type=str, default=None, help='Comma separated string of batch_ids to identify the clients')
 status_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma separated string of multipmt_ids to identify the clients')
 
+serial_map_parser = hv_subparsers.add_parser("get_serial_map")
+serial_map_parser.add_argument("--channels", type=str, default="all", help='Channels selected. Can be "all" or comma separated string list')
+serial_map_parser.add_argument("--client_ids", type=str, default=None, help='Comma separated string of client_ids')
+serial_map_parser.add_argument("--batch_ids", type=str, default=None, help='Comma separated string of batch_ids')
+serial_map_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma separated string of multipmt_ids')
 
 set_common_parser = hv_subparsers.add_parser("set_common")
 set_common_subparsers = set_common_parser.add_subparsers(
@@ -364,9 +386,20 @@ def do_hv(self, args: argparse.Namespace) -> None:
             target_client_ids = resolved
             payload = {"serials": channel_serial_map}
             timeout_s = 120.0
+        
+        
         else:
             self.poutput(f"Unknown set_serial parameter: {args.parameter}")
             return
+    
+    elif args.command_group == "get_serial_map":
+        command = "get_serial_map"
+        resolved = _resolve_hv_targets(self, args, client_ids, "get_serial_map")
+        if resolved is None:
+            return
+        target_client_ids = resolved
+        payload = {"channels": args.channels}
+        timeout_s = 60.0
 
     else:
         self.poutput(f"Unknown HV command group: {args.command_group}")
@@ -400,5 +433,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
 
         if args.command_group == "status":
             _print_hv_lists(self, client_name, reply.payload.get("result", {}))
+        elif args.command_group == "get_serial_map":
+            _print_serial_map(self, client_name, reply.payload.get("result", {}))
         else:
             _print_hv_reply(self=self, client_name=client_name, command=command, args=args, reply=reply)

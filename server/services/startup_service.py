@@ -2,6 +2,7 @@ from server.utils.logger import get_logger
 from server.utils.json_parser import JsonParser
 from server.core.server_state import ServerFSMEvent
 from common.message_handler import Channel
+from server.utils.channels import hv_to_user_channels
 
 
 class StartupService:
@@ -87,6 +88,12 @@ class StartupService:
         reply_status = payload.get("status")
         reply_mode = payload.get("acq_mode")
         error = payload.get("error")
+        missing_serial = payload.get("missing_serial_channels", [])
+        if missing_serial:
+            self.poutput(
+                f"Client {client_name}: missing PMT serial on channels "
+                f"{hv_to_user_channels(missing_serial)} — not blocking."
+            )
 
         if reply_status != "ok" or error:
             self.poutput(

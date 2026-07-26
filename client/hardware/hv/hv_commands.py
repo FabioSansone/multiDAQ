@@ -409,6 +409,7 @@ def command_hv_sync(
             "on_channels": hv_interface.getOnChannels(),
             "off_channels": hv_interface.getOffChannels(),
             "fixed_bad_channels": hv_interface.getFixedBad(),
+            "missing_serial_channels": hv_interface.getMissingSerial(),
         },
     )
     
@@ -523,6 +524,7 @@ def command_set_pmt_serials(protocol_version, hv_interface, hv_request) -> HVRes
         try:
             hv_interface.set_pmt_serial(channel=int(channel), serial=serial)
             successful.append(int(channel))
+            hv_interface.removeFromMissingSerial(channel=channel)
         except Exception as e:
             hv_interface.logger.error(f"Failed to write PMT serial for channel {channel}: {e}")
             failed.append(int(channel))
@@ -536,6 +538,38 @@ def command_set_pmt_serials(protocol_version, hv_interface, hv_request) -> HVRes
         status=status,
         result={"successful_channels": successful, "failed_channels": failed},
         error=f"Failed to write serial for channels: {failed}" if failed else None,
+    )
+
+def command_get_serial_map(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    requested_channels = hv_request.payload.get("channels", "all")
+
+    try:
+        resolved_channels = hv_interface.hv_channels_definition(
+            channels=requested_channels, n_channels=7
+        )
+    except Exception as e:
+        return HVResponse(
+            protocol_version=protocol_version,
+            request_id=hv_request.request_id,
+            in_reply_to=hv_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error=f"Invalid channels for get_serial_map: {e}",
+        )
+
+    serial_map = hv_interface.get_serial_map(resolved_channels)
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.OK,
+        result={"serial_map": serial_map},
     )
     
 
@@ -557,6 +591,7 @@ COMMAND_HANDLERS = {
     "set_hv_sync": command_hv_sync,
     
     "set_pmt_serials": command_set_pmt_serials,
+    "get_serial_map": command_get_serial_map,
     
     "feb_change_address": command_feb_change_address,
     

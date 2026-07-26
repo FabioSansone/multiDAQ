@@ -151,6 +151,13 @@ def do_change_mode(self, args):
         reply_status = payload.get("status")
         reply_mode = payload.get("acq_mode")
         error = payload.get("error")
+        missing_serial = payload.get("missing_serial_channels", [])
+        
+        if missing_serial:
+            self.poutput(
+                f"Client {client_name}: missing PMT serial on channels "
+                f"{hv_to_user_channels(missing_serial)} — not blocking."
+            )
 
         if reply_status != "ok" or error:
             failed_client_ids.append(client_id)

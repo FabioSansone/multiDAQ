@@ -16,6 +16,7 @@ class HV:
         self.on_ch = []
         self.off_ch = []
         self.fixed_bad = []
+        self.missing_serial = []
 
         scan_channels = [ch for ch in range(1, 8) if ch not in (fixed_bad_channels or [])]
         self.ok_ch, self.bad_ch = self.checkChannel(channels=scan_channels)
@@ -46,6 +47,10 @@ class HV:
     def getFixedBad(self):
         with self.channels_lock:
             return list(self.fixed_bad)
+    
+    def getMissingSerial(self):
+            with self.channels_lock:
+                return list(self.missing_serial)
 
     def moveToOk(self, channel: int) -> None:
         with self.channels_lock:
@@ -128,11 +133,39 @@ class HV:
             self.ok_ch = sorted(self.ok_ch)
             self.bad_ch = sorted(self.bad_ch)
     
+    def moveToMissingSerial(self, channel: int) -> None:
+            with self.channels_lock:
+                if channel in self.on_ch:
+                    self.on_ch.remove(channel)
+    
+                elif channel in self.off_ch:
+                    self.off_ch.remove(channel)
+                
+                elif channel in self.ok_ch:
+                    self.ok_ch.remove(channel)
+                
+                elif channel in self.bad_ch:
+                    self.bad_ch.remove(channel)
+                
+                if channel not in self.missing_serial:
+                    self.missing_serial.append(channel)
+    
+                self.on_ch = sorted(self.on_ch)
+                self.off_ch = sorted(self.off_ch)
+                self.ok_ch = sorted(self.ok_ch)
+                self.bad_ch = sorted(self.bad_ch)
+    
     def removeFromFixedBad(self, channel:int) -> None:
         with self.channels_lock:
             if channel in self.fixed_bad:
                 self.fixed_bad.remove(channel)
         self.moveToBad(channel)
+    
+    def removeFromMissingSerial(self, channel:int) -> None:
+            with self.channels_lock:
+                if channel in self.missing_serial:
+                    self.missing_serial.remove(channel)
+            self.moveToBad(channel)
     
     def sync_power_state(self, channels):
         for ch in channels:
@@ -1033,6 +1066,44 @@ class HV:
         if channel < 1 or channel > self.hv.num_channels:
             raise ValueError(f"Invalid HV channel: {channel}")
         self.hv.setPMTSerialNumber(serial, slave=channel)
+    
+    def check_missing_serial(self, channels: list[int]) -> dict:
+        missing = []
+        
+        for ch in channels:
+            try:
+                    _, pmt_serial, _, _, _ = self.hv.getInfo(slave=ch)
+            except Exception as e:
+                self.logger.error(f"Failed to read PMT info for channel {ch}: {e}")
+                missing.append(ch)
+                self.moveToMissingSerial(ch)
+                continue
+            
+            if not pmt_serial.strip("\x00").strip():
+                missing.append(ch)
+                self.moveToMissingSerial(ch)
+        
+        return {"missing_serial_channels": missing, "checked_channels": list(channels)}
+    
+    def get_serial_map(self, channels: list[int]) -> dict:
+        
+        serial_ch_map = {}
+        
+        for ch in channels:
+            if ch not in serial_ch_map:
+                try:
+                    _, pmt_serial, _, _, _ = self.hv.getInfo(slave=ch)
+                    serial_ch_map[ch] = pmt_serial
+                except Exception as e:
+                    self.logger.error(f"Failed to read PMT info for channel {ch}: {e}")
+                    serial_ch_map[ch] = "0"
+                    continue
+                
+                if not pmt_serial.strip("\x00").strip():
+                    serial_ch_map[ch] = "0"
+        
+        return serial_ch_map            
+                    
 
 
 
