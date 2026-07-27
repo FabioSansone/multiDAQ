@@ -34,6 +34,8 @@ class ClientRunTime:
 
         self.acquisition_service = AcquisitionService(self)
         
+        self.mac_to_id: int | None = None
+        
         self._last_rc39_sync_time = 0.0
         self._last_rc39_mask = None
         self._rc39_sync_period_s = 30.0
@@ -171,3 +173,20 @@ class ClientRunTime:
             self.logger.error(f"Error while stopping evproducer: {e}")
 
         self.logger.info("ClientRuntime closed")
+    
+    def set_mac_to_id(self, mac_to_id:int):
+        if self.mac_to_id is not None:
+            self.logger.warning("Id associated to client mac already exists. Overwriting...")
+            self.mac_to_id = mac_to_id
+        else:
+            self.mac_to_id = mac_to_id
+    
+    def get_mac_to_id(self):
+        if self.mac_to_id is not None:
+            return self.mac_to_id
+        else:
+            self.logger.warning(
+                "get_mac_to_id called before a numeric client id was assigned "
+                "during handshake; returning None."
+            )
+            return

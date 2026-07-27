@@ -3,6 +3,7 @@ from typing import Optional, List
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
 from server.utils.logger import get_logger
 from server.core.server_state import ServerState
+from server.core.mac_id_registry import MacIdentityRegistry
 import threading
 import queue
 import time
@@ -30,6 +31,8 @@ class ControlPlaneManager:
         self.event_queue = queue.Queue()
         self.event_thread: Optional[threading.Thread] = None
         self.event_callback = None
+        
+        self.mac_register = MacIdentityRegistry()
         
         self.logger = get_logger("control_manager")
         self.logger.debug("ZMQ Control Server Manager initialized")
@@ -302,6 +305,8 @@ class ControlPlaneManager:
 
         multipmt_id = identity_payload.get("multipmt_id")
         batch_id = identity_payload.get("batch_id")
+        mac_id = identity_payload.get("mac_address")
+        
 
         if not multipmt_id:
             self.logger.error(f"Missing multipmt_id in identity payload: {identity_payload}")
@@ -310,6 +315,10 @@ class ControlPlaneManager:
         if not batch_id:
             self.logger.error(f"Missing batch_id in identity payload: {identity_payload}")
             return False
+        
+        if not mac_id:
+            self.logger.error(f"Missing mac address in identity payload: {identity_payload}")
+            return False
 
         existing_client_id = self.server_state.get_client_id_by_multipmt_id(multipmt_id)
 
@@ -317,6 +326,59 @@ class ControlPlaneManager:
             self.logger.error(
                 f"Duplicate multipmt_id received: {multipmt_id}. "
                 f"Already mapped to {existing_client_id!r}"
+            )
+            return False
+
+        mac_client_id = self.mac_register.get_id_from_mac(mac_id)
+
+        if mac_client_id is None:
+            self.logger.error(
+                f"Failed to assign/retrieve numeric id for MAC {mac_id} "
+                f"(client {client_id!r}); aborting handshake."
+            )
+            return False
+
+        end_mode_message = self.message_handler.create_handshake(
+            phase="end",
+            payload={
+                "message": "End",
+                "mac_client_id": int(mac_client_id),
+            },
+            in_reply_to=startup_message.request_id,
+            sender="server",
+            status=MessageStatus.OK,
+        )
+
+        if not self.send_message(client_id=client_id, message=end_mode_message):
+            self.logger.error(f"Failed to send mac client id for evproducer client {client_id!r}")
+            return False
+        
+        client_id_conclusion_message, conclusion_message, reason = self.receive_message(timeout_ms)
+        
+        if conclusion_message is None:
+            self.logger.error(f"Handshake failed while waiting for client conclusion: {reason}")
+            return False
+
+        if client_id_conclusion_message != client_id:
+            self.logger.error("Received conclusion from a different client during handshake")
+            return False
+
+        if conclusion_message.msg_type != MessageType.HANDSHAKE:
+            self.logger.error("Expected handshake message for end phase")
+            return False
+
+        if conclusion_message.phase != "end":
+            self.logger.error(f"Unexpected handshake phase: {conclusion_message.phase}")
+            return False
+
+        if conclusion_message.payload.get("message") != "Conclusion_ack":
+            self.logger.error(f"Unexpected conclusion payload: {conclusion_message.payload}")
+            return False
+
+        if conclusion_message.in_reply_to != end_mode_message.request_id:
+            self.logger.error(
+                f"Conclusion message does not match expected reply target: "
+                f"{conclusion_message.in_reply_to} != {end_mode_message.request_id}"
             )
             return False
             

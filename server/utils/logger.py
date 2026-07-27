@@ -9,6 +9,7 @@ LOGGER_NAMES = {
 
     #Server Core
     'server_state': 'server.core.state',
+    'mac_identity_register': 'server.mac.register',
     
     #Communication
     'control_manager': 'server.comm.control',

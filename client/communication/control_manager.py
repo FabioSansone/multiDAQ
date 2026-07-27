@@ -324,65 +324,66 @@ class ControlPlaneManager:
         if not self.send_message(identity_message):
             self.logger.error("Failed to send client identity to server")
             return False
+        
+        message, reason = self.receive_message(timeout_ms)
+        
+        if message is None:
+            self.logger.error(
+                f"Handshake failed while waiting for server end: {reason}"
+            )
+            return False
 
-        # if self.runtime.acq_mode == "multipmt":
-        #     message, reason = self.receive_message(timeout_ms)
+        if message.msg_type != MessageType.HANDSHAKE:
+            self.logger.error(
+                f"Unexpected message type during handshake from server "
+                f"{self.server_endpoint}: {message.msg_type}"
+            )
+            return False
 
-        #     if message is None:
-        #         self.logger.error(
-        #             f"Handshake failed while waiting for "
-        #             f"server multipmt_acq_config: {reason}"
-        #         )
-        #         return False
+        if message.phase != "end":
+            self.logger.error(
+                f"Unexpected handshake phase from server "
+                f"{self.server_endpoint}: {message.phase}"
+            )
+            return False
 
-        #     if message.msg_type != MessageType.HANDSHAKE:
-        #         self.logger.error(
-        #             f"Unexpected message type during handshake from server "
-        #             f"{self.server_endpoint}: {message.msg_type}"
-        #         )
-        #         return False
+        if message.payload.get("message") != "End":
+            self.logger.error(
+                f"Unexpected handshake payload from server "
+                f"{self.server_endpoint}: {message.payload}"
+            )
+            return False
 
-        #     if message.phase != "multipmt_acq_config":
-        #         self.logger.error(
-        #             f"Unexpected handshake phase from server "
-        #             f"{self.server_endpoint}: {message.phase}"
-        #         )
-        #         return False
+        if message.in_reply_to != identity_message.request_id:
+            self.logger.error(
+                f"End message does not match expected Identity request: "
+                f"{message.in_reply_to} != {identity_message.request_id}"
+            )
+            return False
+        
+        mac_to_id = message.payload.get("mac_client_id")
+        if mac_to_id is None:
+            self.logger.error(
+                f"Missing mac_client_id in handshake End payload: {message.payload}"
+            )
+            return False
+        self.runtime.set_mac_to_id(mac_to_id=mac_to_id)
+        
+        conclusion_message = self.message_handler.create_handshake(
+            phase="end",
+            payload={
+                "message": "Conclusion_ack",
+            },
+            in_reply_to=message.request_id,
+            sender="client",
+            status=MessageStatus.OK,
+        )
 
-        #     if message.payload.get("message") != "ChannelsConfig":
-        #         self.logger.error(
-        #             f"Unexpected handshake payload from server "
-        #             f"{self.server_endpoint}: {message.payload}"
-        #         )
-        #         return False
+        if not self.send_message(conclusion_message):
+            self.logger.error("Failed to send client identity to server")
+            return False
 
-        #     if message.in_reply_to != identity_message.request_id:
-        #         self.logger.error(
-        #             f"MultiPMT Acquisition Config message does not match "
-        #             f"expected Ready request: "
-        #             f"{message.in_reply_to} != {identity_message.request_id}"
-        #         )
-        #         return False
-
-        #     start_thr = message.payload.get("pe_thr")
-        #     acq_info = message.payload.get("acquisition_configuration")
-
-        #     if start_thr is None:
-        #         self.logger.error("Missing pe_thr in multipmt acquisition config")
-        #         return False
-
-        #     if not isinstance(acq_info, dict) or not acq_info:
-        #         self.logger.error(
-        #             f"Invalid acquisition_configuration in "
-        #             f"multipmt acquisition config: {acq_info}"
-        #         )
-        #         return False
-
-        #     self.runtime.set_acquisition_mode(
-        #         acq_mode=self.runtime.acq_mode,
-        #         acq_info=acq_info,
-        #         start_thr=start_thr,
-        #     )
+        
 
         self.logger.info(
             f"Handshake completed successfully with server {self.server_endpoint}. "
