@@ -99,7 +99,7 @@ class AcquisitionService:
             start_thr=None,
         )
 
-        runtime.evproducer.start(runtime.server_ip)
+        runtime.evproducer.start(runtime.server_ip, runtime.identity.multipmt_id)
         return {"success": True, "missing_serial_channels": []}
 
     def _apply_calibration_mode(self) -> bool:
@@ -146,7 +146,7 @@ class AcquisitionService:
         ):
             return {"success": False, "missing_serial_channels": missing_serial_channels}
 
-        runtime.evproducer.start(runtime.server_ip)
+        runtime.evproducer.start(runtime.server_ip, runtime.identity.multipmt_id)
 
         runtime.set_acquisition_mode(
             acq_mode="calibration",
@@ -206,7 +206,7 @@ class AcquisitionService:
         ):
             return {"success": False, "missing_serial_channels": missing_serial_channels}
 
-        runtime.evproducer.start(runtime.server_ip)
+        runtime.evproducer.start(runtime.server_ip, runtime.identity.multipmt_id)
 
         runtime.set_acquisition_mode(
             acq_mode="multipmt",

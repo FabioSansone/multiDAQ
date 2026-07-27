@@ -186,6 +186,13 @@ void *receive_data(void *args) {
                 break;
             }
 
+            if (frame_idx == 0){
+                size_t identity_size = zmq_msg_size(&msg);
+                unsigned char *identity_data = (unsigned char *) zmq_msg_data(&msg);
+                printf("DEBUG: source identity (%zu bytes): '%.*s'\n",
+                       identity_size, (int)identity_size, identity_data);
+            }
+
             if (frame_idx == 1) {
                 payload_size = zmq_msg_size(&msg);
                 payload = zmq_msg_data(&msg);
