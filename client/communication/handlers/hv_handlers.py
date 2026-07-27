@@ -181,7 +181,7 @@ def handle_hv_unset_user_bad(manager, message):
 def handle_hv_set_pmt_serials(manager, message):
     if manager.runtime.hv_service is None:
         manager.logger.error(
-            f"Cannot execute HV command {message.get("command", "unknown")}: HVService unavailable"
+            f"Cannot execute HV command {message.get('command', 'unknown')}: HVService unavailable"
         )
 
         reply = manager.message_handler.create_reply(
