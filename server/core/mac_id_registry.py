@@ -14,7 +14,7 @@ class MacIdentityRegistry:
     def __init__(self):
 
         self.logger = get_logger("mac_identity_register")
-        self.logger.debug("ZMQ Control Server Manager initialized")
+        self.logger.debug("ZMQ MAC ID Registry initialized")
         
         self.path_mac_file: str | None = None
         self.present_client_mac_id: dict | None = None

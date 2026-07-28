@@ -59,9 +59,10 @@ class EVService:
             self.logger.error(f"Exception during modprobe dma-proxy: {e}")
             return False
     
-    def _spawn_evproducer(self, server_ip: str, client_id: str | None = None) -> subprocess.Popen:
+    def _spawn_evproducer(self, server_ip: str, client_id: int | None = None) -> subprocess.Popen:
         if not client_id:
             client_id = "generic"
+        self.logger.info(f"DEBUG: spawning evproducer with --id={client_id!r} (type={type(client_id)})")
         return subprocess.Popen(
             [str(self.ev_path), "--host", server_ip, "--id", client_id],
             stdout=subprocess.PIPE,
@@ -100,7 +101,7 @@ class EVService:
             
         return True
 
-    def start(self, server_ip: str, client_id: str | None = None) -> bool:
+    def start(self, server_ip: str, client_id: int | None = None) -> bool:
         if self.ev_path is None:
             self.logger.error("Cannot start evproducer: executable path not found")
             return False
