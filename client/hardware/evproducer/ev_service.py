@@ -60,11 +60,8 @@ class EVService:
             return False
     
     def _spawn_evproducer(self, server_ip: str, client_id: int | None = None) -> subprocess.Popen:
-        if not client_id:
-            client_id = "generic"
-        self.logger.info(f"DEBUG: spawning evproducer with --id={client_id!r} (type={type(client_id)})")
         return subprocess.Popen(
-            [str(self.ev_path), "--host", server_ip, "--id", client_id],
+            [str(self.ev_path), "--host", server_ip, "--id", str(client_id)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
@@ -102,6 +99,14 @@ class EVService:
         return True
 
     def start(self, server_ip: str, client_id: int | None = None) -> bool:
+
+        if client_id is None:
+            self.logger.error(
+                "Cannot start evproducer: no numeric client id assigned yet "
+                "(handshake not completed or mac registry unavailable)."
+            )
+            return False
+    
         if self.ev_path is None:
             self.logger.error("Cannot start evproducer: executable path not found")
             return False

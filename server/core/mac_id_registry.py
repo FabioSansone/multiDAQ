@@ -5,10 +5,10 @@ import json
 class MacIdentityRegistry:
     
     CONFIG_FILES_POSSIBLE_PATHS = [
-        Path("multiDAQ/server/multipmt_config_files/mac_registry.json"),
+        Path(__file__).parent.parent / "multipmt_config_files" / "mac_registry.json",
         Path.home() / "multiPMT" / "multipmt_config_files" / "mac_registry.json",
-        Path("swgo/multiPMT/multipmt_config_files/mac_registry.json")
-        ]
+        Path("swgo/multiPMT/multipmt_config_files/mac_registry.json"),
+    ]
 
 
     def __init__(self):
