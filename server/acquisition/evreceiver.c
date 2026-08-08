@@ -27,7 +27,7 @@
 
 #define FILE_HEADER_SIZE 512
 
-#define MAX_FILE_SIZE_BYTES (100UL * 1024)//(500UL * 1024 * 1024)
+#define MAX_FILE_SIZE_BYTES (500UL * 1024 * 1024)
 
 static volatile sig_atomic_t keep_running = 1;
 
