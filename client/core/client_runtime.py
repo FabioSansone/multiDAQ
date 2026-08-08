@@ -10,6 +10,9 @@ from client.hardware.feb.feb_service import FEBService
 from common.message_handler import MessageStatus
 
 
+SHUTDOWN_ZERO_REGISTERS = [19, 15, 1, 0, 39, 16, 18]
+
+
 class ClientRunTime:
     def __init__(
         self,
@@ -164,6 +167,33 @@ class ClientRunTime:
         self.start_thr = None
         self.logger.debug("Acquisition configuration cleared")
 
+    def zero_rc_registers_on_shutdown(self) -> bool:
+        overall_success = True
+
+        for address in SHUTDOWN_ZERO_REGISTERS:
+            response = self.rc_service._submit_command(
+                command="rc_write_register",
+                payload={
+                    "address": address,
+                    "value": 0,
+                },
+                sender="client_runtime_shutdown",
+            )
+
+            if response.status != MessageStatus.OK:
+                overall_success = False
+                self.logger.error(
+                    f"Failed to reset RC register {address} on shutdown: "
+                    f"{response.error}"
+                )
+                continue
+
+            self.logger.info(
+                f"RC register {address} reset to 0 on shutdown"
+            )
+
+        return overall_success
+
     def close(self) -> None:
         self.stop_hv_service()
 
@@ -171,6 +201,12 @@ class ClientRunTime:
             self.evproducer.stop()
         except Exception as e:
             self.logger.error(f"Error while stopping evproducer: {e}")
+
+        rc_zero_ok = self.zero_rc_registers_on_shutdown()
+        if not rc_zero_ok:
+            self.logger.warning(
+                "ClientRuntime closed with RC shutdown reset errors"
+            )
 
         self.logger.info("ClientRuntime closed")
     

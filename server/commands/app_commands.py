@@ -239,16 +239,12 @@ def do_quit(self, _) -> bool:
 
    
     self.acquisition_orchestrator.stop()
-    self.acquisition_service.wait_for_session_end(timeout=60.0)
-    self.acquisition_orchestrator.stop()
     completed = self.acquisition_service.wait_for_session_end(timeout=60.0)
     if not completed:
         logger.error("Acquisition finalization did not complete within timeout during quit")
     elif not self.acquisition_service.get_last_finalize_success():
         logger.warning("Acquisition finalization completed but reported failure during quit")
     self.shutdown_service.power_off_hv_on_shutdown()
-    self.shutdown_service.zero_rc_registers_on_shutdown()
-
     success = self.control_manager.notify_shutdown_to_all_clients()
     if not success:
         self.poutput("Failed to send quit command to all the clients")
@@ -386,12 +382,6 @@ def do_force(self, args: argparse.Namespace) -> bool:
         except Exception as e:
             logger.error(f"Force quit: failed to power off HV: {e}")
             self.poutput(f"Warning: failed to power off HV: {e}")
-
-        try:
-            self.shutdown_service.zero_rc_registers_on_shutdown()
-        except Exception as e:
-            logger.error(f"Force quit: failed to zero RC registers: {e}")
-            self.poutput(f"Warning: failed to zero RC registers: {e}")
 
         try:
             self.control_manager.notify_shutdown_to_all_clients()

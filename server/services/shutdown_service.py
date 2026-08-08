@@ -2,7 +2,6 @@ from server.utils.logger import get_logger
 from server.utils.channels import *
 from server.services.client_command_service import CommandPlane
 
-SHUTDOWN_ZERO_REGISTERS = [19, 15, 1, 0, 39, 16, 18]
 
 logger = get_logger("shutdown_service")
 
@@ -16,35 +15,6 @@ class ShutdownService:
         self.logger = get_logger("shutdown_service")
         self.logger.debug("Shutdown Service initialized")
 
-    def zero_rc_registers_on_shutdown(self, timeout_s: float = 10.0) -> None:
-        client_ids = self.server_state.list_common_plane_clients()
-
-        if not client_ids:
-            self.logger.warning("No connected clients. RC shutdown zero skipped.")
-            return
-
-        for client_id in client_ids:
-            client_name = client_id.decode(errors="ignore")
-
-            for address in SHUTDOWN_ZERO_REGISTERS:
-                ok = self.command_service.write_rc_register(
-                    client_id=client_id,
-                    address=address,
-                    value=0,
-                    timeout_s=timeout_s,
-                )
-
-                if not ok:
-                    self.logger.error(
-                        f"Shutdown zero failed for client {client_name}, "
-                        f"register {address}"
-                    )
-                    continue
-
-                self.logger.info(
-                    f"Client {client_name}: register {address} reset to 0 on shutdown"
-                )
-    
     def power_off_hv_on_shutdown(
         self,
         plane: CommandPlane = CommandPlane.CONTROL,
@@ -141,6 +111,5 @@ class ShutdownService:
                 self.logger.info(
                     f"Client {client_name}: HV channels powered off successfully."
                 )
-        
         
         

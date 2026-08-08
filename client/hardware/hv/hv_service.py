@@ -30,6 +30,7 @@ MONITOR_ONLY_ALLOWED_COMMANDS = {
     "feb_change_address",
     "hv_set_user_bad",
     "hv_unset_user_bad",
+    "get_serial_map"
 }
 
 

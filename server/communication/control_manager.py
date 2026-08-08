@@ -12,7 +12,7 @@ MAX_RETRIES = 5
 
 
 class ControlPlaneManager:
-    def __init__(self, context: zmq.Context, num_multi_clients:int, state: ServerState):
+    def __init__(self, context: zmq.Context, num_multi_clients:int, state: ServerState, mac_identity_registry: MacIdentityRegistry):
         self.context = context
         self.socket: Optional[zmq.Socket] = None
         self.endpoint: Optional[str] = None
@@ -32,7 +32,7 @@ class ControlPlaneManager:
         self.event_thread: Optional[threading.Thread] = None
         self.event_callback = None
         
-        self.mac_register = MacIdentityRegistry()
+        self.mac_register = mac_identity_registry
         
         self.logger = get_logger("control_manager")
         self.logger.debug("ZMQ Control Server Manager initialized")

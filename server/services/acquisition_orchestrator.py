@@ -1,5 +1,3 @@
-from typing import List
-import time
 import threading
 
 from server.utils.logger import get_logger
@@ -126,25 +124,10 @@ class AcquisitionOrchestrator:
             metadata={"successful_clients": rc_ready_clients, "failed_clients": failed_clients},
         )
 
-        resolved_batch_id = self.acquisition_service.resolve_batch_id(args, rc_ready_clients)
+        resolved_batch_id = self.acquisition_service.resolve_batch_id(rc_ready_clients)
 
         if resolved_batch_id is None:
             self.poutput("Cannot start acquisition: missing batch_id and multipmt_id.")
-            self.acquisition_service.disable_rc_channels(client_ids=rc_ready_clients)
-            return
-
-        receiver_info = self.acquisition_service.acquisition_receiver_start(
-            duration=args.duration,
-            suffix=args.suffix,
-            acq_type=args.acq_type,
-            run_id=args.run_id,
-            batch_id=resolved_batch_id,
-            force_compile=args.force_compile,
-        )
-
-        if receiver_info is None:
-            self.poutput("Failed to start data receiver.")
-            self.logger.error("Failed to start data receiver")
             self.acquisition_service.disable_rc_channels(client_ids=rc_ready_clients)
             return
 
@@ -156,21 +139,23 @@ class AcquisitionOrchestrator:
         )
 
         if not started_acq:
-            self.poutput("FSM rejected acquisition start; stopping receiver.")
-            self.logger.error("ACQUISITION_STARTED rejected by FSM after hardware start")
-            self.acquisition_service.run_hardware_stop_and_flush(
-                rc_ready_clients, reason="FSM rejected ACQUISITION_STARTED"
-            )
+            self.poutput("FSM rejected acquisition start.")
+            self.logger.error("ACQUISITION_STARTED rejected by FSM")
+            self.acquisition_service.disable_rc_channels(client_ids=rc_ready_clients)
             return
-
-        self.poutput(f"Data receiver started. PID={receiver_info['pid']}, file={receiver_info['file']}")
-
 
         self.acquisition_service.begin_session()
 
         owner_thread = threading.Thread(
-            target=self._own_single_acquisition,
-            args=(rc_ready_clients,),
+            target=self.acquisition_service.run_acquisition_session,
+            kwargs={
+                "client_ids": rc_ready_clients,
+                "acq_type": args.acq_type,
+                "file_format": args.file_format,
+                "suffix": args.suffix,
+                "run_id": args.run_id,
+                "duration": args.duration,
+            },
             daemon=True,
         )
         owner_thread.start()
@@ -180,44 +165,10 @@ class AcquisitionOrchestrator:
             "use 'acquisition stop' to stop it."
         )
 
-    def _own_single_acquisition(self, client_ids: List[bytes]) -> None:
-
-        while (
-            self.acquisition_service.check_acquisition_running()
-            and self.server_state.get_server_state() == ServerFSM.ACQUIRING
-        ):
-            time.sleep(0.5)
-
-        if self.server_state.get_server_state() == ServerFSM.ACQUIRING:
-            exit_code = self.acquisition_service.get_receiver_exit_code()
-            crashed = exit_code is not None and exit_code != 0
-
-            if crashed:
-                reason = f"Data receiver crashed unexpectedly (exit code {exit_code})"
-                self.logger.error(reason)
-            else:
-                reason = "Data receiver completed its configured duration"
-
-            receiver_completed = self.server_state.process_event(
-                event=ServerFSMEvent.RECEIVER_COMPLETED,
-                reason=reason,
-                source="acquisition_orchestrator",
-                error=f"evreceiver exit code {exit_code}" if crashed else None,
-                metadata={"exit_code": exit_code, "crashed": crashed},
-                requested_terminal_state=ServerFSM.ERROR if crashed else None,
-            )
-
-            if not receiver_completed:
-                self.logger.error("RECEIVER_COMPLETED rejected by FSM; finalizing hardware anyway.")
-        else:
-            reason = "Manual stop command"
-
-        success = self.acquisition_service.run_hardware_stop_and_flush(client_ids, reason)
-        self.acquisition_service.close_session(success=success, reason=reason)
-
     def stop(self) -> None:
-
+    
         current_state = self.server_state.get_server_state()
+        
 
         if current_state == ServerFSM.ACQUIRING:
             stop_requested = self.server_state.process_event(
@@ -230,5 +181,12 @@ class AcquisitionOrchestrator:
                 self.logger.error("STOP_REQUESTED rejected by FSM")
                 return
             self.poutput("Stop requested; finalization is running in the background.")
+            
+            self.acquisition_service.request_stop()
         else:
             self.poutput(f"Nothing to stop: server is '{current_state.value}'.")
+
+
+   
+
+    

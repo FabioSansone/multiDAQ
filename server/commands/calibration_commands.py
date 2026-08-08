@@ -63,11 +63,18 @@ scan_ttp_parser.add_argument(
     help="Optional run ID. If omitted, automatic acq_N folder is created.",
 )
 
+# scan_ttp_parser.add_argument(
+#     "--batch-id",
+#     type=str,
+#     default=None,
+#     help="Batch ID used to create the acquisition folder.",
+# )
+
 scan_ttp_parser.add_argument(
-    "--batch-id",
+    "--file-format",
     type=str,
-    default=None,
-    help="Batch ID used to create the acquisition folder.",
+    default="csv",
+    help="Output file format: csv or bin. Default: csv",
 )
 
 scan_ttp_parser.add_argument(
@@ -77,11 +84,11 @@ scan_ttp_parser.add_argument(
     help='Channels selected. Can be "all" or comma-separated list',
 )
 
-scan_ttp_parser.add_argument(
-    "--force-compile",
-    action="store_true",
-    help="Force recompilation of evreceiver before starting acquisition.",
-)
+# scan_ttp_parser.add_argument(
+#     "--force-compile",
+#     action="store_true",
+#     help="Force recompilation of evreceiver before starting acquisition.",
+# )
 
 
 @cmd2.with_argparser(calibration_parser)

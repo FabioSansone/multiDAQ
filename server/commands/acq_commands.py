@@ -50,17 +50,24 @@ start_parser.add_argument(
     help="Optional run ID. If omitted, an automatic acq_N folder is created.",
 )
 
-start_parser.add_argument(
-    "--batch-id",
-    type=str,
-    default=None,
-    help="Batch ID used to create the acquisition folder.",
-)
+# start_parser.add_argument(
+#     "--batch-id",
+#     type=str,
+#     default=None,
+#     help="Batch ID used to create the acquisition folder.",
+# )
+
+# start_parser.add_argument(
+#     "--force-compile",
+#     action="store_true",
+#     help="Force recompilation of evreceiver before starting acquisition.",
+# )
 
 start_parser.add_argument(
-    "--force-compile",
-    action="store_true",
-    help="Force recompilation of evreceiver before starting acquisition.",
+    "--file-format",
+    type=str,
+    default="csv",
+    help="Output file format: csv or bin. Default: csv",
 )
 
 stop_parser = acquisition_subparsers.add_parser(

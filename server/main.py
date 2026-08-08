@@ -19,6 +19,7 @@ from server.services.acquisition_service import AcquisitionService
 from server.services.calibration_orchestrator import CalibrationOrchestrator
 from server.services.shutdown_service import ShutdownService
 from server.services.startup_service import StartupService
+from server.core.mac_id_registry import MacIdentityRegistry
 from server.web.web_app import start_web_server
 
 
@@ -26,7 +27,7 @@ from server.web.web_app import start_web_server
 class Server(cmd2.Cmd):
     "A terminal application to switch and interact with different multiPMTs"
 
-    def __init__(self, server_state: ServerState, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager) -> None:
+    def __init__(self, server_state: ServerState, mac_identity_registry: MacIdentityRegistry, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager, data_receiver_service: DataReceiverService) -> None:
         super().__init__(allow_cli_args=False)
 
         self.intro = "Welcome to the control interface for the multiPMTs. Type ? or help to list commands."
@@ -34,7 +35,8 @@ class Server(cmd2.Cmd):
         self.server_state = server_state
         self.control_manager = control_manager
         self.acq_manager = acquisition_manager
-        self.data_receiver_service = DataReceiverService()
+        self.mac_identity_registry = mac_identity_registry
+        self.data_receiver_service = data_receiver_service
         if not self.data_receiver_service.receiver_ready:
             self.server_state.process_event(
                 event=ServerFSMEvent.FATAL_ERROR,
@@ -64,6 +66,7 @@ class Server(cmd2.Cmd):
             server_state=self.server_state,
             data_receiver_service=self.data_receiver_service,
             command_service=self.client_command_service,
+            mac_identity_registry=self.mac_identity_registry,
             output_func=self.poutput,
         )
 
@@ -129,7 +132,7 @@ class Server(cmd2.Cmd):
             return False
 
         self.mode = new_mode
-        self.control_manager.server_state.set_mode(new_mode)
+        self.server_state.set_mode(new_mode)
         self.prompt = f"Server[{self.mode}]> "
 
         self.logger.info(f"Mode changed to {self.mode}")
@@ -192,13 +195,15 @@ def main() -> int:
         mode_selected = 'test'
 
     server_state = ServerState(initial_mode=mode_selected)
-
+    mac_identity_registry = MacIdentityRegistry()
     context = zmq.Context()
+    data_receiver_service = DataReceiverService(context=context)
 
     control_manager = ControlPlaneManager(
         context=context,
         num_multi_clients=1,
         state=server_state,
+        mac_identity_registry=mac_identity_registry
     )
 
 
@@ -207,11 +212,14 @@ def main() -> int:
         state=server_state
     )
 
-    app = Server(server_state=server_state, control_manager=control_manager, acquisition_manager=acquisition_manager)
+    app = Server(server_state=server_state, mac_identity_registry=mac_identity_registry, control_manager=control_manager, acquisition_manager=acquisition_manager, data_receiver_service=data_receiver_service)
 
     if not args.no_web:
         start_web_server(server=app, host=args.web_host, port=args.web_port, grafana_url=args.grafana_url)
         app.poutput(f"Web control panel available at http://{args.web_host}:{args.web_port}")
+        
+    if not data_receiver_service.start_persistent_receiver():
+        app.poutput("WARNING: evreceiver not started correctly at server start up.")
         
     try:
         app.cmdloop()
@@ -225,6 +233,8 @@ def main() -> int:
         if control_manager.socket is not None:
             control_manager.clear_queues()
             control_manager.close_connection()
+        
+        data_receiver_service.stop_persistent_receiver()
 
         context.term()
 

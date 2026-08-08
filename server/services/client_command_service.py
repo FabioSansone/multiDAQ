@@ -290,3 +290,47 @@ class ClientCommandService:
             return self.control_manager.server_state.list_connected_clients()
 
         return self.acquisition_manager.list_connected_clients()
+    
+    
+    def get_pmt_serial_map_clients(self, client_id: bytes, requested_channels: str | int | list[int] = "all",
+                                  plane: CommandPlane | str = CommandPlane.CONTROL,
+                                  timeout_s: float = 35.0,):
+        
+        user_serial_map = {}
+        client_name = client_id.decode(errors="ignore")
+        
+        reply, reason = self.send_hv_command(
+            client_id=client_id,
+            command="get_serial_map",
+            payload={"channels": requested_channels},
+            plane=plane,
+            timeout_s=timeout_s,
+        )
+        
+        if reply is None:
+            self.logger.error(f"HV get pmt serial map failed for client {client_name}: {reason}")
+            self.poutput(f"Client {client_name}: HV get pmt serial map failed ({reason})")
+            return {}
+
+        payload = reply.payload or {}
+        result = payload.get("result", {})
+        error = payload.get("error")
+
+        if error:
+            self.logger.error(f"HV get pmt serial map error from client {client_name}: {error}")
+            self.poutput(f"Client {client_name}: HV get pmt serial map error: {error}")
+            return {}
+        
+        
+        serial_map = result.get("serial_map", {})
+        
+        if not serial_map:
+            self.poutput("  (no channels)")
+            return {}
+        
+        for ch_key in sorted(serial_map.keys(), key=lambda x: int(x)):
+            hv_channel = int(ch_key)          
+            user_channel = hv_channel - 1     
+            user_serial_map[user_channel] = serial_map[ch_key]
+        
+        return user_serial_map
