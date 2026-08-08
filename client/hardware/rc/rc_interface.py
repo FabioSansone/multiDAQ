@@ -6,6 +6,8 @@ import datetime
 import time
 
 
+RC_WRITE_SETTLE_TIME_S = 0.5
+
 
 class RC:
 
@@ -57,6 +59,7 @@ class RC:
         if (self.checkRegBoundary(self.auto_int(addr))):
             try:
                 self.regs[addr*4:(addr*4)+4] = int.to_bytes(value, 4, byteorder='little')
+                time.sleep(RC_WRITE_SETTLE_TIME_S)
                 return True
             except Exception as e:
                 self.logger.error(f"Problem occured in writing {value} in register {addr}: {e}")
@@ -434,13 +437,7 @@ class RC:
             mask |= 1 << ch
 
         ok1 = self.write(1, mask)
-
-        time.sleep(0.5)
-
         ok0 = self.write(0, mask)
-
-        time.sleep(0.5)
-
         ok39 = self.write(39, mask)
 
         if ok0 and ok1 and ok39:
