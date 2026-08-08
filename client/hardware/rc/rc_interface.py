@@ -3,6 +3,7 @@ from client.utils.channels import channels_definition
 import mmap
 from typing import Optional
 import datetime
+import time
 
 
 
@@ -433,7 +434,13 @@ class RC:
             mask |= 1 << ch
 
         ok1 = self.write(1, mask)
+
+        time.sleep(0.5)
+
         ok0 = self.write(0, mask)
+
+        time.sleep(0.5)
+
         ok39 = self.write(39, mask)
 
         if ok0 and ok1 and ok39:

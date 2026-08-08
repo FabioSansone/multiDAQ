@@ -10,7 +10,7 @@ from client.hardware.feb.feb_service import FEBService
 from common.message_handler import MessageStatus
 
 
-SHUTDOWN_ZERO_REGISTERS = [19, 15, 39, 16, 18]
+SHUTDOWN_ZERO_REGISTERS = [19, 15, 1, 0, 39, 16, 18]
 
 
 class ClientRunTime:
