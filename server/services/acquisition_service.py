@@ -3,11 +3,31 @@ from typing import List
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from dataclasses import dataclass
+
 from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 from server.core.server_state import ServerFSM, ServerFSMEvent
 
 ACQ_REGISTER_ADDRESSES = [0, 1, 10, 15, 16, 18, 19, 31, 39]
+
+@dataclass
+class TriggerConfiguration:
+
+    mode: str = "self"
+
+    input_type: str = "differential" #differential, single-ended
+    polarity: str = "default" #default, inverted
+
+    window_ns: int = 400
+    delay_ns: int = 800
+
+    auto_logic: str | None = None #None, majority, exact
+    multiplicity: int | None = None #for majority auto logic
+    auto_channels: list[int] | None = None #for exact auto logic
+
+    save_external: bool = False
+    save_auto: bool = False
 
     
 
@@ -40,6 +60,56 @@ class AcquisitionService:
 
         self._stop_requested = threading.Event()
 
+
+    def _build_trigger_configuration(self, effective_channels: list[int], trigger_mode: str = "self", trigger_input: str = "differential", trigger_polarity: str = "default",
+                                     window_ns: int = 400, delay_ns: int = 800, auto_config: str | None = None, multiplicity: int | None = None,
+                                     auto_channels: str | None = None, save_external: bool = False, save_auto: bool = False):
+
+        reg19_mask = 0
+        for channel in effective_channels:
+            reg19_mask != (1 << channel)
+        
+        reg15_mask = 0
+
+        if (trigger_mode != "self"):
+            reg15_mask |= (1 << 1)
+
+        if (trigger_mode == "auto"):
+            reg15_mask |= (1 << 4)
+        
+        if (trigger_input == "single-ended"):
+            reg15_mask |= (1 << 7)
+
+        if (trigger_polarity == "inverted"):
+            reg15_mask |= (1 << 8)
+
+        reg_window_value = round(window_ns / 5)
+        reg_delay_value = round(delay_ns / 5)
+
+        if (save_auto):
+            reg19_mask |= (1 << 8)
+
+        if (save_external):
+            reg1 |= (1 << 7)
+
+        reg31_mask = 0
+
+        if (auto_config == "exact"):
+            reg31_mask |= (1 << 7)
+            auto_channels_list = [int(x) for x in auto_channels.split(",")]
+            if (auto_channels_list):
+                for i in auto_channels_list:
+                    reg31_mask |= (1 << i)
+        elif (auto_config == "multiplicity"):
+            if (multiplicity):
+                for i in range(multiplicity):
+                    reg31_mask |= (1 << i)
+
+        
+
+        
+
+        
 
     def _resolve_numeric_id(self, client_id: bytes) -> str | None:
         identity = self.server_state.get_identity(client_id)

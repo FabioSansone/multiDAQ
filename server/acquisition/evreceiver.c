@@ -1,3 +1,21 @@
+/*
+
+* evreceiver runtime requirements
+
+* For large multi-source deployments, increase the process open-file limit.
+
+* Recommended:
+*     ulimit -n 8192
+
+* The receiver keeps one output file open per active source and ZeroMQ
+* requires additional file descriptors for active TCP connections.
+* The default Linux soft limit of 1024 can therefore become insufficient
+* at approximately 500 simultaneous sources.
+
+*/
+
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <string.h>
 #include <zmq.h>
@@ -15,31 +33,42 @@
 
 #define EVENT_SIZE_WORDS 8  //8 parole da 16 bit => dimensione della parola dal DMA
 #define EVENT_SIZE_BYTES 16 //16 byte per evento
-#define QUEUE_SIZE 16384 //Numero di eventi che mi aspetto da evreceiver
-#define PROCESS_BATCH_SIZE 2048 //Quanti eventi prelevare dalla coda in un sol colpa per analizzarli e scriverli
+#define QUEUE_SIZE 8192 //Numero di pacchetti DMA di backlog. Il DMA spedisce pacchetti con 2048 eventi (ogni evento è 128 bit) = 2GB di RAM di buffer
+#define PROCESS_BATCH_SIZE 2 //Quanti pacchetti da 2048 eventi dal DMA prelevare dalla coda in un sol colpa per analizzarli e scriverli
 
 #define NUM_EVENTS_WRITE 100 //How much events are periodically written
 
 #define MAX_SOURCE_ID_LEN 32 //Size in byte of the source id
 
-#define N_WORKERS 4 //Number of parallel workers for processing the data
+#define N_WORKERS 8 //Number of parallel workers for processing the data
 #define  NUM_BUCKETS_PER_WORKER 64 //The number of linked lists in each table for each worker node
 
 #define FILE_HEADER_SIZE 512
 
 #define MAX_FILE_SIZE_BYTES (UINT64_C(10) * 1024 * 1024 * 1024)
 
+#define CLOSE_GRACE_TIME_S 2
+#define MAX_DELAYED_CLOSES 4096
+
 static volatile sig_atomic_t keep_running = 1;
 
 typedef enum {ITEM_DATA, ITEM_OPEN, ITEM_CLOSE} item_type_t;
 
+//Struttura che trasporta il singolo payload dal DMA
+
+typedef struct {
+    char source_id[MAX_SOURCE_ID_LEN];
+    unsigned char *payload; // allocato con malloc, liberato dal worker dopo l'uso
+    size_t payload_size;    // num_events = payload_size / EVENT_SIZE_BYTES
+} data_batch_t;
+
 
 //definisco il singolo evento (array di 8 parole da 16 bit)
-typedef struct {
-    uint16_t words[EVENT_SIZE_WORDS];
-    int valid;
-    char source_id[MAX_SOURCE_ID_LEN]; //popolato dall'arrivo della word dal DMA per taggare i dati
-} event_t;
+// typedef struct {
+//     uint16_t words[EVENT_SIZE_WORDS];
+//     int valid;
+//     char source_id[MAX_SOURCE_ID_LEN]; //popolato dall'arrivo della word dal DMA per taggare i dati
+// } event_t;
 
 
 
@@ -87,7 +116,7 @@ _Static_assert(
 typedef struct 
 {
     item_type_t item;
-    event_t data;                       // valido solo se type == ITEM_DATA
+    data_batch_t data;                       // valido solo se type == ITEM_DATA; batch di dati dal DMA
     char source_id[MAX_SOURCE_ID_LEN]; // per OPEN/CLOSE; popolato dal servizio DataReceiver in Python per taggare le operazioni su uno specifico client
     char path[256];                     // valido solo se type == ITEM_OPEN
     meta_data_t metainfo;
@@ -117,6 +146,19 @@ typedef struct
 
 worker_node_t worker_nodes[N_WORKERS];
 
+typedef struct
+{
+    int active;
+    char source_id[MAX_SOURCE_ID_LEN];
+    int worker_idx;
+    struct timespec deadline;
+} delayed_close_t;
+
+delayed_close_t delayed_closes[MAX_DELAYED_CLOSES];
+
+//sono unici perché la coda dei close è comunque unica per tutto l'array in quanto control listener è comunque uno solo
+pthread_mutex_t delayed_close_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t delayed_close_cond = PTHREAD_COND_INITIALIZER;
 
 
 typedef struct __attribute__((packed)) {
@@ -142,6 +184,190 @@ typedef struct __attribute__((packed)) {
 // pthread_cond_t space_available = PTHREAD_COND_INITIALIZER;
 
 //pthread_mutex_t file_write_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int timespec_compare(const struct timespec *a, const struct timespec *b){
+    if (a->tv_sec < b->tv_sec) return -1;
+
+    if (a->tv_sec > b->tv_sec) return 1;
+
+    if (a->tv_nsec < b->tv_nsec) return -1;
+
+    if (a->tv_nsec > b->tv_nsec) return 1;
+
+    return 0;
+}
+
+static struct timespec timespec_add_seconds(struct timespec t, time_t seconds){
+    t.tv_sec += seconds;
+    return t;
+}
+
+static int schedule_delayed_close(const char *source_id, int worker_idx){
+    pthread_mutex_lock(&delayed_close_lock);
+
+    for (int i = 0; i < MAX_DELAYED_CLOSES; i++){
+        if (delayed_closes[i].active && strcmp(delayed_closes[i].source_id, source_id) == 0){
+            pthread_mutex_unlock(&delayed_close_lock);
+            return 0;
+        }
+    }
+
+    int free_idx = -1;
+    for (int i = 0; i < MAX_DELAYED_CLOSES; i++){
+
+        if(!delayed_closes[i].active){
+            free_idx = i;
+            break;
+        }
+    }
+
+    if (free_idx < 0){
+        pthread_mutex_unlock(&delayed_close_lock);
+
+        printf("ERROR: delayed CLOSE queue full for tank '%s'\n", source_id);
+        return -1;
+    }
+
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+
+    delayed_closes[free_idx].active = 1;
+    delayed_closes[free_idx].worker_idx = worker_idx;
+    
+    strncpy(delayed_closes[free_idx].source_id, source_id, MAX_SOURCE_ID_LEN - 1);
+    delayed_closes[free_idx].source_id[MAX_SOURCE_ID_LEN - 1] = '\0';
+    delayed_closes[free_idx].deadline = timespec_add_seconds(now, CLOSE_GRACE_TIME_S);
+
+    pthread_cond_signal(&delayed_close_cond);
+    pthread_mutex_unlock(&delayed_close_lock);
+
+    return 1;
+    
+}
+
+
+static int has_pending_close(const char *source_id){
+    int found = 0;
+
+    pthread_mutex_lock(&delayed_close_lock);
+
+    for (int i = 0; i < MAX_DELAYED_CLOSES; i++){
+        if (delayed_closes[i].active && strcmp(delayed_closes[i].source_id, source_id) == 0){
+            found = 1;
+            break;
+        }
+    }
+
+
+    pthread_mutex_unlock(&delayed_close_lock);
+
+    return found;
+}
+
+
+static void wait_for_pending_close(const char *source_id){
+    pthread_mutex_lock(&delayed_close_lock);
+
+    while(keep_running){
+        int found = 0;
+
+        for (int i = 0; i < MAX_DELAYED_CLOSES; i++){
+            if (delayed_closes[i].active && strcmp(delayed_closes[i].source_id, source_id) == 0){
+                found = 1;
+                break;
+            }
+        }
+
+        if(!found) break;
+
+        pthread_cond_wait(&delayed_close_cond, &delayed_close_lock);
+    }
+
+    pthread_mutex_unlock(&delayed_close_lock);
+
+}
+
+
+void *delayed_close_worker(void *args){
+
+    pthread_setname_np(pthread_self(), "close_worker");
+    (void) args;
+
+    while (keep_running){
+        pthread_mutex_lock(&delayed_close_lock);
+
+        int selected_idx = -1;
+        struct timespec nearest_deadline = {0};
+
+        for (int i = 0; i < MAX_DELAYED_CLOSES; i++) {
+            if (!delayed_closes[i].active) continue;
+
+            if (selected_idx < 0 || timespec_compare(&delayed_closes[i].deadline, &nearest_deadline) < 0){
+                selected_idx = i;
+                nearest_deadline = delayed_closes[i].deadline;
+            }
+        }
+
+        if (selected_idx < 0){
+            pthread_cond_wait(&delayed_close_cond, &delayed_close_lock);
+            pthread_mutex_unlock(&delayed_close_lock);
+            continue;
+        }
+
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+
+        if (timespec_compare(&now, &nearest_deadline) < 0){
+            pthread_cond_timedwait(&delayed_close_cond, &delayed_close_lock, &nearest_deadline);
+            pthread_mutex_unlock(&delayed_close_lock);
+            continue;
+        }
+
+        delayed_close_t close_item = delayed_closes[selected_idx];
+        pthread_mutex_unlock(&delayed_close_lock);
+
+        worker_node_t *wn = &worker_nodes[close_item.worker_idx];
+
+        queue_item_t command_event = {0};
+
+        command_event.item = ITEM_CLOSE;
+        strncpy(command_event.source_id, close_item.source_id, MAX_SOURCE_ID_LEN - 1);
+        command_event.source_id[MAX_SOURCE_ID_LEN - 1] = '\0';
+
+        pthread_mutex_lock(&wn->lock);
+
+        while(wn->count >= QUEUE_SIZE && keep_running){
+            pthread_cond_wait(&wn->space_available,  &wn->lock);
+        }
+
+        if (!keep_running){
+            pthread_mutex_unlock(&wn->lock);
+            break;
+        }
+
+        wn->items[wn->tail] = command_event;
+        wn->tail = (wn->tail + 1) % QUEUE_SIZE;
+        wn->count++;
+
+        pthread_cond_signal(&wn->data_available);
+        pthread_mutex_unlock(&wn->lock);
+
+        pthread_mutex_lock(&delayed_close_lock);
+        delayed_closes[selected_idx].active = 0;
+        pthread_cond_broadcast(&delayed_close_cond);
+        pthread_mutex_unlock(&delayed_close_lock);
+
+        printf("Delayed CLOSE queued for tank '%s'\n", close_item.source_id);
+
+
+        
+    
+    }
+
+    return NULL;
+
+}
+
 
 
 void reset_worker_node(worker_node_t *node) {
@@ -467,50 +693,51 @@ void *run_control(void *args){
 */
 
 void *control_listener(void *args){
-    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL); 
-    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL); 
 
-    void *context_cl = zmq_ctx_new (); 
-    assert(context_cl != NULL); 
-    
-    void *cl_socket = zmq_socket (context_cl, ZMQ_REP); //Riceve le richieste dal Python
-    assert(cl_socket != NULL); 
-    
-    int check_cl_connect  = zmq_connect(cl_socket, "tcp://localhost:5556"); 
-    if (check_cl_connect  != 0){ 
-        printf("Connect Error: %s\n", zmq_strerror(zmq_errno())); 
-        return NULL; 
-    } 
+    pthread_setname_np(pthread_self(), "control_listener");
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+
+    void *context_cl = zmq_ctx_new();
+    assert(context_cl != NULL);
+
+    void *cl_socket = zmq_socket(context_cl, ZMQ_REP);
+    assert(cl_socket != NULL);
+
+    int check_cl_connect = zmq_connect(cl_socket, "tcp://localhost:5556");
+    if (check_cl_connect != 0){
+        printf("Connect Error: %s\n", zmq_strerror(zmq_errno()));
+        return NULL;
+    }
     printf("CL connected  on port 5556\n");
 
+    void *context_rc = zmq_ctx_new();
+    assert(context_rc != NULL);
 
-    void *context_rc = zmq_ctx_new (); 
-    assert(context_rc != NULL); 
-    
-    void *rc_socket = zmq_socket (context_rc, ZMQ_PUB); 
-    assert(rc_socket != NULL); 
-    
-    int check_rc_bind = zmq_bind(rc_socket, "tcp://*:4444"); 
-    if (check_rc_bind != 0){ 
-        printf("Bind Error: %s\n", zmq_strerror(zmq_errno())); 
-        return NULL; 
-    } 
-    printf("RC binded on port 4444\n"); 
-    
-    sleep(1); 
+    void *rc_socket = zmq_socket(context_rc, ZMQ_PUB);
+    assert(rc_socket != NULL);
 
-    while (keep_running) {
-        zmq_pollitem_t poll_items[] = { { cl_socket, 0, ZMQ_POLLIN, 0 } };
-        if (zmq_poll(poll_items, 1, 500) <= 0)
-            continue;
-        if (!(poll_items[0].revents & ZMQ_POLLIN))
-            continue;
+    int check_rc_bind = zmq_bind(rc_socket, "tcp://*:4444");
+    if (check_rc_bind != 0){
+        printf("Bind Error: %s\n", zmq_strerror(zmq_errno()));
+        return NULL;
+    }
+    printf("RC binded on port 4444\n");
 
+    while (keep_running)
+    {
         char command[16] = {0};
         char id_str[MAX_SOURCE_ID_LEN] = {0};
         char path[256] = {0};
         char format_file_str[8] = {0};
         char metadata[512] = {0};
+        char buffer[1024];
+
+        zmq_pollitem_t poll_items[] = { { cl_socket, 0, ZMQ_POLLIN, 0 } };
+        if (zmq_poll(poll_items, 1, 500) <= 0)
+            continue;
+        if (!(poll_items[0].revents & ZMQ_POLLIN))
+            continue;
 
         int frame_idx = 0;
         int more = 0;
@@ -529,11 +756,11 @@ void *control_listener(void *args){
 
             char *dest = NULL;
             size_t dest_cap = 0;
-            if (frame_idx == 0)      { dest = command;  dest_cap = sizeof(command); }
-            else if (frame_idx == 1) { dest = id_str;   dest_cap = sizeof(id_str); }
-            else if (frame_idx == 2) { dest = path;     dest_cap = sizeof(path); }
-            else if (frame_idx == 3) { dest = format_file_str; dest_cap = sizeof(format_file_str);}
-            else if (frame_idx == 4) { dest = metadata; dest_cap = sizeof(metadata); }
+            if (frame_idx == 0)      { dest = command;         dest_cap = sizeof(command); }
+            else if (frame_idx == 1) { dest = id_str;          dest_cap = sizeof(id_str); }
+            else if (frame_idx == 2) { dest = path;             dest_cap = sizeof(path); }
+            else if (frame_idx == 3) { dest = format_file_str;  dest_cap = sizeof(format_file_str); }
+            else if (frame_idx == 4) { dest = metadata;         dest_cap = sizeof(metadata); }
 
             if (dest != NULL) {
                 size_t len = (frame_size < dest_cap - 1) ? frame_size : dest_cap - 1;
@@ -547,7 +774,7 @@ void *control_listener(void *args){
 
         } while (more);
 
-        int n_matched = frame_idx;   
+        int n_matched = frame_idx;
 
         const char *reply_msg = NULL;
 
@@ -561,13 +788,41 @@ void *control_listener(void *args){
 
         if (reply_msg != NULL) {
             zmq_send(cl_socket, reply_msg, strlen(reply_msg), 0);
-            continue;  
+            continue;
         }
 
         uint64_t h = hash_fnv1a((const unsigned char *)id_str, strlen(id_str));
         int worker_idx = (int)(h % N_WORKERS);
         worker_node_t *wn = &worker_nodes[worker_idx];
 
+
+        if (strcmp(command, "CLOSE") == 0) {
+
+            char topic_buf[MAX_SOURCE_ID_LEN + 1];
+
+            snprintf(topic_buf, sizeof(topic_buf), "%s|", id_str);
+            zmq_send(rc_socket, topic_buf, strlen(topic_buf), ZMQ_SNDMORE);
+            zmq_send(rc_socket, "stop", 4, 0);
+
+            printf("Sent STOP message to id='%s'\n", id_str);
+
+
+            int schedule_result = schedule_delayed_close(id_str, worker_idx);
+
+
+            if (schedule_result < 0) {
+
+                const char *error_msg ="ERROR: unable to schedule CLOSE";
+                zmq_send(cl_socket, error_msg, strlen(error_msg), 0);
+
+            } else {
+                zmq_send(cl_socket, "OK", 2, 0);
+            }
+
+            continue;
+        }
+
+        wait_for_pending_close(id_str);
         pthread_mutex_lock(&wn->lock);
 
         while (wn->count >= QUEUE_SIZE && keep_running) {
@@ -582,58 +837,36 @@ void *control_listener(void *args){
         queue_item_t command_event;
         meta_data_t meta;
 
-        if (strcmp(command, "OPEN") == 0) {
-            if (metadata[0] != '\0') {
-                populate_meta_struct(&meta, metadata);
-            } else {
-                reset_meta_struct(&meta);
-            }
-
-            command_event.item = ITEM_OPEN;
-            strncpy(command_event.source_id, id_str, MAX_SOURCE_ID_LEN - 1);
-            command_event.source_id[MAX_SOURCE_ID_LEN - 1] = '\0';
-            strncpy(command_event.path, path, sizeof(command_event.path) - 1);
-            command_event.path[sizeof(command_event.path) - 1] = '\0';
-            command_event.metainfo = meta;
-            command_event.output_format = 0;
-
-            if (format_file_str[0] != '\0'){
-                if (strcmp(format_file_str, "bin") == 0){
-                    command_event.output_format = 1;
-                }
-                else if (strcmp(format_file_str, "csv") == 0) {
-                    command_event.output_format = 0;
-                }
-                else{
-                    printf("Output file format not recognized. Usign csv as default");
-                    command_event.output_format = 0;
-                }
-            }
-
-            //printf("DEBUG: about to send start to id='%s' (len=%zu)\n", id_str, strlen(id_str));
-            char topic_buf[MAX_SOURCE_ID_LEN + 1];
-            snprintf(topic_buf, sizeof(topic_buf), "%s|", id_str);
-            zmq_send(rc_socket, topic_buf, strlen(topic_buf), ZMQ_SNDMORE); 
-            zmq_send(rc_socket, "start", 5, 0); 
-            printf("Sent START message to id='%s'\n", id_str);
-
+        if (metadata[0] != '\0') {
+            populate_meta_struct(&meta, metadata);
         } else {
-
-            char topic_buf[MAX_SOURCE_ID_LEN + 1];
-            snprintf(topic_buf, sizeof(topic_buf), "%s|", id_str);
-            zmq_send(rc_socket, topic_buf, strlen(topic_buf), ZMQ_SNDMORE); 
-            zmq_send(rc_socket, "stop", 4, 0); 
-            printf("Sent STOP message to id='%s'\n", id_str);
-
-            sleep(2);
-
-            command_event.item = ITEM_CLOSE;
-            strncpy(command_event.source_id, id_str, MAX_SOURCE_ID_LEN - 1);
-            command_event.source_id[MAX_SOURCE_ID_LEN - 1] = '\0';
-
-            
-
+            reset_meta_struct(&meta);
         }
+
+        command_event.item = ITEM_OPEN;
+        strncpy(command_event.source_id, id_str, MAX_SOURCE_ID_LEN - 1);
+        command_event.source_id[MAX_SOURCE_ID_LEN - 1] = '\0';
+        strncpy(command_event.path, path, sizeof(command_event.path) - 1);
+        command_event.path[sizeof(command_event.path) - 1] = '\0';
+        command_event.metainfo = meta;
+        command_event.output_format = 0;
+
+        if (format_file_str[0] != '\0'){
+            if (strcmp(format_file_str, "bin") == 0){
+                command_event.output_format = 1;
+            } else if (strcmp(format_file_str, "csv") == 0) {
+                command_event.output_format = 0;
+            } else {
+                printf("Output file format not recognized. Using csv as default\n");
+                command_event.output_format = 0;
+            }
+        }
+
+        char topic_buf[MAX_SOURCE_ID_LEN + 1];
+        snprintf(topic_buf, sizeof(topic_buf), "%s|", id_str);
+        zmq_send(rc_socket, topic_buf, strlen(topic_buf), ZMQ_SNDMORE);
+        zmq_send(rc_socket, "start", 5, 0);
+        printf("Sent START message to id='%s'\n", id_str);
 
         wn->items[wn->tail] = command_event;
         wn->tail = (wn->tail + 1) % QUEUE_SIZE;
@@ -645,18 +878,18 @@ void *control_listener(void *args){
         zmq_send(cl_socket, "OK", 2, 0);
     }
 
-    zmq_close(cl_socket); 
-    zmq_ctx_destroy(context_cl); 
+    zmq_close(cl_socket);
+    zmq_ctx_destroy(context_cl);
+    zmq_close(rc_socket);
+    zmq_ctx_destroy(context_rc);
 
-    zmq_close(rc_socket); 
-    zmq_ctx_destroy(context_rc); 
-    
-    return NULL; 
-    
+    return NULL;
 }
 
-
+/*
 void *receive_data(void *args) {
+
+    pthread_setname_np(pthread_self(), "receiver");
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 
@@ -792,6 +1025,131 @@ void *receive_data(void *args) {
     return NULL;
 }
 
+*/
+
+
+void *receive_data(void *args) {
+
+    pthread_setname_np(pthread_self(), "receiver");
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+
+    void *context = zmq_ctx_new();
+    void *server_socket = zmq_socket(context, ZMQ_ROUTER);
+
+    if (zmq_bind(server_socket, "tcp://*:5555") != 0) {
+        printf("ERROR binding: %s\n", zmq_strerror(zmq_errno()));
+        zmq_close(server_socket);
+        zmq_ctx_destroy(context);
+        return NULL;
+    }
+
+    printf("Server binded on port 5555\n");
+
+    while (keep_running) {
+
+        zmq_pollitem_t items[] = {
+            { server_socket, 0, ZMQ_POLLIN, 0 }
+        };
+
+        if (zmq_poll(items, 1, 500) <= 0) //500 ms timeout
+            continue;
+
+        if (!(items[0].revents & ZMQ_POLLIN))
+            continue;
+
+        int more = 0;
+        size_t more_size = sizeof(more);
+        int frame_idx = 0;
+
+        unsigned char *payload = NULL;
+        size_t payload_size = 0;
+
+        unsigned char identity_buf[MAX_SOURCE_ID_LEN];
+        size_t identity_len = 0;
+
+        do {
+            zmq_msg_t msg;
+            zmq_msg_init(&msg);
+
+            if (zmq_msg_recv(&msg, server_socket, 0) == -1) {
+                zmq_msg_close(&msg);
+                break;
+            }
+
+            if (frame_idx == 0) {
+                size_t raw_size = zmq_msg_size(&msg);
+                unsigned char *raw_data = (unsigned char *) zmq_msg_data(&msg);
+
+                identity_len = (raw_size < sizeof(identity_buf) - 1) ? raw_size : sizeof(identity_buf) - 1;
+                memcpy(identity_buf, raw_data, identity_len);
+                identity_buf[identity_len] = '\0';
+            }
+
+            if (frame_idx == 1) {
+                payload_size = zmq_msg_size(&msg);
+                payload = zmq_msg_data(&msg);
+
+                if (payload_size < EVENT_SIZE_BYTES || (payload_size % EVENT_SIZE_BYTES) != 0) {
+                    zmq_msg_close(&msg);
+                    continue;
+                }
+
+
+                unsigned char *batch_memory = malloc(payload_size);
+                if (batch_memory == NULL) {
+                    printf("ERROR: malloc failed for DMA batch (%zu bytes)\n", payload_size);
+                    zmq_msg_close(&msg);
+                    continue;
+                }
+                memcpy(batch_memory, payload, payload_size);
+
+                data_batch_t data_batch = {0};
+                data_batch.payload = batch_memory;
+                data_batch.payload_size = payload_size;
+                strncpy(data_batch.source_id, identity_buf, sizeof(data_batch.source_id) - 1);
+                data_batch.source_id[sizeof(data_batch.source_id) - 1] = '\0';
+
+                uint64_t h = hash_fnv1a((const unsigned char *)identity_buf, identity_len);
+                int worker_idx = (int)(h % N_WORKERS);
+                worker_node_t *wn = &worker_nodes[worker_idx];
+
+                pthread_mutex_lock(&wn->lock);
+
+                while (wn->count >= QUEUE_SIZE && keep_running) {
+                    pthread_cond_wait(&wn->space_available, &wn->lock);
+                }
+
+                if (!keep_running) {
+                    pthread_mutex_unlock(&wn->lock);
+                    free(batch_memory);   
+                    break;
+                }
+
+                queue_item_t item;
+                item.item = ITEM_DATA;
+                item.data = data_batch;
+
+                wn->items[wn->tail] = item;
+                wn->tail = (wn->tail + 1) % QUEUE_SIZE;
+                wn->count++;
+
+                pthread_cond_signal(&wn->data_available);
+                pthread_mutex_unlock(&wn->lock);
+            }
+
+            zmq_getsockopt(server_socket, ZMQ_RCVMORE, &more, &more_size);
+            zmq_msg_close(&msg);
+            frame_idx++;
+
+        } while (more && keep_running);
+    }
+
+    printf("receive_data: Thread exiting\n");
+    zmq_close(server_socket);
+    zmq_ctx_destroy(context);
+    return NULL;
+}
 
 
 
@@ -802,6 +1160,9 @@ void *process_data(void *args_void) {
 
     worker_args_t *args = (worker_args_t *)args_void;
     worker_node_t *wn = &worker_nodes[args->worked_idx];
+    char name[16];
+    snprintf(name, sizeof(name), "worker%d", args->worked_idx);
+    pthread_setname_np(pthread_self(), name);
 
     //FILE *file = args->fout;
     FILE *file = NULL;
@@ -842,94 +1203,102 @@ void *process_data(void *args_void) {
             queue_item_t current_event = batch[i];
             //printf("DEBUG: source identity: '%s'\n", current_event.source_id);
             if (current_event.item == ITEM_DATA){
-                if (current_event.data.valid) {
+                data_batch_t data_batch = current_event.data;
+
+                tank_node *event_node = get_node(wn->worker_table, data_batch.source_id);
+
+                if (event_node == NULL) {
+                    printf("ERROR: received data for unknown tank '%s' (no OPEN received yet)\n",
+                        data_batch.source_id);
+                    free(data_batch.payload);
+                    continue;
+                }
+
+                if (event_node->output_file == NULL) {
+                    printf("WARNING: received data for tank '%s' after CLOSE, discarding\n",
+                        data_batch.source_id);
+                    free(data_batch.payload);
+                    continue;
+                }
+
+                size_t num_events = data_batch.payload_size / EVENT_SIZE_BYTES;
+
+                for (size_t e = 0; e < num_events; e++) {
+                    size_t off = e * EVENT_SIZE_BYTES;
+
                     uint16_t cut_buffer[6];
-                    tank_node *event_node;
-                    event_node = get_node(wn->worker_table, current_event.data.source_id);
-                    if (event_node == NULL){
-                        printf("ERROR: received data for unknown tank '%s' (no OPEN received yet)\n", current_event.data.source_id);
+                    for (int j = 0; j < 6; j++) {
+                        memcpy(&cut_buffer[j], data_batch.payload + off + (j + 1) * 2, sizeof(uint16_t));
+                    }
+
+                    if (check_crc(cut_buffer) != 0) {
                         continue;
                     }
 
-                    for (int j = 1; j < 7; j++) {
-                        cut_buffer[j-1] = current_event.data.words[j];
+                    uint32_t canale = get_bits(cut_buffer, 3, 5);
+                    uint32_t tempo_16_bit = get_bits(cut_buffer, 8, 16);
+                    uint32_t coarse_time = (get_bits(cut_buffer, 24, 8) << 20) |
+                                            (get_bits(cut_buffer, 33, 7) << 13) |
+                                            get_bits(cut_buffer, 40, 13);
+                    uint32_t tot = get_bits(cut_buffer, 53, 6);
+                    uint32_t tdc_trigger_end = get_bits(cut_buffer, 59, 5);
+                    uint32_t tdc_time = get_bits(cut_buffer, 69, 5);
+                    uint32_t energia = get_bits(cut_buffer, 74, 14);
+
+                    if (coarse_time == 0 && tempo_16_bit == 0 && energia == 0) {
+                        continue;
                     }
 
-                    if (check_crc(cut_buffer) == 0) {
-                        uint32_t canale = get_bits(cut_buffer, 3, 5);
-                        uint32_t tempo_16_bit = get_bits(cut_buffer, 8, 16);
-                        uint32_t coarse_time = (get_bits(cut_buffer, 24, 8) << 20) | 
-                                            (get_bits(cut_buffer, 33, 7) << 13) | 
-                                            get_bits(cut_buffer, 40, 13);
-                        uint32_t tot = get_bits(cut_buffer, 53, 6);
-                        uint32_t tdc_trigger_end = get_bits(cut_buffer, 59, 5);
-                        uint32_t tdc_time = get_bits(cut_buffer, 69, 5);
-                        uint32_t energia = get_bits(cut_buffer, 74, 14);
+                    int written;
 
-                        if (coarse_time == 0 && tempo_16_bit == 0 && energia == 0) {
-                            continue;
-                        }
+                    if (event_node->output_format == 1) {
+                        event_record_t rec;
+                        rec.canale = (uint8_t) canale;
+                        rec.tempo_16_bit = (uint16_t) tempo_16_bit;
+                        rec.coarse_time = (uint32_t) coarse_time;
+                        rec.tdc_time = (uint8_t) tdc_time;
+                        rec.tot = (uint8_t) tot;
+                        rec.tdc_trigger_end = (uint8_t) tdc_trigger_end;
+                        rec.energia = (uint16_t) energia;
 
-                        if (event_node->output_format == 0){
-                            int written = snprintf(event_node->write_buffer + event_node->buffer_used,
+                        memcpy(event_node->write_buffer + event_node->buffer_used, &rec, sizeof(rec));
+                        written = sizeof(rec);
+                    } else {
+                        written = snprintf(event_node->write_buffer + event_node->buffer_used,
                                             sizeof(event_node->write_buffer) - event_node->buffer_used,
                                             "%u,%u,%u,%u,%u,%u,%u\n",
                                             canale, tempo_16_bit, coarse_time,
                                             tdc_time, tot, tdc_trigger_end, energia);
-                            
-                            if (written > 0) {
-                                event_node->buffer_used += written;
-                            }
-                            events_processed++;
+                    }
+
+                    if (written > 0) {
+                        event_node->buffer_used += written;
+                    }
+                    event_node->events_written++;
+
+                    if (event_node->buffer_used > sizeof(event_node->write_buffer) - 256) {
+                        fwrite(event_node->write_buffer, 1, event_node->buffer_used, event_node->output_file);
+                        fflush(event_node->output_file);
+                        event_node->bytes_written += event_node->buffer_used;
+                        event_node->buffer_used = 0;
+
+                        if (event_node->bytes_written >= MAX_FILE_SIZE_BYTES) {
+                            rollover_file(event_node);
                         }
-                        else if (event_node->output_format == 1){
-                            event_record_t rec;
-                            rec.canale = canale;
-                            rec.tempo_16_bit = tempo_16_bit;
-                            rec.coarse_time = coarse_time;
-                            rec.tot = tot;
-                            rec.tdc_trigger_end = tdc_trigger_end;
-                            rec.tdc_time = tdc_time;
-                            rec.energia = energia;
+                    } else if (event_node->events_written % NUM_EVENTS_WRITE == 0) {
+                        fwrite(event_node->write_buffer, 1, event_node->buffer_used, event_node->output_file);
+                        fflush(event_node->output_file);
+                        event_node->bytes_written += event_node->buffer_used;
+                        event_node->buffer_used = 0;
 
-                            memcpy(event_node->write_buffer + event_node->buffer_used, &rec, sizeof(rec));
-                            int written = sizeof(rec);
-                            if (written > 0) {
-                                event_node->buffer_used += written;
-                            }
-                            events_processed++;
+                        if (event_node->bytes_written >= MAX_FILE_SIZE_BYTES) {
+                            rollover_file(event_node);
                         }
-
-                        
-                        if (event_node->buffer_used > sizeof(event_node->write_buffer) - 256) {
-                            fwrite(event_node->write_buffer, 1, event_node->buffer_used, event_node->output_file);
-                            fflush(event_node->output_file);
-
-                            event_node->bytes_written += event_node->buffer_used;
-                            event_node->buffer_used = 0;
-                            if(event_node->bytes_written >= MAX_FILE_SIZE_BYTES){
-                                rollover_file(event_node);
-                            }
-                        }
-
-                        if (events_processed % NUM_EVENTS_WRITE == 0){
-                            fwrite(event_node->write_buffer, 1, event_node->buffer_used, event_node->output_file);
-                            fflush(event_node->output_file);
-
-                            event_node->bytes_written += event_node->buffer_used;
-                            event_node->buffer_used = 0;
-                            if(event_node->bytes_written >= MAX_FILE_SIZE_BYTES){
-                                rollover_file(event_node);
-                            }
-                            
-                        }
-                        
-                        
-
                     }
                 }
-            }
-            else{
+
+                free(data_batch.payload);   
+            } else{
                 if (current_event.item == ITEM_OPEN){
                     file = fopen(current_event.path, "w");
 
@@ -1084,7 +1453,7 @@ int run(void) {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    pthread_t receiver, cl_thread;
+    pthread_t receiver, cl_thread, close_thread;
     pthread_t workers[N_WORKERS];
 
     worker_args_t worker_args[N_WORKERS];
@@ -1094,6 +1463,8 @@ int run(void) {
         worker_args[i].worked_idx = i;
         pthread_create(&workers[i], NULL, process_data, &worker_args[i]);
     }
+
+    pthread_create(&close_thread, NULL, delayed_close_worker,NULL);
 
     pthread_create(&receiver, NULL, receive_data, NULL);
     pthread_create(&cl_thread, NULL, control_listener, NULL);
@@ -1107,7 +1478,13 @@ int run(void) {
         pthread_cond_broadcast(&(worker_nodes[i].space_available));
     }
 
+    pthread_mutex_lock(&delayed_close_lock);
+    pthread_cond_broadcast(&delayed_close_cond);
+    pthread_mutex_unlock(&delayed_close_lock);
+
     pthread_join(receiver, NULL);
+
+    pthread_join(close_thread, NULL);   
 
     for (int i = 0; i < N_WORKERS; i++){
         pthread_join(workers[i], NULL);
