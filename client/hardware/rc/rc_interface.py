@@ -8,6 +8,17 @@ import time
 
 RC_WRITE_SETTLE_TIME_S = 0.5
 
+MAX_REGISTER_VALUE = 0xFFFFFFFF  # 32 bit senza segno
+
+ACQ_CONFIG_REGISTERS = {16, 18, 19, 31, 39}
+
+ACQ_REGISTER_WRITE_ORDER = [16, 18, 31, 39, 19]
+
+TRIGGER_REG15_ALLOWED_MASK = (
+    (1 << 1) | (1 << 4) | (1 << 7) | (1 << 8)
+)  # deve combaciare con TRIGGER_REG15_MASK lato server (acquisition_service.py)
+
+
 
 class RC:
 
@@ -104,6 +115,241 @@ class RC:
             "value": result,
             "message": f"Register {addresses} read successfully",
         }
+
+
+    def set_acq_registers(self, rc_acq_dit: dict) -> dict:
+
+
+        if not isinstance(rc_acq_dit, dict):
+            self.logger.error(
+                f"Invalid RC acquisition configuration type: {type(rc_acq_dit).__name__}"
+            )
+            return {
+                "success": False,
+                "successful_registers": [],
+                "failed_registers": [],
+                "register_results": {},
+                "message": "RC acquisition configuration must be a dictionary",
+            }
+
+        raw_registers = rc_acq_dit.get("registers", {})
+        reg15_config = rc_acq_dit.get("reg15")
+
+        if not isinstance(raw_registers, dict):
+            self.logger.error(f"Invalid 'registers' acquisition configuration: {raw_registers!r}")
+            return {
+                "success": False,
+                "successful_registers": [],
+                "failed_registers": [],
+                "register_results": {},
+                "message": "'registers' must be a dictionary",
+            }
+
+        if reg15_config is not None and not isinstance(reg15_config, dict):
+            self.logger.error(f"Invalid register 15 acquisition configuration: {reg15_config!r}")
+            return {
+                "success": False,
+                "successful_registers": [],
+                "failed_registers": [15],
+                "register_results": {
+                    15: {"success": False, "message": "Register 15 configuration must be a dictionary"}
+                },
+                "message": "Invalid register 15 configuration",
+            }
+
+        successful_registers = []
+        failed_registers = []
+        register_results = {}
+
+
+        normalized_registers = {}
+
+        for raw_address, value in raw_registers.items():
+            try:
+                address = self.auto_int(raw_address)
+            except (TypeError, ValueError):
+                self.logger.error(f"Invalid RC acquisition register address: {raw_address!r}")
+                failed_registers.append(raw_address)
+                register_results[raw_address] = {
+                    "success": False,
+                    "address": raw_address,
+                    "requested_value": value,
+                    "message": "Invalid register address",
+                }
+                continue
+
+            if address not in ACQ_CONFIG_REGISTERS:
+                self.logger.error(f"RC register {address} is not allowed in acquisition configuration")
+                failed_registers.append(address)
+                register_results[address] = {
+                    "success": False,
+                    "address": address,
+                    "requested_value": value,
+                    "message": f"Register {address} is not an allowed acquisition configuration register",
+                }
+                continue
+
+            if not isinstance(value, int):
+                self.logger.error(f"Invalid value for RC register {address}: {value!r}")
+                failed_registers.append(address)
+                register_results[address] = {
+                    "success": False,
+                    "address": address,
+                    "requested_value": value,
+                    "message": "Register value must be an integer",
+                }
+                continue
+
+            if value < 0 or value > MAX_REGISTER_VALUE:
+                self.logger.error(f"RC register {address} value out of 32-bit range: {value}")
+                failed_registers.append(address)
+                register_results[address] = {
+                    "success": False,
+                    "address": address,
+                    "requested_value": value,
+                    "message": "Register value outside unsigned 32-bit range",
+                }
+                continue
+
+            normalized_registers[address] = value
+
+
+        for address in ACQ_REGISTER_WRITE_ORDER:
+            if address not in normalized_registers:
+                continue
+
+            value = normalized_registers[address]
+            write_ok = self.write(address, value)
+
+            if write_ok:
+                successful_registers.append(address)
+                register_results[address] = {
+                    "success": True,
+                    "address": address,
+                    "requested_value": value,
+                    "written_value": value,
+                    "message": f"Register {address} written successfully",
+                }
+                self.logger.info(f"RC acquisition register {address} set to {value}")
+            else:
+                failed_registers.append(address)
+                register_results[address] = {
+                    "success": False,
+                    "address": address,
+                    "requested_value": value,
+                    "written_value": None,
+                    "message": f"Failed to write RC register {address}",
+                }
+                self.logger.error(f"Failed to set RC acquisition register {address} to {value}")
+
+
+        if reg15_config is not None:
+            mask = reg15_config.get("mask")
+            value = reg15_config.get("value")
+
+            reg15_valid = True
+
+            if not isinstance(mask, int):
+                self.logger.error(f"Invalid register 15 mask: {mask!r}")
+                reg15_valid = False
+            elif mask < 0 or mask > MAX_REGISTER_VALUE:
+                self.logger.error(f"Register 15 mask outside unsigned 32-bit range: {mask}")
+                reg15_valid = False
+            elif mask & ~TRIGGER_REG15_ALLOWED_MASK:
+                self.logger.error(
+                    f"Register 15 mask contains unsupported bits: mask={mask}, "
+                    f"allowed_mask={TRIGGER_REG15_ALLOWED_MASK}"
+                )
+                reg15_valid = False
+
+            if not isinstance(value, int):
+                self.logger.error(f"Invalid register 15 trigger value: {value!r}")
+                reg15_valid = False
+            elif value < 0 or value > MAX_REGISTER_VALUE:
+                self.logger.error(f"Register 15 value outside unsigned 32-bit range: {value}")
+                reg15_valid = False
+            elif isinstance(mask, int) and value & ~mask:
+                self.logger.error(
+                    f"Register 15 value contains bits outside its mask: value={value}, mask={mask}"
+                )
+                reg15_valid = False
+
+            if not reg15_valid:
+                failed_registers.append(15)
+                register_results[15] = {
+                    "success": False,
+                    "address": 15,
+                    "mask": mask,
+                    "requested_value": value,
+                    "message": "Invalid register 15 trigger configuration",
+                }
+            else:
+                previous_value = self.read(15)
+
+                if previous_value is None:
+                    self.logger.error("Failed to read register 15 before trigger configuration")
+                    failed_registers.append(15)
+                    register_results[15] = {
+                        "success": False,
+                        "address": 15,
+                        "mask": mask,
+                        "requested_value": value,
+                        "previous_value": None,
+                        "written_value": None,
+                        "message": "Failed to read register 15 before read-modify-write",
+                    }
+                else:
+                    new_value = (previous_value & (~mask & MAX_REGISTER_VALUE)) | (value & mask)
+                    write_ok = self.write(15, new_value)
+
+                    if write_ok:
+                        successful_registers.append(15)
+                        register_results[15] = {
+                            "success": True,
+                            "address": 15,
+                            "mask": mask,
+                            "requested_value": value,
+                            "previous_value": previous_value,
+                            "written_value": new_value,
+                            "message": "Register 15 trigger bits configured successfully",
+                        }
+                        self.logger.info(
+                            f"RC register 15 trigger configuration applied: "
+                            f"previous={previous_value}, mask={mask}, trigger_value={value}, new={new_value}"
+                        )
+                    else:
+                        failed_registers.append(15)
+                        register_results[15] = {
+                            "success": False,
+                            "address": 15,
+                            "mask": mask,
+                            "requested_value": value,
+                            "previous_value": previous_value,
+                            "written_value": None,
+                            "message": "Failed to write register 15 trigger configuration",
+                        }
+                        self.logger.error(
+                            f"Failed to apply RC register 15 trigger configuration: "
+                            f"previous={previous_value}, mask={mask}, trigger_value={value}, new_value={new_value}"
+                        )
+
+        success = not failed_registers
+
+        return {
+            "success": success,
+            "successful_registers": successful_registers,
+            "failed_registers": failed_registers,
+            "register_results": register_results,
+            "message": (
+                "RC acquisition registers configured successfully"
+                if success
+                else f"RC acquisition register configuration completed with failures: {failed_registers}"
+            ),
+        }
+
+
+
+        
 
 
     def write_register(self, address: int, value: int) -> dict:

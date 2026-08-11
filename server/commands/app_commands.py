@@ -68,8 +68,8 @@ def do_change_mode(self, args):
         logger.error("CONFIGURATION_STARTED rejected by FSM")
         return
 
-    successful_client_ids: list[bytes] = []
-    failed_client_ids: list[bytes] = []
+    successful_client_ids = []
+    failed_client_ids = []
     
     
     for client_id in client_ids:

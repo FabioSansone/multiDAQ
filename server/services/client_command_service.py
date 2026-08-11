@@ -102,75 +102,36 @@ class ClientCommandService:
             timeout_s=timeout_s,
         )
 
-    def _create_command(
-        self,
-        *,
-        plane: CommandPlane,
-        channel: Channel,
-        command: str,
-        payload: dict,
-    ) -> ProtocolMessage:
+    def _create_command(self, *, plane, channel, command, payload, priority: int | None = None):
         manager = self._get_manager(plane)
-
         return manager.message_handler.create_command(
-            channel=channel,
-            command=command,
-            payload=payload,
-            sender="server",
+            channel=channel, command=command, payload=payload, sender="server", priority=priority,
         )
 
-    def send_hv_command(
-        self,
-        client_id: bytes,
-        command: str,
-        payload: dict,
-        plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 90.0,
-    ):
+    def send_hv_command(self, client_id, command, payload,
+                        plane=CommandPlane.CONTROL, timeout_s=90.0, priority: int | None = None):
         normalized_plane = self._normalize_plane(plane)
-
         if normalized_plane is None:
             return None, "invalid command plane"
 
         hv_command = self._create_command(
-            plane=normalized_plane,
-            channel=Channel.HV,
-            command=command,
-            payload=payload,
+            plane=normalized_plane, channel=Channel.HV, command=command, payload=payload, priority=priority,
         )
-
         return self._send_command_and_wait_reply(
-            client_id=client_id,
-            message=hv_command,
-            plane=normalized_plane,
-            timeout_s=timeout_s,
+            client_id=client_id, message=hv_command, plane=normalized_plane, timeout_s=timeout_s,
         )
 
-    def send_rc_command(
-        self,
-        client_id: bytes,
-        command: str,
-        payload: dict,
-        plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 35.0,
-    ):
+    def send_rc_command(self, client_id, command, payload,
+                        plane=CommandPlane.CONTROL, timeout_s=35.0, priority: int | None = None):
         normalized_plane = self._normalize_plane(plane)
-
         if normalized_plane is None:
             return None, "invalid command plane"
 
         rc_command = self._create_command(
-            plane=normalized_plane,
-            channel=Channel.RC,
-            command=command,
-            payload=payload,
+            plane=normalized_plane, channel=Channel.RC, command=command, payload=payload, priority=priority,
         )
-
         return self._send_command_and_wait_reply(
-            client_id=client_id,
-            message=rc_command,
-            plane=normalized_plane,
-            timeout_s=timeout_s,
+            client_id=client_id, message=rc_command, plane=normalized_plane, timeout_s=timeout_s,
         )
 
     def read_rc_register(
@@ -267,6 +228,54 @@ class ClientCommandService:
             self.poutput(
                 f"Client {client_name}: failed to write "
                 f"RC register {address}"
+            )
+
+            if error:
+                self.poutput(f"Client {client_name}: error: {error}")
+
+            return False
+
+        return True
+
+
+    def set_rc_acquisition_registers(self, client_id: bytes, rc_acq_dict: dict, plane: CommandPlane | str = CommandPlane.CONTROL, priority: int | None = None, timeout_s: float = 60.0,) -> bool:
+
+        client_name = client_id.decode(errors="ignore")
+    
+        reply, reason = self.send_rc_command(
+            client_id=client_id,
+            command="set_rc_acq",
+            payload={
+                "rc_acq_dict": rc_acq_dict,
+            },
+            plane=plane,
+            priority=priority,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"RC set acquisition registers {rc_acq_dict} failed for "
+                f"client {client_name}: {reason}"
+            )
+            self.poutput(
+                f"Client {client_name}: no reply while setting acquisition registers "
+                f"RC register {rc_acq_dict} ({reason})"
+            )
+            return False
+
+        payload = reply.payload or {}
+        status = payload.get("status")
+        error = payload.get("error")
+
+        if status != "ok":
+            self.logger.error(
+                f"RC set acquisition registers {rc_acq_dict} failed for "
+                f"client {client_name}: {error}"
+            )
+            self.poutput(
+                f"Client {client_name}: failed to set acquisition registers "
+                f"RC register {rc_acq_dict}"
             )
 
             if error:

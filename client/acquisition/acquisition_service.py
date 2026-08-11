@@ -68,9 +68,13 @@ class AcquisitionService:
 
         return True
 
-    def _apply_test_mode(self) -> bool:
+    def _apply_test_mode(self) -> dict:
         runtime = self.runtime
 
+        if not runtime.ensure_rc_service():
+            self.logger.warning("It was not possible to start RC Service.")
+            return {"success": False, "missing_serial_channels": []}
+        
         rc_response = runtime.rc_service._submit_command(
             command="rc_acq_start",
             payload={"channels": "all"},
@@ -102,14 +106,28 @@ class AcquisitionService:
         runtime.evproducer.start(runtime.server_ip, runtime.get_mac_to_id())
         return {"success": True, "missing_serial_channels": []}
 
-    def _apply_calibration_mode(self) -> bool:
+    def _apply_calibration_mode(self) -> dict:
         runtime = self.runtime
 
-        runtime.rc_service._submit_command(
+        if not runtime.ensure_rc_service():
+            self.logger.warning("It was not possible to start RC Service.")
+            return {"success": False, "missing_serial_channels": []}
+
+        rc_response = runtime.rc_service._submit_command(
             command="rc_acq_start",
             payload={"channels": "all"},
             sender="client_acquisition_service",
         )
+
+        if rc_response.status != MessageStatus.OK:
+            self.logger.error(
+                f"Cannot apply calibration mode: failed to enable RC channels: "
+                f"{rc_response.error}"
+            )
+            return {
+                "success": False,
+                "missing_serial_channels": [],
+            }
 
         if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply calibration mode: HVService unavailable")
@@ -160,8 +178,12 @@ class AcquisitionService:
         self,
         acq_info: dict | None,
         pe_thr: int | float | None,
-    ) -> bool:
+    ) -> dict:
         runtime = self.runtime
+
+        if not runtime.ensure_rc_service():
+            self.logger.warning("It was not possible to start RC Service.")
+            return {"success": False, "missing_serial_channels": []}
 
         if acq_info is None:
             self.logger.error(
@@ -169,11 +191,21 @@ class AcquisitionService:
             )
             return {"success": False, "missing_serial_channels": []}
 
-        runtime.rc_service._submit_command(
+        rc_response = runtime.rc_service._submit_command(
             command="rc_acq_start",
             payload={"channels": "all"},
             sender="client_acquisition_service",
         )
+
+        if rc_response.status != MessageStatus.OK:
+            self.logger.error(
+                f"Cannot apply calibration mode: failed to enable RC channels: "
+                f"{rc_response.error}"
+            )
+            return {
+                "success": False,
+                "missing_serial_channels": [],
+            }
 
         if not runtime.ensure_hv_service():
             self.logger.error("Cannot apply multipmt mode: HVService unavailable")

@@ -182,6 +182,36 @@ def command_read_acq_registers(
         result=result,
         error_prefix=f"Failed to read acquisition related RC registers {addresses}",
     )
+
+
+def command_set_rc_acq_registers(
+    protocol_version: int,
+    rc_interface: RC,
+    rc_request: RCRequest,
+) -> RCResponse:
+
+    rc_acq_dit = rc_request.payload.get("rc_acq_dict")
+
+    if rc_acq_dit is None:
+        return RCResponse(
+            protocol_version=protocol_version,
+            request_id=rc_request.request_id,
+            in_reply_to=rc_request.request_id,
+            status=MessageStatus.ERROR,
+            result={},
+            error="Missing RC acquisition registers settings",
+        )
+
+    result = rc_interface.set_acq_registers(
+        rc_acq_dit=rc_acq_dit,
+    )
+
+    return _make_response(
+        protocol_version=protocol_version,
+        rc_request=rc_request,
+        result=result,
+        error_prefix=f"Failed to set acquisition related RC registers {rc_acq_dit}",
+    )
     
     
 
@@ -384,6 +414,7 @@ COMMAND_HANDLERS = {
     "rc_read_register": command_read_register,
     "rc_write_register": command_write_register,
     "rc_read_acq_registers": command_read_acq_registers,
+    "set_rc_acq": command_set_rc_acq_registers,
 
     "rc_free_rate_monitoring": command_free_rate_monitoring,
     "rc_trg_rate_monitoring": command_trg_rate_monitoring,

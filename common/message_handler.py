@@ -46,6 +46,7 @@ class ProtocolMessage:
     in_reply_to: Optional[str] = None
     sender: Optional[str] = None
     status: Optional[MessageStatus] = None
+    priority: Optional[int] = None
     
     
     def to_dict(self) -> dict[str, Any]:
@@ -76,6 +77,7 @@ class ProtocolMessage:
             in_reply_to=data.get("in_reply_to"),
             sender=data.get("sender"),
             status=MessageStatus(data["status"]) if data.get("status") is not None else None,
+            priority=data.get("priority"),
         )
         
         
@@ -104,6 +106,7 @@ class MessageHandler:
     sender: Optional[str] = None,
     status: Optional[MessageStatus] = None,
     timestamp: Optional[float] = None,
+    priority: Optional[int] = None
     ) -> ProtocolMessage:
 
         return ProtocolMessage(
@@ -118,6 +121,7 @@ class MessageHandler:
             in_reply_to=in_reply_to,
             sender=sender,
             status=status,
+            priority=priority,
         )
     
     def encode(self, message: ProtocolMessage | dict[str, Any]) -> bytes:
@@ -212,6 +216,9 @@ class MessageHandler:
 
         if "sender" in data and data["sender"] is not None and not isinstance(data["sender"], str):
             return False, "sender must be a string"
+
+        if "priority" in data and data["priority"] is not None and not isinstance(data["priority"], int):
+            return False, "priority must be an integer"
 
         return True, "ok"
     
@@ -318,6 +325,7 @@ class MessageHandler:
         payload: Optional[dict[str, Any]] = None,
         request_id: Optional[str] = None,
         sender: Optional[str] = None,
+        priority: Optional[int] = None
     ) -> ProtocolMessage:
         return self.build_message(
             msg_type=MessageType.COMMAND,
@@ -326,6 +334,7 @@ class MessageHandler:
             payload=payload,
             request_id=request_id,
             sender=sender,
+            priority=priority
         )
 
     def create_reply(

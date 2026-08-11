@@ -27,7 +27,7 @@ class ClientRunTime:
         self.hv_port = hv_port
 
         self.hv_service: Optional[HVService] = None
-        self.rc_service = RCService()
+        self.rc_service = Optional[RCService] = None
         self.evproducer = EVService()
         self.feb_service = FEBService(self)
 
@@ -90,6 +90,40 @@ class ClientRunTime:
             self.logger.error(f"Error while stopping HVService: {e}")
         finally:
             self.hv_service = None
+
+    def ensure_rc_service(self) -> bool:
+        if self.rc_service is not None:
+            if (
+                self.rc_service.worker_thread is None
+                or not self.rc_service.worker_thread.is_alive()
+            ):
+                self.rc_service.start()
+
+            return True
+
+        try:
+            self.rc_service = RCService()
+            self.rc_service.start()
+
+            self.logger.info("RCService initialized and started")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Cannot initialize RCService: {e}")
+            self.rc_service = None
+            return False
+    
+    def stop_rc_service(self) -> None:
+        if self.rc_service is None:
+            return
+
+        try:
+            self.rc_service.stop()
+            self.logger.info("RCService stopped")
+        except Exception as e:
+            self.logger.error(f"Error while stopping RCService: {e}")
+        finally:
+            self.rc_service = None
     
     def sync_rc_register_39_with_hv(self) -> bool:
         if self.hv_service is None:
@@ -196,6 +230,7 @@ class ClientRunTime:
 
     def close(self) -> None:
         self.stop_hv_service()
+        
 
         try:
             self.evproducer.stop()
@@ -207,6 +242,8 @@ class ClientRunTime:
             self.logger.warning(
                 "ClientRuntime closed with RC shutdown reset errors"
             )
+
+        self.stop_rc_service()
 
         self.logger.info("ClientRuntime closed")
     

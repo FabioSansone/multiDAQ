@@ -22,6 +22,9 @@ MAX_RETRIES = 10
 
 class ControlPlaneManager:
     def __init__(self, context: zmq.Context, runtime: ClientRunTime,) -> None:
+
+        self.plane_name = "control"
+
         self.context = context
         self.socket: Optional[zmq.Socket] = None
         self.recv_poller = zmq.Poller()

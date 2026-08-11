@@ -37,6 +37,7 @@ COMMAND_MAP = {
     "rc_read_register": handle_rc_read_register,
     "rc_write_register": handle_rc_write_register,
     "rc_read_acq_registers": handle_rc_read_acq_registers,
+    "set_rc_acq": handle_rc_set_acq_registers,
     
     #FEB Handlers
     "feb_program": handle_feb_program,

@@ -24,6 +24,7 @@ class RCRequest:
     sender: Optional[str] = None
     status: Optional[MessageStatus] = None
     response_queue: Optional[queue.Queue] = None
+    deadline_s: Optional[float] = None   
 
 
 @dataclass(slots=True)

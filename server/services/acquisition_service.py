@@ -11,6 +11,13 @@ from server.core.server_state import ServerFSM, ServerFSMEvent
 
 ACQ_REGISTER_ADDRESSES = [0, 1, 10, 15, 16, 18, 19, 31, 39]
 
+TRIGGER_REG15_MASK = (
+    (1 << 1)   # trigger enable
+    | (1 << 4) # external / auto
+    | (1 << 7) # differential / single-ended
+    | (1 << 8) # polarity
+)
+
 @dataclass
 class TriggerConfiguration:
 
@@ -61,53 +68,477 @@ class AcquisitionService:
         self._stop_requested = threading.Event()
 
 
-    def _build_trigger_configuration(self, effective_channels: list[int], trigger_mode: str = "self", trigger_input: str = "differential", trigger_polarity: str = "default",
-                                     window_ns: int = 400, delay_ns: int = 800, auto_config: str | None = None, multiplicity: int | None = None,
-                                     auto_channels: str | None = None, save_external: bool = False, save_auto: bool = False):
+    def build_trigger_configuration(self, args,) -> TriggerConfiguration | None:
 
-        reg19_mask = 0
+        trigger_mode = args.trigger_mode
+
+        if (trigger_mode not in {"self", "external", "auto"}):
+            self.logger.error(f"Unsupported trigger mode: {trigger_mode}")
+            return None
+
+        ##############
+        #SELF TRIGGER#
+        ##############
+
+        if (trigger_mode == "self"):
+            return TriggerConfiguration(
+                mode="self",
+                input_type="differential",
+                polarity="default",
+                window_ns=0,
+                delay_ns=0,
+                auto_logic=None,
+                multiplicity=None,
+                auto_channels=None,
+                save_external=False,
+                save_auto=False,
+            )
+
+        ########################
+        #TRIGGERED ACQUISITIONS#
+        ########################
+
+        window_ns = args.window_ns
+        delay_ns = args.delay_ns
+
+        if window_ns <= 0:
+            self.logger.error(f"Trigger window must be > 0 ns, got {window_ns}")
+            return None
+
+        if delay_ns < 0:
+            self.logger.error(f"Trigger delay must be >= 0 ns, got {delay_ns}")
+            return None
+
+        if window_ns % 5 != 0:
+            self.logger.error(f"Trigger window must be a multiple of 5 ns, got {window_ns}")
+            return None
+
+        if delay_ns % 5 != 0:
+            self.logger.error(f"Trigger delay must be a multiple of 5 ns, got {delay_ns}")
+            return None
+
+        ##################
+        #EXTERNAL TRIGGER#
+        ##################
+
+        if trigger_mode == "external":
+            trigger_input = args.trigger_input
+            polarity = args.polarity
+
+            if trigger_input not in {"differential","single-ended"}:
+                self.logger.error(f"Unsupported external trigger input: {trigger_input}")
+                return None
+
+            if polarity not in {"default","inverted"}:
+                self.logger.error(f"Unsupported external trigger polarity: {polarity}")
+                return None
+
+
+            return TriggerConfiguration(
+                mode="external",
+                input_type=trigger_input,
+                polarity=polarity,
+                window_ns=window_ns,
+                delay_ns=delay_ns,
+                auto_logic=None,
+                multiplicity=None,
+                auto_channels=None,
+                save_external=True,
+                save_auto=args.save_auto,
+            )
+
+        ##############
+        #AUTO TRIGGER#
+        ##############
+
+        auto_logic = args.auto_logic
+
+        if (auto_logic not in {"majority", "exact"}):
+            self.logger.error(f"Unsupported auto-trigger logic: {auto_logic}")
+            return None
+
+        if (auto_logic == "majority"):
+            multiplicity = args.multiplicity
+
+            if multiplicity is None:
+                self.logger.error("Missing multiplicity for auto majority trigger")
+                return None
+
+            if multiplicity < 1 or multiplicity > 7:
+                self.logger.error(f"Auto-trigger multiplicity must be between 1 and 7, got {multiplicity}")
+                return None
+
+            return TriggerConfiguration(
+                mode="auto",
+                input_type="differential",
+                polarity="default",
+                window_ns=window_ns,
+                delay_ns=delay_ns,
+                auto_logic="majority",
+                multiplicity=multiplicity,
+                auto_channels=None,
+                save_external=args.save_external,
+                save_auto=True,
+            )
+
+        raw_channels = args.channels
+
+        if not isinstance(raw_channels, str):
+            self.logger.error(f"Invalid exact auto-trigger channel selection: {raw_channels!r}")
+            return None
+
+        auto_channels = []
+        for item in raw_channels.split(","):
+            item = item.strip()
+
+            if not item:
+                continue
+
+            try:
+                channel = int(item)
+            except ValueError:
+                self.logger.error(f"Invalid auto-trigger channel value: {item!r}")
+                return None
+
+            if channel < 0 or channel >= 7:
+                self.logger.error(f"Invalid auto-trigger channel {channel}. Valid channels are 0..6.")
+                return None
+
+            if channel not in auto_channels:
+                auto_channels.append(channel)
+
+        auto_channels.sort()
+
+        if not auto_channels:
+            self.logger.error("At least one channel is required for exact auto-trigger")
+            return None
+
+        return TriggerConfiguration(
+            mode="auto",
+            input_type="differential",
+            polarity="default",
+            window_ns=window_ns,
+            delay_ns=delay_ns,
+            auto_logic="exact",
+            multiplicity=None,
+            auto_channels=auto_channels,
+            save_external=args.save_external,
+            save_auto=True,
+        )
+
+    def _build_trigger_registers(self,trigger_config: TriggerConfiguration,effective_channels: list[int],) -> dict | None:
+
+        if trigger_config is None:
+            self.logger.error("Cannot build trigger registers: trigger configuration is None")
+            return None
+
+        if not effective_channels:
+            self.logger.error("Cannot build trigger registers without effective channels")
+            return None
+
+        #
+        # Normalize effective channels
+        #
+        normalized_channels = []
+
         for channel in effective_channels:
-            reg19_mask != (1 << channel)
+
+            if not isinstance(channel, int):
+                self.logger.error(
+                    f"Invalid RC channel type: {channel!r}"
+                )
+                return None
+
+            if channel < 0 or channel >= 7:
+                self.logger.error(
+                    f"Invalid effective RC channel: {channel}. "
+                    "Valid channels are 0..6."
+                )
+                return None
+
+            if channel not in normalized_channels:
+                normalized_channels.append(channel)
+
+        normalized_channels.sort()
+
+        #
+        # Base channel mask
+        #
+        channel_mask = 0
+
+        for channel in normalized_channels:
+            channel_mask |= 1 << channel
+
+        #
+        # Register 15
+        #
+        reg15_value = 0
+
+        if trigger_config.mode != "self":
+            # bit 1 = trigger enable
+            reg15_value |= 1 << 1
+
+        if trigger_config.mode == "auto":
+            # bit 4:
+            # 0 -> external trigger
+            # 1 -> auto-trigger
+            reg15_value |= 1 << 4
+
+        if (
+            trigger_config.mode == "external"
+            and trigger_config.input_type == "single-ended"
+        ):
+            # bit 7:
+            # 0 -> differential
+            # 1 -> single-ended
+            reg15_value |= 1 << 7
+
+        if (
+            trigger_config.mode == "external"
+            and trigger_config.polarity == "inverted"
+        ):
+            # bit 8:
+            # 0 -> default polarity
+            # 1 -> inverted polarity
+            reg15_value |= 1 << 8
+
+        #
+        # Registers 16 / 18
+        #
+        if trigger_config.mode == "self":
+
+            reg16_value = 0
+            reg18_value = 0
+
+        else:
+
+            if trigger_config.window_ns <= 0:
+                self.logger.error(
+                    f"Invalid trigger window: {trigger_config.window_ns} ns"
+                )
+                return None
+
+            if trigger_config.delay_ns < 0:
+                self.logger.error(
+                    f"Invalid trigger delay: {trigger_config.delay_ns} ns"
+                )
+                return None
+
+            if trigger_config.window_ns % 5 != 0:
+                self.logger.error(
+                    f"Trigger window must be a multiple of 5 ns, "
+                    f"got {trigger_config.window_ns}"
+                )
+                return None
+
+            if trigger_config.delay_ns % 5 != 0:
+                self.logger.error(
+                    f"Trigger delay must be a multiple of 5 ns, "
+                    f"got {trigger_config.delay_ns}"
+                )
+                return None
+
+            reg16_value = trigger_config.window_ns // 5
+            reg18_value = trigger_config.delay_ns // 5
+
+        #
+        # Register 31
+        #
+        reg31_value = 0
+
+        if trigger_config.mode == "auto":
+
+            #
+            # MAJORITY
+            #
+            if trigger_config.auto_logic == "majority":
+
+                multiplicity = trigger_config.multiplicity
+
+                if multiplicity is None:
+                    self.logger.error(
+                        "Missing multiplicity for auto majority trigger"
+                    )
+                    return None
+
+                if multiplicity < 1 or multiplicity > 7:
+                    self.logger.error(
+                        f"Invalid auto-trigger multiplicity: {multiplicity}"
+                    )
+                    return None
+
+                if multiplicity > len(normalized_channels):
+                    self.logger.error(
+                        f"Auto-trigger multiplicity {multiplicity} cannot be "
+                        f"satisfied with only {len(normalized_channels)} "
+                        f"effective channels: {normalized_channels}"
+                    )
+                    return None
+
+                for bit in range(multiplicity):
+                    reg31_value |= 1 << bit
+
+            #
+            # EXACT CHANNEL COMBINATION
+            #
+            elif trigger_config.auto_logic == "exact":
+
+                auto_channels = trigger_config.auto_channels or []
+
+                if not auto_channels:
+                    self.logger.error(
+                        "Exact auto-trigger requested without channels"
+                    )
+                    return None
+
+                missing_channels = []
+
+                for channel in auto_channels:
+                    if channel not in normalized_channels:
+                        missing_channels.append(channel)
+
+                if missing_channels:
+                    self.logger.error(
+                        f"Exact auto-trigger requires unavailable channels "
+                        f"{missing_channels}. Effective channels are "
+                        f"{normalized_channels}"
+                    )
+                    return None
+
+                # bit 7 selects exact-channel logic
+                reg31_value |= 1 << 7
+
+                for channel in auto_channels:
+                    reg31_value |= 1 << channel
+
+            else:
+                self.logger.error(
+                    f"Invalid auto-trigger logic: "
+                    f"{trigger_config.auto_logic}"
+                )
+                return None
+
+        #
+        # Register 19
+        #
+        reg19_value = channel_mask
+
+        if trigger_config.save_external:
+            reg19_value |= 1 << 7
+
+        if trigger_config.save_auto:
+            reg19_value |= 1 << 8
+
+        #
+        # Register 39
+        #
+        reg39_value = channel_mask
+
+        if trigger_config.mode != "self":
+            # During every triggered acquisition we keep both
+            # external-trigger and auto-trigger rates enabled.
+            reg39_value |= 1 << 7
+            reg39_value |= 1 << 8
+
+        register_configuration = {
+            "reg15": {
+                "mask": TRIGGER_REG15_MASK,
+                "value": reg15_value,
+            },
+            "registers": {
+                16: reg16_value,
+                18: reg18_value,
+                19: reg19_value,
+                31: reg31_value,
+                39: reg39_value,
+            },
+        }
+
+        self.logger.debug(
+            f"Trigger register configuration built: "
+            f"mode={trigger_config.mode}, "
+            f"effective_channels={normalized_channels}, "
+            f"configuration={register_configuration}"
+        )
+
+        return register_configuration
         
-        reg15_mask = 0
 
-        if (trigger_mode != "self"):
-            reg15_mask |= (1 << 1)
+    def configure_acquisition_client(self, client_id: bytes, trigger_config: TriggerConfiguration, effective_channels: list[int],) -> bool:
 
-        if (trigger_mode == "auto"):
-            reg15_mask |= (1 << 4)
-        
-        if (trigger_input == "single-ended"):
-            reg15_mask |= (1 << 7)
+        client_name = client_id.decode(errors="ignore")
 
-        if (trigger_polarity == "inverted"):
-            reg15_mask |= (1 << 8)
+        register_configuration = self._build_trigger_registers(
+            trigger_config=trigger_config,
+            effective_channels=effective_channels,
+        )
 
-        reg_window_value = round(window_ns / 5)
-        reg_delay_value = round(delay_ns / 5)
+        if register_configuration is None:
+            self.logger.error(
+                f"Cannot configure acquisition for client {client_name}: "
+                "failed to build RC register configuration"
+            )
+            return False
 
-        if (save_auto):
-            reg19_mask |= (1 << 8)
+        success = self.command_service.set_rc_acquisition_registers(
+            client_id=client_id,
+            rc_acq_dict=register_configuration,
+            plane=CommandPlane.ACQUISITION,
+            priority=2,
+        )
 
-        if (save_external):
-            reg1 |= (1 << 7)
+        if not success:
+            self.logger.error(
+                f"Failed to configure acquisition RC registers "
+                f"for client {client_name}"
+            )
+            return False
 
-        reg31_mask = 0
+        self.logger.info(
+            f"Acquisition RC registers configured successfully "
+            f"for client {client_name}: "
+            f"channels={effective_channels}, "
+            f"trigger_mode={trigger_config.mode}"
+        )
 
-        if (auto_config == "exact"):
-            reg31_mask |= (1 << 7)
-            auto_channels_list = [int(x) for x in auto_channels.split(",")]
-            if (auto_channels_list):
-                for i in auto_channels_list:
-                    reg31_mask |= (1 << i)
-        elif (auto_config == "multiplicity"):
-            if (multiplicity):
-                for i in range(multiplicity):
-                    reg31_mask |= (1 << i)
+        return True
 
-        
+    def configure_acquisition_end_client(self, client_id: bytes,) -> bool:
+    
+        client_name = client_id.decode(errors="ignore")
 
-        
+        register_configuration = {
+            "reg15": {
+                            "mask": TRIGGER_REG15_MASK,
+                            "value": 0,
+                        },
+
+            "registers": {
+                            16: 0,
+                            18: 0,
+                        },
+        }
+
+        success = self.command_service.set_rc_acquisition_registers(
+            client_id=client_id,
+            rc_acq_dict=register_configuration,
+            plane=CommandPlane.ACQUISITION,
+            priority=2,
+        )
+
+        if not success:
+            self.logger.error(
+                f"Failed to clear acquisition trigger configuration "
+                f"for client {client_name}"
+            )
+            return False
+
+        self.logger.info(
+            f"Acquisition trigger configuration cleared "
+            f"for client {client_name}"
+        )
+
+        return True
 
         
 
@@ -316,26 +747,42 @@ class AcquisitionService:
         self.poutput(f"Finalizing: {reason}")
         self.logger.info(f"Finalizing: {reason}")
 
-        self.disable_rc_channels(client_ids=client_ids)
 
         if not client_ids:
             self.poutput("No active clients. Nothing to close.")
             return True
+        
+        overall_success = True
 
+        disable_results = self.disable_rc_channels(client_ids=client_ids)
+
+        if not disable_results:
+            overall_success = False
 
         self.poutput("Pushing FIFO flush via register 15...")
-        self.flush_clients(client_ids)
+        flush_results = self.flush_clients(client_ids=client_ids)
+        if not flush_results:
+            overall_success = False
+
+        for client_id in client_ids:
+            ok = self.configure_acquisition_end_client(client_id=client_id)
+
+            if not ok:
+                overall_success = False
 
         success = self.stop_acq_all_clients(client_ids=client_ids)
 
-        if success:
+        if not success:
+            overall_success = False
+
+        if overall_success:
             self.poutput("Finalization completed.")
             self.logger.info("Finalization completed")
         else:
             self.poutput("Finalization completed with errors (see log).")
             self.logger.error("Finalization completed with errors")
 
-        return success
+        return overall_success
 
     def check_acquisition_busy(self) -> bool:
         state = self.server_state.get_server_state()
@@ -464,10 +911,13 @@ class AcquisitionService:
         self.logger.error(f"Flush check failed for client {client_name}: prev={read_prev}, now={read_now}")
         return False
 
-    def flush_clients(self, client_ids: List[bytes]) -> None:
+    def flush_clients(self, client_ids: List[bytes]) -> bool:
         time.sleep(10.0)
+        overall_success = True
         for client_id in client_ids:
-            self.flush_client(client_id=client_id)
+            if not self.flush_client(client_id=client_id):
+                overall_success = False
+        return overall_success
 
 
     def enable_rc_channels(self, client_id: bytes, channels: List[int]) -> bool:
@@ -506,6 +956,8 @@ class AcquisitionService:
         if client_ids is None:
             client_ids = self.command_service.list_clients_on_plane(CommandPlane.ACQUISITION)
 
+        overall_success = True
+
         for client_id in client_ids:
             client_name = client_id.decode(errors="ignore")
 
@@ -516,8 +968,10 @@ class AcquisitionService:
             if ok:
                 self.poutput(f"Client {client_name}: RC acquisition channels disabled.")
             else:
+                overall_success = False
                 self.poutput(f"Client {client_name}: failed to disable RC acquisition channels.")
 
+        return overall_success
 
     def get_active_clients(self) -> list[bytes]:
         return self.server_state.get_operational_clients()

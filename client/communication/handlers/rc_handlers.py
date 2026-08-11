@@ -1,26 +1,24 @@
 from common.message_handler import Channel
 from client.hardware.rc.rc_messages import RCRequest, RCMessagePriority
 
+from client.communication.priority_utils import resolve_priority_value
 
-def _handle_rc_command(
-    manager,
-    message,
-    *,
-    rc_command: str,
-    timeout_s: float = 30.0,
-):
+
+def _handle_rc_command(manager, message, *, rc_command: str, timeout_s: float = 30.0):
     rc_request = RCRequest(
         protocol_version=message.protocol_version,
         request_id=message.request_id,
-        sender="control_manager",
+        sender=f"{manager.plane_name}_manager",
         command=rc_command,
         payload=message.payload,
         status=message.status,
     )
 
-    rc_response = manager.runtime.rc_service.execute_response(
+    priority = RCMessagePriority(resolve_priority_value(manager, message))
+
+    rc_response = manager.runtime.rc_service.request(
         rc_request=rc_request,
-        priority=RCMessagePriority.CONTROL,
+        priority=priority,
         timeout_s=timeout_s,
     )
 
@@ -89,5 +87,14 @@ def handle_rc_read_acq_registers(manager, message):
             manager,
             message,
             rc_command="rc_read_acq_registers",
+            timeout_s=30.0,
+        )
+
+
+def handle_rc_set_acq_registers(manager, message):
+    _handle_rc_command(
+            manager,
+            message,
+            rc_command="set_rc_acq",
             timeout_s=30.0,
         )

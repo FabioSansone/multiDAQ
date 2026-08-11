@@ -30,6 +30,12 @@ class AcquisitionOrchestrator:
             self.poutput(f"Cannot start acquisition: server is '{current_state.value}', expected READY.")
             return
 
+        trigger_config = self.acquisition_service.build_trigger_configuration(args=args)
+
+        if trigger_config is None:
+            self.poutput("Invalid trigger configuration. Acquisition not started.")
+            return
+
         operational = set(self.server_state.get_operational_clients())
         client_ids = [
             cid for cid in self.acquisition_service.get_connected_clients(plane=CommandPlane.ACQUISITION)
@@ -61,13 +67,16 @@ class AcquisitionOrchestrator:
                 "RC channels will be enabled from HV/FEB presence if available."
             )
 
+
             for client_id in client_ids:
                 client_name = client_id.decode(errors="ignore")
                 channels = self.channel_selection_service.get_test_rc_channels(
                     client_id=client_id, plane=CommandPlane.ACQUISITION
                 )
 
-                rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
+                rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
+
+                #rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
 
                 if not rc_ok:
                     self.poutput(f"Client {client_name}: RC channel enable failed. Skipping acquisition start.")
@@ -90,14 +99,17 @@ class AcquisitionOrchestrator:
                 )
                 return
 
-            for client_id, channels in enabled_channels_by_client.items():
+
+            for client_id in client_ids:
                 client_name = client_id.decode(errors="ignore")
+                channels = enabled_channels_by_client.get(client_id, [])
 
                 if not channels:
                     self.poutput(f"Client {client_name}: no channels available for RC enable.")
                     continue
 
-                rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
+                rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
+                #rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
 
                 if not rc_ok:
                     self.poutput(f"Client {client_name}: RC channel enable failed. Skipping acquisition start.")
