@@ -699,6 +699,7 @@ class AcquisitionService:
         duration: float | None = None,
         reason: str = "acquisition session completed",
         manage_session: bool = True,
+        reset_trigger_config: bool = True
     ) -> bool:
 
         if manage_session:
@@ -737,13 +738,13 @@ class AcquisitionService:
         else:
             self._stop_requested.wait()  
 
-        success = self.run_hardware_stop_and_flush(client_ids=opened_client_ids, reason=reason)
+        success = self.run_hardware_stop_and_flush(client_ids=opened_client_ids, reason=reason, reset_trigger_config=reset_trigger_config)
         if manage_session:
             self.close_session(success=success, reason=reason)
         return success
 
 
-    def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str) -> bool:
+    def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str, reset_trigger_config: bool = True) -> bool:
         self.poutput(f"Finalizing: {reason}")
         self.logger.info(f"Finalizing: {reason}")
 
@@ -764,11 +765,14 @@ class AcquisitionService:
         if not flush_results:
             overall_success = False
 
-        for client_id in client_ids:
-            ok = self.configure_acquisition_end_client(client_id=client_id)
+        if reset_trigger_config:
+            for client_id in client_ids:
+                ok = self.configure_acquisition_end_client(client_id=client_id)
 
-            if not ok:
-                overall_success = False
+                if not ok:
+                    overall_success = False
+        else:
+            self.poutput("Trigger configuration preserved (multi-step acquisition, not the final point).")
 
         success = self.stop_acq_all_clients(client_ids=client_ids)
 

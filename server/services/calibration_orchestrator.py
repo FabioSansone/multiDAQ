@@ -38,7 +38,7 @@ class CalibrationOrchestrator:
             return list(range(start, stop + 1, step))
         return list(range(start, stop - 1, step))
 
-    def _resolve_scan_channels(self, args, client_ids: list[bytes]) -> dict[bytes, list[int]]:
+    def _resolve_scan_channels(self, args, client_ids: list[bytes], trigger_config) -> dict[bytes, list[int]]:
         """
         Derive RC channels for every client ONCE, before the scan starts.
         Each call triggers a full HV/Modbus scan (set_hv_sync, up to 90s per
@@ -59,10 +59,12 @@ class CalibrationOrchestrator:
                 self.poutput(f"Client {client_name}: no requested channels available for this scan.")
                 continue
 
-            rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
+            rc_ok = self.acquisition_service.configure_acquisition_client(
+                client_id=client_id, trigger_config=trigger_config, effective_channels=channels,
+            )
 
             if not rc_ok:
-                self.poutput(f"Client {client_name}: RC channel enable failed.")
+                self.poutput(f"Client {client_name}: RC trigger configuration failed.")
                 continue
 
             channels_by_client[client_id] = channels
@@ -118,7 +120,16 @@ class CalibrationOrchestrator:
             self.poutput("No TTP values selected.")
             return
 
-        channels_by_client = self._resolve_scan_channels(args, client_ids)
+        args.trigger_mode = "external"
+        args.save_auto = False
+
+        trigger_config = self.acquisition_service.build_trigger_configuration(args=args)
+
+        if trigger_config is None:
+            self.poutput("Invalid trigger configuration. TTP scan not started.")
+            return
+
+        channels_by_client = self._resolve_scan_channels(args, client_ids, trigger_config)
         rc_ready_clients = list(channels_by_client.keys())
 
         if not rc_ready_clients:
@@ -152,7 +163,7 @@ class CalibrationOrchestrator:
 
         scan_thread = threading.Thread(
             target=self._run_ttp_scan_loop,
-            args=(args, channels_by_client, ttp_values, client_run_folders, resolved_batch_id),
+            args=(args, channels_by_client, ttp_values, client_run_folders, resolved_batch_id, trigger_config),
             daemon=True,
         )
         scan_thread.start()
@@ -160,14 +171,16 @@ class CalibrationOrchestrator:
         self.poutput("TTP scan running in background. The server remains responsive; use 'acquisition stop' to abort early.")
 
         
-    def _run_ttp_scan_loop(self, args, channels_by_client, ttp_values, client_run_folders, resolved_batch_id) -> None:
+    def _run_ttp_scan_loop(self, args, channels_by_client, ttp_values, client_run_folders, resolved_batch_id, trigger_config) -> None:
         base_client_ids = list(channels_by_client.keys())
         overall_success = True
 
-        for ttp_value in ttp_values:
+        for index, ttp_value in enumerate(ttp_values):
             if self.server_state.get_server_state() != ServerFSM.ACQUIRING:
                 self.poutput(f"Scan interrupted before TTP={ttp_value}: external stop.")
                 break
+
+            is_last_point = (index == len(ttp_values) - 1)
 
             self.poutput(f"\nStarting TTP scan point: register 10 = {ttp_value}")
             ttp_ready_clients = self._set_ttp_register(client_ids=base_client_ids, ttp_value=ttp_value)
@@ -178,9 +191,11 @@ class CalibrationOrchestrator:
             rc_ready_clients = []
             for client_id in ttp_ready_clients:
                 client_name = client_id.decode(errors="ignore")
+
                 rc_ok = self.acquisition_service.enable_rc_channels(
                     client_id=client_id, channels=channels_by_client[client_id],
                 )
+
                 if not rc_ok:
                     self.poutput(f"Client {client_name}: RC channel re-enable failed for TTP={ttp_value}")
                     continue
@@ -200,7 +215,8 @@ class CalibrationOrchestrator:
                 run_folder_clients=client_run_folders,
                 duration=args.duration,
                 reason=f"TTP scan point completed, ttp={ttp_value}",
-                manage_session=False,   
+                manage_session=False,
+                reset_trigger_config=is_last_point,   
             )
 
             if not point_success:

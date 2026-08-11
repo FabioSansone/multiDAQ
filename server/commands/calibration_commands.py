@@ -84,6 +84,40 @@ scan_ttp_parser.add_argument(
     help='Channels selected. Can be "all" or comma-separated list',
 )
 
+scan_ttp_parser.add_argument(
+    "--input",
+    dest="trigger_input",
+    type=str,
+    choices=["differential", "single-ended"],
+    default="single-ended",   # <-- default diverso da acquisition (lì era differential)
+    help=(
+        "External trigger electrical input type for the TTP scan. "
+        "Default: single-ended (typical for calibration)."
+    ),
+)
+
+scan_ttp_parser.add_argument(
+    "--polarity",
+    type=str,
+    choices=["default", "inverted"],
+    default="default",
+    help="External trigger polarity. Default: default.",
+)
+
+scan_ttp_parser.add_argument(
+    "--window-ns",
+    type=int,
+    default=400,
+    help="Trigger acquisition window in ns. Hardware resolution 5 ns. Default: 400 ns.",
+)
+
+scan_ttp_parser.add_argument(
+    "--delay-ns",
+    type=int,
+    default=800,
+    help="Delay before opening the trigger window, in ns. Hardware resolution 5 ns. Default: 800 ns.",
+)
+
 # scan_ttp_parser.add_argument(
 #     "--force-compile",
 #     action="store_true",

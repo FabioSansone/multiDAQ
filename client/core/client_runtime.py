@@ -136,11 +136,26 @@ class ClientRunTime:
         ):
             return True
 
+        read_response = self.rc_service._submit_command(
+            command="rc_read_register",
+            payload={"address": 39},
+            sender="client_runtime_rc39_sync",
+        )
+
+        if read_response.status != MessageStatus.OK:
+            self.logger.error(f"Failed to read RC register 39 before HV sync: {read_response.error}")
+            return False
+
+        current_value = read_response.result.get("value", 0)
+        trigger_bits = current_value & ~0x7F
+
+        new_value = trigger_bits | mask
+
         response = self.rc_service._submit_command(
             command="rc_write_register",
             payload={
                 "address": 39,
-                "value": mask,
+                "value": new_value,
             },
             sender="client_runtime_rc39_sync",
         )
