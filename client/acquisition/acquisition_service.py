@@ -71,9 +71,6 @@ class AcquisitionService:
     def _apply_test_mode(self) -> dict:
         runtime = self.runtime
 
-        if not runtime.ensure_rc_service():
-            self.logger.warning("It was not possible to start RC Service.")
-            return {"success": False, "missing_serial_channels": []}
         
         rc_response = runtime.rc_service._submit_command(
             command="rc_acq_start",
@@ -109,9 +106,6 @@ class AcquisitionService:
     def _apply_calibration_mode(self) -> dict:
         runtime = self.runtime
 
-        if not runtime.ensure_rc_service():
-            self.logger.warning("It was not possible to start RC Service.")
-            return {"success": False, "missing_serial_channels": []}
 
         rc_response = runtime.rc_service._submit_command(
             command="rc_acq_start",
@@ -181,9 +175,6 @@ class AcquisitionService:
     ) -> dict:
         runtime = self.runtime
 
-        if not runtime.ensure_rc_service():
-            self.logger.warning("It was not possible to start RC Service.")
-            return {"success": False, "missing_serial_channels": []}
 
         if acq_info is None:
             self.logger.error(
