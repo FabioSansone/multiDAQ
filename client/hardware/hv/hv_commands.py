@@ -183,6 +183,21 @@ def command_check_channel_safety(
             "action": "none",
         },
     )
+    
+def command_check_channel_acquisition(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    result = hv_interface.recover_ok_off_acquisition(hv_request.payload.get("acq_info"))
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.OK,
+        result=result or {},
+    )
 
 def command_check_channel_power(
     protocol_version: int,
@@ -598,5 +613,7 @@ COMMAND_HANDLERS = {
     "check_channel_safety": command_check_channel_safety,
     "check_channel_power": command_check_channel_power,
     "check_recovery_bad": command_check_recovery_bad,
+    
+    "check_channel_acquisition": command_check_channel_acquisition,
 }
 

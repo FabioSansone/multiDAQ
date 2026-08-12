@@ -221,6 +221,8 @@ class AcquisitionService:
             timeout_s=300.0,
         ):
             return {"success": False, "missing_serial_channels": missing_serial_channels}
+        
+        self.runtime.store_multipmt_hv_parameters(acq_info=acq_info)
 
         if not self._submit_hv_command(
             command="hv_on",
@@ -237,4 +239,8 @@ class AcquisitionService:
             start_thr=pe_thr,
         )
 
+        if runtime.hv_service is not None:
+            runtime.hv_service.start_acq_check(
+                get_hv_parameters=lambda: runtime.channel_hv_parameters
+            )
         return {"success": True, "missing_serial_channels": missing_serial_channels}

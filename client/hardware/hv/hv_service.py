@@ -42,8 +42,10 @@ class HVService:
     RECOVERY_CHECK_PERIOD_S = 300.0
     RECOVERY_CHECK_DEADLINE_S = 30.0
     POWER_CHECK_PERIOD_S = 300.0
+    CHECK_CHANNELS_ACQUISITION_PERIOD_S = 600.0
+    ACQUISITION_CHECK_DEADLINE_S = 120.0
 
-    def __init__(self, hv_port: str, fixed_bad_channels: list[int] | None = None, state_change_callback=None, hv_policy: str = HV_POLICY_FULL_CONTROL):
+    def __init__(self, hv_port: str, fixed_bad_channels: list[int] | None = None, state_change_callback=None, hv_policy: str = HV_POLICY_FULL_CONTROL, hv_parameters_callback=None):
         self.logger = get_logger("hv_service")
         self.logger.debug("HV Service Initialized")
 
@@ -64,8 +66,14 @@ class HVService:
         self.recovery_check_pending = False
         self.power_check_pending = False
         self.pending_lock = threading.Lock()  
+        
+        self.stop_check_channels_acquisition = threading.Event()
+        self.check_channels_acquisition_thread: Optional[threading.Thread] = None
+        self.check_acquisition_channels_pending = False
+        self.acquisition_pending = threading.Lock()
 
         self.state_change_callback = state_change_callback
+        self.hv_parameters_callback  = hv_parameters_callback 
         
         
     def set_policy(self, hv_policy: str) -> None:
@@ -92,6 +100,16 @@ class HVService:
             self.logger.error(
                 f"Error while synchronizing RC register 19 after {source}: {e}"
             )
+    
+    def _notify_hv_parameter_update(self, hv_request:HVRequest, hv_response:HVResponse) -> None:
+        if self.hv_parameters_callback is None:
+            return
+        
+        try:
+            self.hv_parameters_callback(hv_request.command, hv_request, hv_response)
+        except Exception as e:
+            self.logger.error(f"Error while updating stored HV parameters after {hv_request.command}: {e}")
+        
         
     def _submit_command(self, *, command: str, payload: dict, sender: str, priority: HVMessagePriority = HVMessagePriority.CONTROL, timeout_s: float = 35.0,) -> HVResponse:
         hv_request = HVRequest(
@@ -255,7 +273,12 @@ class HVService:
                     self._notify_state_change(
                         source=hv_request.command,
                         result=response.result or {},
-    )
+                    ) 
+                
+                if hv_request.command in {"set_common_voltage", "set_common_threshold", "set_acquisition_configuration"}:
+                    self._notify_hv_parameter_update(hv_request=hv_request, hv_response=response)          
+                
+                
 
                 if hv_request.response_queue is not None:
                     hv_request.response_queue.put(response)
@@ -440,5 +463,62 @@ class HVService:
             self.check_thread.join(timeout=2.0)
         
         self.logger.info("Check Channels worker stopped")
-        
-        
+    
+    
+    def _check_channels_acquisition_mode(self, get_hv_parameters) -> None:
+        last_acquisition_check = time.time()
+
+        while not self.stop_check_channels_acquisition.is_set():
+            now = time.time()
+
+            channels_to_check = self.hv.getOkOffChannels()
+
+            if channels_to_check and (now - last_acquisition_check) > self.CHECK_CHANNELS_ACQUISITION_PERIOD_S:
+                with self.acquisition_pending:
+                    if not self.check_acquisition_channels_pending:
+                        self.check_acquisition_channels_pending = True
+
+                        acq_info = get_hv_parameters()   
+
+                        acquisition_request = HVRequest(
+                            protocol_version=PROTOCOL_VERSION,
+                            request_id=f"acquisition_check_{now}",
+                            command="check_channel_acquisition",
+                            payload={"acq_info": acq_info},
+                            sender="hv_acquisition_check",
+                            deadline_s=now + self.ACQUISITION_CHECK_DEADLINE_S,
+                        )
+
+                        self.input_queue.put(
+                            (HVMessagePriority.MONITORING, next(self._counter), acquisition_request)
+                        )
+
+                last_acquisition_check = now   
+
+            self.stop_check_channels_acquisition.wait(self.CHECK_CHANNELS_ACQUISITION_PERIOD_S)   
+    
+    
+    def start_acq_check(self, get_hv_parameters) -> None:
+        if self.check_channels_acquisition_thread and self.check_channels_acquisition_thread.is_alive():
+            self.logger.warning("Acquisition recovery worker already running")
+            return
+
+        self.stop_check_channels_acquisition.clear()
+        self.check_channels_acquisition_thread = threading.Thread(
+            target=self._check_channels_acquisition_mode,
+            args=(get_hv_parameters,),   
+            daemon=True,
+        )
+        self.check_channels_acquisition_thread.start()
+        self.logger.info("Acquisition recovery worker started")
+
+
+    def stop_acq_check(self) -> None:
+        self.stop_check_channels_acquisition.set()
+
+        if self.check_channels_acquisition_thread and self.check_channels_acquisition_thread.is_alive():
+            self.check_channels_acquisition_thread.join(timeout=2.0)
+
+        self.logger.info("Acquisition recovery worker stopped")
+                            
+            

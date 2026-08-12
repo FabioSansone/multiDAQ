@@ -43,6 +43,8 @@ class ClientRunTime:
         self._last_rc39_sync_time = 0.0
         self._last_rc39_mask = None
         self._rc39_sync_period_s = 30.0
+        
+        self.channel_hv_parameters: dict[int, dict] = {}
 
         self.logger.info("ClientRuntime initialized")
 
@@ -71,7 +73,7 @@ class ClientRunTime:
             return True
 
         try:
-            self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=self.identity.get_fixed_bad_channels(), state_change_callback=self.sync_rc_register_39_with_hv,)
+            self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=self.identity.get_fixed_bad_channels(), state_change_callback=self.sync_rc_register_39_with_hv, hv_parameters_callback=self.update_hv_parameters_after_command)
             self.logger.info("HVService initialized")
             return True
 
@@ -183,9 +185,13 @@ class ClientRunTime:
         acq_info: dict | None = None,
         start_thr: int | float | None = None,
     ) -> None:
+        previous_mode = self.acq_mode
         self.acq_mode = acq_mode
         self.acq_info = acq_info
         self.start_thr = start_thr
+        
+        if previous_mode == "multipmt" and acq_mode != "multipmt" and self.hv_service is not None:
+            self.hv_service.stop_acq_check()
 
         self.logger.info(
             f"Client runtime acquisition mode set to {acq_mode}"
@@ -255,3 +261,62 @@ class ClientRunTime:
                 "during handshake; returning None."
             )
             return
+    
+    
+    def store_multipmt_hv_parameters(self, acq_info: dict) -> None:
+
+        for key, ch_config in acq_info.items():
+            try:
+                external_ch = int(key)
+            except (TypeError, ValueError):
+                continue
+
+            hv_channel = external_ch + 1
+            entry = self.channel_hv_parameters.setdefault(hv_channel, {})
+
+            if "voltage" in ch_config:
+                entry["voltage"] = ch_config["voltage"]
+            if "threshold" in ch_config:
+                entry["threshold"] = ch_config["threshold"]
+
+        self.logger.info(
+            f"Stored multiPMT HV parameters for channels: {sorted(self.channel_hv_parameters.keys())}"
+        )
+        
+    
+    def update_hv_parameters_after_command(self, command:str, hv_request, hv_response):
+        
+        if self.acq_mode != "multipmt":
+            return
+        
+        if hv_response.status != MessageStatus.OK:
+            return
+        
+        successful = set(hv_response.result.get("successful_channels", []))
+        if not successful:
+            return
+        
+        if command == "set_common_voltage":
+            voltage = hv_request.payload.get("common_voltage")
+            for ch in successful:
+                self.channel_hv_parameters.setdefault(ch, {})["voltage"] = voltage
+                
+        elif command == "set_common_threshold":
+            threshold = hv_request.payload.get("common_threshold")
+            for ch in successful:
+                self.channel_hv_parameters.setdefault(ch, {})["threshold"] = threshold
+        
+        elif command == "set_acquisition_configuration":
+            acq_configuration = hv_request.payload.get("acquisition_configuration", {})
+            for ch in successful:
+                external_ch = ch - 1
+                ch_config = acq_configuration.get(external_ch) or acq_configuration.get(str(external_ch))
+                if not ch_config:
+                    continue
+                entry = self.channel_hv_parameters.setdefault(ch, {})
+                if "voltage" in ch_config:
+                    entry["voltage"] = ch_config["voltage"]
+                if "threshold" in ch_config:
+                    entry["threshold"] = ch_config["threshold"]
+        
+        

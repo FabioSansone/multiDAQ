@@ -43,6 +43,10 @@ class HV:
     def getOffChannels(self):
         with self.channels_lock:
             return list(self.off_ch)
+        
+    def getOkOffChannels(self):
+        with self.channels_lock:
+            return sorted(set(self.ok_ch) & set(self.off_ch))
     
     def getFixedBad(self):
         with self.channels_lock:
@@ -754,6 +758,103 @@ class HV:
             "recovered_on_channels": recovered_on,
             "recovered_off_channels": recovered_off,
             "still_bad_channels": still_bad,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+        }
+        
+    def recover_ok_off_acquisition(self, acq_info: dict[int, dict] | None):
+
+        ok_off_channels = sorted(self.getOkOffChannels())
+
+        if not ok_off_channels:
+            return {
+                "checked_channels": [],
+                "recovered_channels": [],
+                "still_bad_channels": [],
+                "bad_channels": self.getBadChannels(),
+                "ok_channels": self.getOkChannels(),
+                "on_channels": self.getOnChannels(),
+                "off_channels": self.getOffChannels(),
+            }
+            
+        if not acq_info:
+            self.logger.warning("Acquisition recovery requested but no stored HV parameters available")
+            return {
+                "checked_channels": ok_off_channels,
+                "recovered_channels": [],
+                "still_bad_channels": ok_off_channels,
+                "bad_channels": self.getBadChannels(),
+                "ok_channels": self.getOkChannels(),
+                "on_channels": self.getOnChannels(),
+                "off_channels": self.getOffChannels(),
+            }
+
+        safe_channels = []
+        failed_recovery = []
+
+        for channel in ok_off_channels:
+            try:
+                if not self.hv.checkAddressBoundary(channel):
+                    failed_recovery.append(channel)
+                    continue
+
+                if not self.hv.checkAddress(channel):
+                    failed_recovery.append(channel)
+                    continue
+
+                status = self.hv.getStatus(slave=channel)
+                if status in {"TRIP"}:
+                    failed_recovery.append(channel)
+                    continue
+
+                alarm = self.hv.getAlarm(slave=channel)
+                if alarm != "none":
+                    failed_recovery.append(channel)
+                    continue
+
+                safe_channels.append(channel)
+
+            except Exception as e:
+                self.logger.error(f"Problem checking channel {channel} before acquisition recovery: {e}")
+                failed_recovery.append(channel)
+
+        configured_channels = []
+        
+        for channel in safe_channels:
+            params = acq_info.get(channel)
+            
+            if not params or params.get("voltage") is None or params.get("threshold") is None:
+                self.logger.warning(
+                    f"No stored voltage/threshold for channel {channel}, skipping recovery for this channel"
+                )
+                failed_recovery.append(channel)
+                continue
+                
+            try:
+                self.hv.setVoltageSet(value=int(round(params["voltage"])), slave=channel)
+                self.hv.setThreshold(value=int(round(params["threshold"])), slave=channel)
+                configured_channels.append(channel)
+            except Exception as e:
+                self.logger.error(f"Problem setting voltage/threshold on channel {channel} before recovery: {e}")
+                failed_recovery.append(channel)
+                self.moveToBad(channel)
+        
+        
+        acquisition_recovered = []
+
+        if safe_channels:
+            result_power = self.on_and_wait(channels=safe_channels)
+
+            successful = set(result_power.get("successful_channels", []))
+            acquisition_recovered = [ch for ch in safe_channels if ch in successful]
+            failed_recovery.extend(ch for ch in safe_channels if ch not in successful)
+
+        return {
+            "checked_channels": ok_off_channels,
+            "recovered_channels": acquisition_recovered,
+            "still_bad_channels": failed_recovery,
             "bad_channels": self.getBadChannels(),
             "ok_channels": self.getOkChannels(),
             "on_channels": self.getOnChannels(),
