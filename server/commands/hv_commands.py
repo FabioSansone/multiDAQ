@@ -430,6 +430,12 @@ def do_hv(self, args: argparse.Namespace) -> None:
             )
             self.poutput(f"No reply from client {client_name}. Reason: {reason}")
             continue
+        
+        if reply is not None and args.command_group == "set_common":  
+            result = reply.payload.get("result", {})
+            self.acquisition_service.record_hv_parameters_from_reply(
+                client_id=client_id, command=command, payload=payload, reply_result=result,
+            )
 
         if args.command_group == "status":
             _print_hv_lists(self, client_name, reply.payload.get("result", {}))

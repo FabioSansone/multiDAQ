@@ -1,6 +1,6 @@
 import argparse
 import cmd2
-from server.core.server_state import command_guard, ServerFSM
+from server.core.server_state import command_guard, acquisition_guard, ServerFSM, AcquisitionMode
 
 ########################
 # CALIBRATION COMMANDS #
@@ -128,9 +128,32 @@ scan_ttp_parser.add_argument(
 @cmd2.with_argparser(calibration_parser)
 @cmd2.with_category("Calibration Commands")
 @command_guard([ServerFSM.READY])
+@acquisition_guard([AcquisitionMode.TEST, AcquisitionMode.CALIBRATION]) #TEST should be deleted after testing the system
 def do_calibration(self, args: argparse.Namespace) -> None:
     """Calibration commands: calibration scan_ttp ..."""
 
     if args.command == "scan_ttp":
         self.calibration_orchestrator.scan_ttp(args)
         return
+    
+
+
+
+
+recheck_parser = argparse.ArgumentParser()
+recheck_parser.add_argument(
+    "--multipmt-id",
+    dest="multipmt_id",
+    type=str,
+    required=True,
+    help="multiPMT identifier of the client whose calibration should be rechecked",
+)
+
+
+@cmd2.with_argparser(recheck_parser)
+@cmd2.with_category("Calibration Commands")
+@command_guard([ServerFSM.READY])
+@acquisition_guard([AcquisitionMode.MULTIPMT])
+def do_recheck_calibration(self, args: argparse.Namespace) -> None:
+    """Re-check PMT serial calibration matching for a client, without changing acquisition mode: recheck_calibration --multipmt-id ..."""
+    self.calibration_orchestrator.recheck_calibration(args)

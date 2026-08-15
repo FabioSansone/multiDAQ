@@ -3,7 +3,6 @@ import cmd2
 from server.utils.logger import get_logger
 from server.utils.channels import *
 from common.message_handler import Channel
-from server.utils.json_parser import JsonParser
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
 from server.commands.hv_commands import _print_hv_lists
 
@@ -28,197 +27,84 @@ mode_parser.add_argument(
 
 @cmd2.with_argparser(mode_parser)
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.READY])
+@command_guard([
+    ServerFSM.DISCONNECTED,
+    ServerFSM.CONNECTED,
+    ServerFSM.READY,
+])
 def do_change_mode(self, args):
 
     new_mode = args.mode.lower()
 
-    logger.info(f"Requested acquisition mode change to '{new_mode}'")
+    logger.info(
+        f"Requested acquisition mode change to '{new_mode}'"
+    )
 
     if new_mode not in POSSIBLE_MODES:
-        self.poutput(f"Invalid acquisition mode: {new_mode}")
-        logger.error(f"Invalid acquisition mode requested: {new_mode}")
+        self.poutput(
+            f"Invalid acquisition mode: {new_mode}"
+        )
+        logger.error(
+            f"Invalid acquisition mode requested: {new_mode}"
+        )
         return
 
     client_ids = self.server_state.list_common_plane_clients()
 
+
     if not client_ids:
+
         if self.set_mode(new_mode):
             self.poutput(
                 f"Server mode changed to {new_mode}. "
-                "No clients connected; mode will be used at next handshake."
+                "No clients connected; mode will be used "
+                "at next handshake."
             )
             logger.info(
-                f"Server mode changed to '{new_mode}' with no connected clients"
+                f"Server mode changed to '{new_mode}' "
+                "with no connected clients"
             )
         else:
-            self.poutput(f"Failed to update server mode to {new_mode}")
-            logger.error(f"Failed to update server mode to '{new_mode}'")
-        return
-    
-    started = self.server_state.process_event(
-        event = ServerFSMEvent.CONFIGURATION_STARTED,
-        reason = f"Changing mode to '{new_mode}'",
-        source = "do_change_mode",
-        metadata = {"target_clients": client_ids},
-    )
-    
-    if not started:
-        self.poutput("Cannot start mode change: invalid FSM transition.")
-        logger.error("CONFIGURATION_STARTED rejected by FSM")
-        return
-
-    successful_client_ids = []
-    failed_client_ids = []
-    
-    
-    for client_id in client_ids:
-        client_name = client_id.decode(errors="ignore")
-        
-        identity = self.server_state.get_identity(client_id)
-
-        if identity is None:
-            failed_client_ids.append(client_id)
-            self.poutput(f"Client {client_name}: missing identity")
-            logger.error(f"No identity found for client {client_name}")
-            continue
-
-        multipmt_id = identity.get("multipmt_id")
-        batch_id = identity.get("batch_id")
-
-        if not multipmt_id or not batch_id:
-            failed_client_ids.append(client_id)
-            self.poutput(f"Client {client_name}: incomplete identity")
-            logger.error(f"Incomplete identity for client {client_name}: {identity}")
-            continue
-
-        pe_thr = None
-        acq_info = None
-
-        if new_mode == "multipmt":
-            pe_thr = 1
-
-            logger.info(
-                f"Building multipmt config for client {client_name} "
-                f"(multipmt_id={multipmt_id}, batch_id={batch_id})"
-            )
-
-            config_file_service = JsonParser(
-                multipmt_id=multipmt_id,
-                batch_id=batch_id,
-            )
-
-            acq_info = config_file_service.get_ch_configuration(pe_thr=pe_thr)
-
-            if acq_info is None:
-                failed_client_ids.append(client_id)
-                self.poutput(
-                    f"Client {client_name}: cannot build multipmt config "
-                    f"(multipmt_id={multipmt_id}, batch_id={batch_id})"
-                )
-                logger.error(
-                    f"Cannot build multipmt configuration for client {client_name}, "
-                    f"multipmt_id={multipmt_id}, batch_id={batch_id}"
-                )
-                continue
-
-        mode_sync_command = self.control_manager.message_handler.create_command(
-            channel=Channel.ACQUISITION,
-            command="set_acq_mode_sync",
-            payload={
-                "acq_mode": new_mode,
-                "pe_thr": pe_thr,
-                "acquisition_configuration": acq_info,
-            },
-            sender="server",
-        )
-
-        self.control_manager.queue_message(client_id, mode_sync_command)
-
-        reply, reason = self.control_manager.wait_for_reply(
-            client_id=client_id,
-            in_reply_to=mode_sync_command.request_id,
-            timeout_s=90.0,
-        )
-
-        if reply is None:
-            failed_client_ids.append(client_id)
-            self.poutput(f"Client {client_name}: no reply ({reason})")
-            logger.error(f"Mode sync failed for client {client_name}: {reason}")
-            continue
-
-        payload = reply.payload or {}
-        reply_status = payload.get("status")
-        reply_mode = payload.get("acq_mode")
-        error = payload.get("error")
-        missing_serial = payload.get("missing_serial_channels", [])
-        
-        if missing_serial:
             self.poutput(
-                f"Client {client_name}: missing PMT serial on channels "
-                f"{hv_to_user_channels(missing_serial)} — not blocking."
-            )
-
-        if reply_status != "ok" or error:
-            failed_client_ids.append(client_id)
-            self.poutput(
-                f"Client {client_name}: mode sync failed "
-                f"(mode={reply_mode}, error={error})"
+                f"Failed to update server mode to {new_mode}"
             )
             logger.error(
-                f"Client {client_name} failed mode sync: "
-                f"status={reply_status}, mode={reply_mode}, error={error}"
+                f"Failed to update server mode to '{new_mode}'"
             )
-            continue
 
-        successful_client_ids.append(client_id)
-        self.poutput(f"Client {client_name}: mode synchronized to {reply_mode}")
-        logger.info(f"Client {client_name} synchronized to mode '{reply_mode}'")
-
-    self.poutput(
-        f"Mode synchronization completed. "
-        f"Successful clients: {len(successful_client_ids)}, "
-        f"Failed clients: {len(failed_client_ids)}"
-    )
-    
-    if not successful_client_ids:
-        self.server_state.process_event(
-            event=ServerFSMEvent.CONFIGURATION_FAILED,
-            reason=f"Mode change to '{new_mode}' failed on all clients",
-            source="do_change_mode",
-            metadata={"failed_clients": failed_client_ids},
-        )
-        self.poutput(
-            f"Mode change failed on all connected clients. "
-            f"Server mode remains '{self.mode}'."
-        )
-        logger.error(f"Mode change to '{new_mode}' failed on all connected clients")
         return
-    
-    self.server_state.process_event(
-        event=ServerFSMEvent.CONFIGURATION_SUCCEEDED,
-        reason=f"Mode change to '{new_mode}' completed",
-        source="do_change_mode",
-        metadata={
-            "successful_clients": successful_client_ids,
-            "failed_clients": failed_client_ids,
-        },
+
+
+    success = self.startup_service.configure_clients(
+        client_ids=client_ids,
+        mode=new_mode,
     )
 
-    if failed_client_ids:
-        self.poutput(f"Warning: {len(failed_client_ids)} client(s) are not synchronized.")
-        logger.warning(
-            f"{len(failed_client_ids)} client(s) are not synchronized with "
-            f"server acquisition mode '{new_mode}'"
+    if not success:
+        self.poutput(
+            f"Mode change to '{new_mode}' failed."
         )
+        logger.error(
+            f"Mode change to '{new_mode}' failed"
+        )
+        return
+
 
     if self.set_mode(new_mode):
-        self.poutput(f"Server mode changed to {new_mode}")
-        logger.info(f"Server mode changed to '{new_mode}'")
+        self.poutput(
+            f"Server mode changed to {new_mode}"
+        )
+        logger.info(
+            f"Server mode changed to '{new_mode}'"
+        )
         return
 
-    self.poutput(f"Failed to update server mode to {new_mode}")
-    logger.error(f"Failed to update server mode to '{new_mode}'")
+    self.poutput(
+        f"Failed to update server mode to {new_mode}"
+    )
+    logger.error(
+        f"Failed to update server mode to '{new_mode}'"
+    )
 
 
 @cmd2.with_category("Generic Commands")
@@ -458,8 +344,10 @@ def do_force(self, args: argparse.Namespace) -> bool:
             error = payload.get("error")
 
             if error:
+                failed_client_ids.append(client_id)
                 logger.error(f"HV sync error from client {client_name}: {error}")
                 self.poutput(f"Client {client_name}: HV sync error: {error}")
+                continue
 
 
             successful_client_ids.append(client_id)

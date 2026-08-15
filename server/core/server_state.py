@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from functools import wraps
 from typing import Iterable, List, Optional
+from dataclasses import dataclass, field
 
 from server.utils.logger import get_logger
 
@@ -19,6 +20,10 @@ class ServerFSM(str, Enum):
     FINALIZING = "finalizing"
     ERROR = "error"
 
+class AcquisitionMode(str, Enum):
+    TEST = "test"
+    CALIBRATION = "calibration"
+    MULTIPMT = "multipmt"
 
 class ServerFSMEvent(str, Enum):
     CONTROL_CONNECTION_SUCCEEDED = "control_connection_succeeded"
@@ -186,6 +191,24 @@ ACQUISITION_PLANE_AVAILABLE_STATES = {
 }
 
 
+@dataclass
+class ClientRecord:
+    """Tutto ciò che il server sa su un singolo client, in un solo posto —
+    una sola voce da rimuovere alla disconnessione, non più dizionari/liste
+    separati da tenere sincronizzati a mano."""
+    state: ClientFSM = ClientFSM.CONNECTED
+    previous_state: ClientFSM | None = None
+    last_event_context: dict | None = None
+    error_context: dict | None = None
+    identity: dict | None = None
+    hv_parameters: dict[int, dict] = field(default_factory=dict)
+    calibration_excluded_channels: list[int] = field(default_factory=list)
+    connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    on_control_plane: bool = False
+    on_acquisition_plane: bool = False
+    operational: bool = False
+
+
 def command_guard(allowed_states: Iterable[ServerFSM]):
     allowed_states = set(allowed_states)
 
@@ -233,6 +256,53 @@ def command_guard(allowed_states: Iterable[ServerFSM]):
     return decorator
 
 
+def acquisition_guard(allowed_modes: Iterable[AcquisitionMode]):
+    allowed_modes = set(allowed_modes)
+
+    if not allowed_modes:
+        raise ValueError("acquisition_guard requires at least one allowed acquisition mode")
+
+    invalid_modes = [mode for mode in allowed_modes if not isinstance(mode, AcquisitionMode)]
+    if invalid_modes:
+        raise TypeError(
+            "acquisition_guard accepts only AcquisitionMode values."
+            f"Invalid values: {invalid_modes!r}"
+        )
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            server_state = getattr(self, "server_state", None)
+            if server_state is None:
+                raise RuntimeError(
+                    f"{func.__qualname__} uses acquisition_guard, "
+                    "but the object has no 'server_state' attribute"
+                )
+
+            present_mode =  AcquisitionMode(server_state.get_mode())
+            if present_mode not in allowed_modes:
+                allowed_names = ", ".join(
+                    mode.value for mode in sorted(allowed_modes, key=lambda item: item.value)
+                )
+                message = (
+                    f"Command '{func.__name__}' is not allowed while the server "
+                    f"is in acquisition mode '{present_mode}'. Allowed modes: {allowed_names}."
+                )
+
+                output_func = getattr(self, "poutput", None)
+                if callable(output_func):
+                    output_func(message)
+                else:
+                    server_state.logger.warning(message)
+                return None
+
+            return func(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 class ServerState:
     """Thread-safe logical state and client registry for the multiDAQ server."""
 
@@ -250,21 +320,11 @@ class ServerState:
 
         self.acq_mode = initial_mode
 
-
-        self.control_clients: list[bytes] = []
-        self.acquisition_clients: list[bytes] = []
-
-        # Clients currently admitted to server-wide configured operations.
-        # This is updated by CONFIGURATION_SUCCEEDED and is the authoritative
-        # set used by acquisition commands.
-        self.operational_clients: list[bytes] = []
-
-        # Backward-compatible alias used by the current ControlPlaneManager.
-        self.connected_clients = self.control_clients
-
-        self.identity_by_client_id: dict[bytes, dict] = {}
-        self.client_id_by_multipmt_id: dict[str, bytes] = {}
-        self.client_id_by_batch_id: dict[str, bytes] = {}
+        # Unica fonte di verità per tutto ciò che riguarda un client
+        # specifico: piani a cui appartiene, stato FSM, identità,
+        # parametri HV, canali esclusi per calibrazione, timestamp di
+        # connessione. Una sola voce da rimuovere alla disconnessione.
+        self.clients: dict[bytes, ClientRecord] = {}
 
         self.run_state = ServerFSM.DISCONNECTED
         self.previous_state: ServerFSM | None = None
@@ -277,18 +337,23 @@ class ServerState:
         self.last_event_context: dict | None = None
         self.error_context: dict | None = None
 
-        self.client_state_by_id: dict[bytes, ClientFSM] = {}
-        self.client_previous_state_by_id: dict[bytes, ClientFSM | None] = {}
-        self.client_last_event_context_by_id: dict[bytes, dict] = {}
-        self.client_error_context_by_id: dict[bytes, dict] = {}
-
         self.logger.debug("Server State initialized")
 
     def set_mode(self, mode: str) -> None:
         if not isinstance(mode, str) or not mode.strip():
             raise ValueError("mode must be a non-empty string")
+
+        normalized_mode = mode.strip().lower()
+
+        valid_modes = {member.value for member in AcquisitionMode}
+        if normalized_mode not in valid_modes:
+            raise ValueError(
+                f"Invalid acquisition mode: {normalized_mode!r}. "
+                f"Valid modes: {sorted(valid_modes)}"
+            )
+
         with self._lock:
-            self.acq_mode = mode.strip().lower()
+            self.acq_mode = normalized_mode
 
     def get_mode(self) -> str:
         with self._lock:
@@ -298,40 +363,75 @@ class ServerState:
         with self._lock:
             return self.run_state
 
+    # ------------------------------------------------------------------
+    # Helper interni (assumono il lock già acquisito dal chiamante)
+    # ------------------------------------------------------------------
+
+    def _control_client_ids_locked(self) -> list[bytes]:
+        return [cid for cid, r in self.clients.items() if r.on_control_plane]
+
+    def _acquisition_client_ids_locked(self) -> list[bytes]:
+        return [cid for cid, r in self.clients.items() if r.on_acquisition_plane]
+
+    def _common_plane_client_ids_locked(self) -> list[bytes]:
+        return [
+            cid for cid, r in self.clients.items()
+            if r.on_control_plane and r.on_acquisition_plane
+        ]
+
+    def _operational_client_ids_locked(self) -> list[bytes]:
+        return [cid for cid, r in self.clients.items() if r.operational]
+
+    def _set_operational_locked(self, client_ids: Iterable[bytes]) -> None:
+        """Sostituisce per intero l'insieme operativo: True per i client
+        indicati, False per tutti gli altri."""
+        target = set(client_ids)
+        for cid, record in self.clients.items():
+            record.operational = cid in target
+
+    def _clear_operational_locked(self) -> None:
+        for record in self.clients.values():
+            record.operational = False
+
+    # ------------------------------------------------------------------
+
     def has_control_clients(self) -> bool:
         with self._lock:
-            return bool(self.control_clients)
+            return any(r.on_control_plane for r in self.clients.values())
 
     def has_acquisition_clients(self) -> bool:
         with self._lock:
-            return bool(self.acquisition_clients)
+            return any(r.on_acquisition_plane for r in self.clients.values())
 
     def list_common_plane_clients(self) -> list[bytes]:
         with self._lock:
-            acquisition_set = set(self.acquisition_clients)
-            return [client_id for client_id in self.control_clients if client_id in acquisition_set]
+            return self._common_plane_client_ids_locked()
 
     def has_common_plane_client(self) -> bool:
-        return bool(self.list_common_plane_clients())
+        with self._lock:
+            return bool(self._common_plane_client_ids_locked())
 
     def can_start_acquisition(self) -> bool:
         with self._lock:
-            return (
-                self.run_state == ServerFSM.READY
-                and bool(self.operational_clients)
-                and set(self.operational_clients).issubset(
-                    set(self.control_clients) & set(self.acquisition_clients)
-                )
-            )
+            if self.run_state != ServerFSM.READY:
+                return False
+            operational = self._operational_client_ids_locked()
+            if not operational:
+                return False
+            common = set(self._common_plane_client_ids_locked())
+            return all(cid in common for cid in operational)
 
     def is_control_plane_available(self) -> bool:
         with self._lock:
-            return bool(self.control_clients) and self.run_state in CONTROL_PLANE_AVAILABLE_STATES
+            return (
+                any(r.on_control_plane for r in self.clients.values())
+                and self.run_state in CONTROL_PLANE_AVAILABLE_STATES
+            )
 
     def is_acquisition_plane_available(self) -> bool:
         with self._lock:
             return (
-                bool(set(self.control_clients) & set(self.acquisition_clients))
+                bool(self._common_plane_client_ids_locked())
                 and self.run_state in ACQUISITION_PLANE_AVAILABLE_STATES
             )
 
@@ -370,30 +470,20 @@ class ServerState:
             raise ValueError(f"Invalid client IDs: {invalid!r}")
         return normalized
 
-    def _set_client_state_locked(
-        self,
-        client_id: bytes,
-        state: ClientFSM,
-        event_context: dict,
-    ) -> None:
-        previous_state = self.client_state_by_id.get(client_id)
-        if previous_state is None:
-            self.logger.warning(
-                f"Attempted to set state for unregistered client {client_id!r}: ignored"
-            )
+    def _set_client_state_locked(self, client_id: bytes, state: ClientFSM, event_context: dict) -> None:
+        record = self.clients.get(client_id)
+        if record is None:
+            self.logger.warning(f"Attempted to set state for unregistered client {client_id!r}: ignored")
             return
 
-        self.client_previous_state_by_id[client_id] = previous_state
-        self.client_state_by_id[client_id] = state
-        self.client_last_event_context_by_id[client_id] = dict(event_context)
+        record.previous_state = record.state
+        record.state = state
+        record.last_event_context = dict(event_context)
 
         if state == ClientFSM.ERROR:
-            self.client_error_context_by_id[client_id] = {
-                **event_context,
-                "previous_state": previous_state,
-            }
+            record.error_context = {**event_context, "previous_state": record.previous_state}
         else:
-            self.client_error_context_by_id.pop(client_id, None)
+            record.error_context = None
 
     def process_event(
         self,
@@ -480,7 +570,6 @@ class ServerState:
             ):
                 next_state = self.pending_configuration_source or ServerFSM.CONNECTED
 
-
             if (
                 present_state == ServerFSM.FINALIZING
                 and event == ServerFSMEvent.FINALIZATION_SUCCEEDED
@@ -495,14 +584,14 @@ class ServerState:
                     target_clients = self._normalize_client_ids(
                         metadata_payload.get(
                             "target_clients",
-                            self.list_common_plane_clients(),
+                            self._common_plane_client_ids_locked(),
                         )
                     )
                 except ValueError as exc:
                     self.logger.error(str(exc))
                     return False
 
-                common_clients = set(self.control_clients) & set(self.acquisition_clients)
+                common_clients = set(self._common_plane_client_ids_locked())
                 invalid_clients = [
                     client_id for client_id in target_clients
                     if client_id not in common_clients
@@ -516,7 +605,7 @@ class ServerState:
 
                 # A new configuration invalidates the previous operational set
                 # until its result is known.
-                self.operational_clients.clear()
+                self._clear_operational_locked()
                 for target_client in target_clients:
                     self._set_client_state_locked(
                         target_client, ClientFSM.CONFIGURING, event_context
@@ -546,21 +635,21 @@ class ServerState:
                         "configuration result"
                     )
                     return False
-                
+
                 expected = set(self.list_clients_in_state(ClientFSM.CONFIGURING))
                 provided = set(successful_clients) | set(failed_clients)
-                
+
                 if provided != expected:
                     missing = expected - provided
                     unexpected = provided - expected
-                    
+
                     self.logger.error(
                         "CONFIGURATION_SUCCEEDED does not match clients under configuration. "
                         f"Missing: {missing!r}, unexpected: {unexpected!r}"
                     )
                     return False
 
-                common_clients = set(self.control_clients) & set(self.acquisition_clients)
+                common_clients = set(self._common_plane_client_ids_locked())
                 invalid_clients = [
                     client_id for client_id in successful_clients
                     if client_id not in common_clients
@@ -572,7 +661,7 @@ class ServerState:
                     )
                     return False
 
-                self.operational_clients = successful_clients
+                self._set_operational_locked(successful_clients)
 
                 for configured_client in successful_clients:
                     self._set_client_state_locked(
@@ -591,16 +680,35 @@ class ServerState:
                     "failed_clients",
                     self.list_clients_in_state(ClientFSM.CONFIGURING),
                 )
+
                 try:
                     failed_clients = self._normalize_client_ids(failed_clients)
                 except ValueError as exc:
                     self.logger.error(str(exc))
                     return False
 
-                self.operational_clients.clear()
+                expected = set(
+                    self.list_clients_in_state(ClientFSM.CONFIGURING)
+                )
+                provided = set(failed_clients)
+
+                if provided != expected:
+                    missing = expected - provided
+                    unexpected = provided - expected
+
+                    self.logger.error(
+                        "CONFIGURATION_FAILED does not match clients under configuration. "
+                        f"Missing: {missing!r}, unexpected: {unexpected!r}"
+                    )
+                    return False
+
+                self._clear_operational_locked()
+
                 for failed_client in failed_clients:
                     self._set_client_state_locked(
-                        failed_client, ClientFSM.ERROR, event_context
+                        failed_client,
+                        ClientFSM.ERROR,
+                        event_context,
                     )
 
             elif event == ServerFSMEvent.ACQUISITION_STARTED:
@@ -608,7 +716,7 @@ class ServerState:
                     active_clients = self._normalize_client_ids(
                         metadata_payload.get(
                             "active_clients",
-                            self.operational_clients,
+                            self._operational_client_ids_locked(),
                         )
                     )
                 except ValueError as exc:
@@ -621,10 +729,11 @@ class ServerState:
                     )
                     return False
 
+                operational_set = set(self._operational_client_ids_locked())
                 invalid_clients = [
                     client_id for client_id in active_clients
-                    if client_id not in self.operational_clients
-                    or self.client_state_by_id.get(client_id) != ClientFSM.READY
+                    if client_id not in operational_set
+                    or (self.clients.get(client_id) is None or self.clients[client_id].state != ClientFSM.READY)
                 ]
                 if invalid_clients:
                     self.logger.error(
@@ -633,14 +742,28 @@ class ServerState:
                     )
                     return False
 
-                self.operational_clients = active_clients
+                self._set_operational_locked(active_clients)
                 for active_client in active_clients:
                     self._set_client_state_locked(
                         active_client, ClientFSM.ACQUIRING, event_context
                     )
+                    
+            elif event == ServerFSMEvent.FATAL_ERROR:
+                operational_clients = list(
+                    self._operational_client_ids_locked()
+                )
+
+                for failed_client in operational_clients:
+                    self._set_client_state_locked(
+                        failed_client,
+                        ClientFSM.ERROR,
+                        event_context,
+                    )
+
+                self._clear_operational_locked()
 
             elif next_state == ServerFSM.FINALIZING:
-                for active_client in self.operational_clients:
+                for active_client in self._operational_client_ids_locked():
                     self._set_client_state_locked(
                         active_client, ClientFSM.FINALIZING, event_context
                     )
@@ -649,22 +772,108 @@ class ServerState:
                 present_state == ServerFSM.FINALIZING
                 and event == ServerFSMEvent.FINALIZATION_SUCCEEDED
             ):
-                for finalized_client in self.operational_clients:
-                    self._set_client_state_locked(
-                        finalized_client, ClientFSM.READY, event_context
-                    )
+                operational_clients = list(
+                    self._operational_client_ids_locked()
+                )
+
+                terminal_state = (
+                    self.pending_terminal_state
+                    if self.pending_terminal_state is not None
+                    else ServerFSM.READY
+                )
+
+                if terminal_state == ServerFSM.READY:
+
+                    for finalized_client in operational_clients:
+                        self._set_client_state_locked(
+                            finalized_client,
+                            ClientFSM.READY,
+                            event_context,
+                        )
+
+                elif terminal_state == ServerFSM.CONTROL_CONNECTED:
+
+                    for finalized_client in operational_clients:
+                        record = self.clients.get(finalized_client)
+
+                        if record is None:
+                            continue
+
+                        record.operational = False
+
+                        if record.on_control_plane:
+                            self._set_client_state_locked(
+                                finalized_client,
+                                ClientFSM.CONNECTED,
+                                event_context,
+                            )
+                        else:
+                            self._set_client_state_locked(
+                                finalized_client,
+                                ClientFSM.DISCONNECTED,
+                                event_context,
+                            )
+
+                elif terminal_state == ServerFSM.DISCONNECTED:
+
+                    for finalized_client in operational_clients:
+                        record = self.clients.get(finalized_client)
+
+                        if record is None:
+                            continue
+
+                        record.operational = False
+
+                        self._set_client_state_locked(
+                            finalized_client,
+                            ClientFSM.DISCONNECTED,
+                            event_context,
+                        )
+
+                elif terminal_state == ServerFSM.CONNECTED:
+
+                    for finalized_client in operational_clients:
+                        record = self.clients.get(finalized_client)
+
+                        if record is None:
+                            continue
+
+                        record.operational = False
+
+                        self._set_client_state_locked(
+                            finalized_client,
+                            ClientFSM.CONNECTED,
+                            event_context,
+                        )
+
+                elif terminal_state == ServerFSM.ERROR:
+
+                    for finalized_client in operational_clients:
+                        record = self.clients.get(finalized_client)
+
+                        if record is None:
+                            continue
+
+                        record.operational = False
+
+                        self._set_client_state_locked(
+                            finalized_client,
+                            ClientFSM.ERROR,
+                            event_context,
+                        )
 
             elif (
                 present_state == ServerFSM.FINALIZING
-                and event in {
-                    ServerFSMEvent.FINALIZATION_FAILED,
-                    ServerFSMEvent.FATAL_ERROR,
-                }
+                and event == ServerFSMEvent.FINALIZATION_FAILED
             ):
-                for failed_client in self.operational_clients:
+                for failed_client in self._operational_client_ids_locked():
                     self._set_client_state_locked(
-                        failed_client, ClientFSM.ERROR, event_context
+                        failed_client,
+                        ClientFSM.ERROR,
+                        event_context,
                     )
+
+                self._clear_operational_locked()
 
             self.previous_state = present_state
             self.run_state = next_state
@@ -684,7 +893,7 @@ class ServerState:
                 self.pending_event = None
                 self.pending_terminal_state = None
                 self.pending_context = None
-            
+
             if present_state == ServerFSM.CONFIGURING and event in {
                 ServerFSMEvent.CONFIGURATION_SUCCEEDED,
                 ServerFSMEvent.CONFIGURATION_FAILED,
@@ -740,31 +949,26 @@ class ServerState:
         }
 
         with self._lock:
-            present_state = self.client_state_by_id.get(client_id)
-            if present_state is None:
-                self.logger.error(
-                    f"Cannot process client FSM event for unknown client: {client_id!r}"
-                )
+            record = self.clients.get(client_id)
+            if record is None:
+                self.logger.error(f"Cannot process client FSM event for unknown client: {client_id!r}")
                 return False
 
+            present_state = record.state
             next_state = TRANSITION_TABLE_CLIENT.get((present_state, event))
             if next_state is None:
                 self.logger.warning(
                     f"Invalid client FSM transition for {client_id!r}: "
-                    f"{present_state.value} --{event.value}--> ? | "
-                    f"source={source}, reason={reason}"
+                    f"{present_state.value} --{event.value}--> ? | source={source}, reason={reason}"
                 )
                 return False
 
-            self.client_previous_state_by_id[client_id] = present_state
-            self.client_state_by_id[client_id] = next_state
-            self.client_last_event_context_by_id[client_id] = event_context
+            record.previous_state = present_state
+            record.state = next_state
+            record.last_event_context = event_context
 
             if next_state == ClientFSM.ERROR:
-                self.client_error_context_by_id[client_id] = {
-                    **event_context,
-                    "previous_state": present_state,
-                }
+                record.error_context = {**event_context, "previous_state": present_state}
 
         client_name = client_id.decode(errors="ignore")
         self.logger.info(
@@ -772,12 +976,12 @@ class ServerState:
             f"{present_state.value} --{event.value}--> {next_state.value}"
         )
         return True
-    
+
     def reset_to_disconnected(self, *, reason: str, source: str) -> None:
         with self._lock:
             self.previous_state = self.run_state
             self.run_state = ServerFSM.DISCONNECTED
-            self.operational_clients.clear()
+            self._clear_operational_locked()
             self.pending_event = None
             self.pending_terminal_state = None
             self.pending_context = None
@@ -804,47 +1008,38 @@ class ServerState:
 
     def get_client_state(self, client_id: bytes) -> ClientFSM | None:
         with self._lock:
-            return self.client_state_by_id.get(client_id)
+            record = self.clients.get(client_id)
+            return record.state if record else None
 
     def list_clients_in_state(self, state: ClientFSM) -> list[bytes]:
         if not isinstance(state, ClientFSM):
             raise TypeError(f"Expected ClientFSM, received {state!r}")
         with self._lock:
-            return [
-                client_id
-                for client_id, client_state in self.client_state_by_id.items()
-                if client_state == state
-            ]
+            return [cid for cid, record in self.clients.items() if record.state == state]
 
     def get_client_states(self) -> dict[bytes, ClientFSM]:
         with self._lock:
-            return dict(self.client_state_by_id)
+            return {cid: record.state for cid, record in self.clients.items()}
 
     def add_control_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
         if not isinstance(client_id, bytes) or not client_id:
             raise ValueError("client_id must be non-empty bytes")
 
         with self._lock:
-            if client_id not in self.control_clients:
-                self.control_clients.append(client_id)
+            if client_id not in self.clients:
+                self.clients[client_id] = ClientRecord()
+
+            record = self.clients[client_id]
+
+            if not record.on_control_plane:
+                record.on_control_plane = True
                 self.logger.info(
                     f"Control client {client_id.decode(errors='ignore')} connected. "
-                    f"Total control clients: {len(self.control_clients)}"
+                    f"Total control clients: {sum(1 for r in self.clients.values() if r.on_control_plane)}"
                 )
 
-            if client_id not in self.client_state_by_id:
-                self.client_state_by_id[client_id] = ClientFSM.CONNECTED
-                self.client_previous_state_by_id[client_id] = None
-
             if identity is not None:
-                normalized_identity = dict(identity)
-                self.identity_by_client_id[client_id] = normalized_identity
-                multipmt_id = normalized_identity.get("multipmt_id")
-                batch_id = normalized_identity.get("batch_id")
-                if multipmt_id:
-                    self.client_id_by_multipmt_id[str(multipmt_id)] = client_id
-                if batch_id:
-                    self.client_id_by_batch_id[str(batch_id)] = client_id
+                record.identity = dict(identity)
 
     def add_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
         self.add_control_client(client_id, identity)
@@ -853,11 +1048,11 @@ class ServerState:
         """Remove a client from the Acquisition Plane only, keeping its
         Control Plane registration and identity intact."""
         with self._lock:
-            removed = client_id in self.acquisition_clients
-            if removed:
-                self.acquisition_clients.remove(client_id)
-            if client_id in self.operational_clients:
-                self.operational_clients.remove(client_id)
+            record = self.clients.get(client_id)
+            removed = bool(record and record.on_acquisition_plane)
+            if record is not None:
+                record.on_acquisition_plane = False
+                record.operational = False
 
         if removed:
             self.logger.info(
@@ -867,10 +1062,10 @@ class ServerState:
 
     def clear_acquisition_clients(self) -> None:
         with self._lock:
-            for client_id in list(self.acquisition_clients):
-                if client_id in self.operational_clients:
-                    self.operational_clients.remove(client_id)
-            self.acquisition_clients.clear()
+            for record in self.clients.values():
+                if record.on_acquisition_plane:
+                    record.on_acquisition_plane = False
+                    record.operational = False
         self.logger.debug("Acquisition Plane client registry cleared")
 
     def add_acquisition_client(self, client_id: bytes) -> None:
@@ -878,55 +1073,27 @@ class ServerState:
             raise ValueError("client_id must be non-empty bytes")
 
         with self._lock:
-            if client_id not in self.control_clients:
+            record = self.clients.get(client_id)
+            if record is None or not record.on_control_plane:
                 raise ValueError(
                     "An Acquisition Plane client must already be registered "
                     "on the Control Plane"
                 )
 
-            if client_id not in self.acquisition_clients:
-                self.acquisition_clients.append(client_id)
+            if not record.on_acquisition_plane:
+                record.on_acquisition_plane = True
                 self.logger.info(
                     f"Acquisition client {client_id.decode(errors='ignore')} connected. "
-                    f"Total acquisition clients: {len(self.acquisition_clients)}"
+                    f"Total acquisition clients: {sum(1 for r in self.clients.values() if r.on_acquisition_plane)}"
                 )
 
-
-            self.client_state_by_id.setdefault(client_id, ClientFSM.CONNECTED)
-            self.client_previous_state_by_id.setdefault(client_id, None)
-
     def _forget_client_locked(self, client_id: bytes) -> None:
-        if client_id in self.control_clients:
-            self.control_clients.remove(client_id)
-
-        if client_id in self.acquisition_clients:
-            self.acquisition_clients.remove(client_id)
-
-        if client_id in self.operational_clients:
-            self.operational_clients.remove(client_id)
-
-        identity = self.identity_by_client_id.pop(client_id, None)
-        if identity:
-            multipmt_id = identity.get("multipmt_id")
-            if self.client_id_by_multipmt_id.get(str(multipmt_id)) == client_id:
-                self.client_id_by_multipmt_id.pop(str(multipmt_id), None)
-            batch_id = identity.get("batch_id")
-            if self.client_id_by_batch_id.get(str(batch_id)) == client_id:
-                self.client_id_by_batch_id.pop(str(batch_id), None)
-
-        self.client_state_by_id.pop(client_id, None)
-        self.client_previous_state_by_id.pop(client_id, None)
-        self.client_last_event_context_by_id.pop(client_id, None)
-        self.client_error_context_by_id.pop(client_id, None)
+        self.clients.pop(client_id, None)
 
     def remove_client(self, client_id: bytes) -> None:
         """Forget a client completely from every server registry."""
         with self._lock:
-            existed = (
-                client_id in self.control_clients
-                or client_id in self.acquisition_clients
-                or client_id in self.client_state_by_id
-            )
+            existed = client_id in self.clients
             self._forget_client_locked(client_id)
 
         if existed:
@@ -934,10 +1101,8 @@ class ServerState:
                 f"Client {client_id.decode(errors='ignore')} forgotten from server state"
             )
 
-
     def remove_control_client(self, client_id: bytes) -> None:
         self.remove_client(client_id)
-
 
     def set_operational_clients(self, client_ids: Iterable[bytes]) -> None:
         """Set clients admitted by the latest successful configuration.
@@ -947,17 +1112,17 @@ class ServerState:
         requested = list(dict.fromkeys(client_ids))
 
         with self._lock:
-            common = set(self.control_clients) & set(self.acquisition_clients)
+            common = set(self._common_plane_client_ids_locked())
             invalid = [client_id for client_id in requested if client_id not in common]
             if invalid:
                 raise ValueError(
                     f"Operational clients must be connected on both planes: {invalid!r}"
                 )
-            self.operational_clients = requested
+            self._set_operational_locked(requested)
 
     def get_operational_clients(self) -> list[bytes]:
         with self._lock:
-            return list(self.operational_clients)
+            return self._operational_client_ids_locked()
 
     def get_acquisition_command_clients(self) -> list[bytes]:
         """Return the only clients acquisition commands may target."""
@@ -968,33 +1133,50 @@ class ServerState:
                 ServerFSM.FINALIZING,
             }:
                 return []
-            return list(self.operational_clients)
+            return self._operational_client_ids_locked()
 
     def clear_operational_clients(self) -> None:
         with self._lock:
-            self.operational_clients.clear()
+            self._clear_operational_locked()
 
     def list_connected_clients(self) -> List[bytes]:
         """Backward-compatible Control Plane client list."""
         with self._lock:
-            return list(self.control_clients)
+            return self._control_client_ids_locked()
 
     def list_acquisition_clients(self) -> List[bytes]:
         with self._lock:
-            return list(self.acquisition_clients)
+            return self._acquisition_client_ids_locked()
+
+    def list_operational_clients(self) -> List[bytes]:
+        with self._lock:
+            return self._operational_client_ids_locked()
 
     def get_identity(self, client_id: bytes) -> Optional[dict]:
         with self._lock:
-            identity = self.identity_by_client_id.get(client_id)
-            return dict(identity) if identity is not None else None
+            record = self.clients.get(client_id)
+            if record is None or record.identity is None:
+                return None
+            return dict(record.identity)
 
     def get_client_id_by_multipmt_id(self, multipmt_id: str) -> Optional[bytes]:
+        """Ricerca lineare deliberata: nessun indice separato da tenere
+        sincronizzato. A qualche migliaio di client il costo è trascurabile
+        (microsecondi), e non è mai chiamata nel percorso dati."""
         with self._lock:
-            return self.client_id_by_multipmt_id.get(str(multipmt_id))
-    
+            target = str(multipmt_id)
+            for cid, record in self.clients.items():
+                if record.identity and str(record.identity.get("multipmt_id")) == target:
+                    return cid
+            return None
+
     def get_client_id_by_batch_id(self, batch_id: str) -> Optional[bytes]:
         with self._lock:
-            return self.client_id_by_batch_id.get(str(batch_id))
+            target = str(batch_id)
+            for cid, record in self.clients.items():
+                if record.identity and str(record.identity.get("batch_id")) == target:
+                    return cid
+            return None
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -1002,10 +1184,10 @@ class ServerState:
                 "mode": self.acq_mode,
                 "state": self.run_state,
                 "previous_state": self.previous_state,
-                "control_clients": list(self.control_clients),
-                "acquisition_clients": list(self.acquisition_clients),
-                "common_clients": self.list_common_plane_clients(),
-                "operational_clients": list(self.operational_clients),
+                "control_clients": self._control_client_ids_locked(),
+                "acquisition_clients": self._acquisition_client_ids_locked(),
+                "common_clients": self._common_plane_client_ids_locked(),
+                "operational_clients": self._operational_client_ids_locked(),
                 "pending_terminal_state": self.pending_terminal_state,
                 "pending_event": self.pending_event,
                 "last_event_context": dict(self.last_event_context)
@@ -1014,5 +1196,42 @@ class ServerState:
                 "error_context": dict(self.error_context)
                 if self.error_context
                 else None,
-                "client_states": dict(self.client_state_by_id),
+                "client_states": {cid: record.state for cid, record in self.clients.items()},
             }
+
+    def set_client_hv_parameters(self, client_id: bytes, acq_info: dict[int, dict]) -> None:
+        with self._lock:
+            record = self.clients.get(client_id)
+            if record is None:
+                self.logger.warning(f"Cannot set HV parameters: unknown client {client_id!r}")
+                return
+            for ch, params in acq_info.items():
+                entry = record.hv_parameters.setdefault(ch, {})
+                if "voltage" in params:
+                    entry["voltage"] = params["voltage"]
+                if "threshold" in params:
+                    entry["threshold"] = params["threshold"]
+
+    def get_client_hv_parameters(self, client_id: bytes) -> dict[int, dict]:
+        with self._lock:
+            record = self.clients.get(client_id)
+            if record is None:
+                return {}
+            return {ch: dict(v) for ch, v in record.hv_parameters.items()}
+
+    def set_calibration_excluded_channels(self, client_id: bytes, channels: list[int]) -> None:
+        with self._lock:
+            record = self.clients.get(client_id)
+            if record is None:
+                return
+            record.calibration_excluded_channels = list(channels)
+
+    def get_calibration_excluded_channels(self, client_id: bytes) -> list[int]:
+        with self._lock:
+            record = self.clients.get(client_id)
+            return list(record.calibration_excluded_channels) if record else []
+
+    def get_client_connected_since(self, client_id: bytes) -> datetime | None:
+        with self._lock:
+            record = self.clients.get(client_id)
+            return record.connected_at if record else None

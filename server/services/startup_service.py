@@ -1,5 +1,4 @@
 from server.utils.logger import get_logger
-from server.utils.json_parser import JsonParser
 from server.core.server_state import ServerFSMEvent
 from common.message_handler import Channel
 from server.utils.channels import hv_to_user_channels
@@ -15,9 +14,10 @@ class StartupService:
     explicit successful/failed outcome before the batch is considered closed.
     """
 
-    def __init__(self, control_manager, server_state, output_func=None) -> None:
+    def __init__(self, control_manager, server_state, acquisition_service, output_func=None) -> None:
         self.control_manager = control_manager
         self.server_state = server_state
+        self.acquisition_service = acquisition_service
         self.poutput = output_func or (lambda message: None)
         self.logger = get_logger("startup_service")
         self.logger.debug("Startup Service initialized")
@@ -45,21 +45,25 @@ class StartupService:
 
         if mode == "multipmt":
             pe_thr = 1
-
-            config_file_service = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
-            acq_info = config_file_service.get_ch_configuration(pe_thr=pe_thr)
+            
+            acq_info = self.acquisition_service.build_multipmt_configuration(
+                client_id=client_id, pe_thr=pe_thr,
+            )
 
             if acq_info is None:
                 self.poutput(
                     f"Client {client_name}: cannot build multipmt config "
-                    f"(multipmt_id={multipmt_id}, batch_id={batch_id})"
+                    f"(no matching calibration for any channel)"
                 )
-                self.logger.error(
-                    f"Cannot build multipmt configuration for client {client_name}, "
-                    f"multipmt_id={multipmt_id}, batch_id={batch_id}"
-                )
+                self.logger.error(f"Cannot build multipmt configuration for client {client_name}")
                 return False
+            
+            self.server_state.set_client_hv_parameters(client_id, acq_info)
 
+        elif mode == "calibration":
+            fixed_params = {ch: {"voltage": 1200, "threshold": 400} for ch in range(7)}
+            self.server_state.set_client_hv_parameters(client_id, fixed_params)
+            
         mode_sync_command = self.control_manager.message_handler.create_command(
             channel=Channel.ACQUISITION,
             command="set_acq_mode_sync",

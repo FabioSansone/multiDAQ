@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 from server.core.server_state import ServerFSM, ServerFSMEvent
+from server.utils.json_parser import JsonParser
 
 ACQ_REGISTER_ADDRESSES = [0, 1, 10, 15, 16, 18, 19, 31, 39]
 
@@ -66,8 +67,315 @@ class AcquisitionService:
         self._last_finalize_success = True
 
         self._stop_requested = threading.Event()
+    
+    def _parse_channel_value_map(self, value: str, value_type: float) -> dict[int, float] | None:
+        
+        result = {}
+        for item in value.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if ":" not in item:
+                return None
+            ch_str, value_str = item.split(":", 1)
+            try:
+                channel = int(ch_str.strip())
+                result[channel] = value_type(value_str.strip())
+            except ValueError:
+                return None
+        
+        return result
+    
+    def _convert_pe_map_to_mv(self, client_id: bytes, pe_by_channel: dict[int, float]) -> dict[int, float] | None:
+        identity = self.server_state.get_identity(client_id)
+        
+        if identity is None:
+            self.logger.error(f"Cannot resolve PE calibration: no identity for client {client_id!r}")
+            return None
+        
+        multipmt_id = identity.get("multipmt_id")
+        batch_id = identity.get("batch_id")
+        
+        if not multipmt_id or not batch_id:
+            self.logger.error(f"Cannot resolve PE calibration: incomplete identity for client {client_id!r}")
+            return None
+        
+        parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
+        thr_fit_parameters = parser.load_threshold_parameters()
+        pe_reference = parser.load_pe_data()
+        
+        if thr_fit_parameters is None or pe_reference is None:
+            self.logger.error(f"Cannot resolve PE calibration data for client {client_id!r}")
+            return None
+        
+        threshold_mv_by_channel = {}
+        for ch, pe_value in pe_by_channel.items():
+            if ch not in thr_fit_parameters or ch not in pe_reference:
+                self.logger.error(f"Missing calibration data for channel {ch}, client {client_id!r}")
+                return None
 
+            m_ch, q_ch = thr_fit_parameters[ch]
+            pe_adc = pe_reference[ch]
+            
+            if m_ch == 0:
+                self.logger.error(f"Invalid threshold fit for channel {ch}: m=0")
+                return None
 
+            adc_thr = pe_value * pe_adc
+            threshold_mv_by_channel[ch] = (adc_thr - q_ch) / m_ch
+        
+        return threshold_mv_by_channel
+    
+    
+    def resolve_hv_overrides(self, client_id: bytes, args) -> tuple[dict[int, dict] | None, str | None]:
+        voltage = getattr(args, "voltage", None)
+        voltage_map_raw = getattr(args, "voltage_map", None)
+        threshold_mv = getattr(args, "threshold_mv", None)
+        threshold_pe = getattr(args, "threshold_pe", None)
+        threshold_mv_map_raw = getattr(args, "threshold_mv_map", None)
+        threshold_pe_map_raw = getattr(args, "threshold_pe_map", None)
+
+        if not any([voltage, voltage_map_raw, threshold_mv, threshold_pe, threshold_mv_map_raw, threshold_pe_map_raw]):
+            return None, None   # nessun override richiesto: comportamento invariato, usa i default già mandati
+
+        client_name = client_id.decode(errors="ignore")
+
+        threshold_by_channel: dict[int, float] = {}
+
+        if threshold_mv_map_raw is not None:
+            parsed = self._parse_channel_value_map(threshold_mv_map_raw, float)
+            if parsed is None:
+                return None, f"Invalid --threshold-mv-map format for client {client_name}"
+            threshold_by_channel = parsed
+
+        elif threshold_pe_map_raw is not None:
+            parsed = self._parse_channel_value_map(threshold_pe_map_raw, float)
+            if parsed is None:
+                return None, f"Invalid --threshold-pe-map format for client {client_name}"
+            threshold_by_channel = self._convert_pe_map_to_mv(client_id=client_id, pe_by_channel=parsed)
+            if threshold_by_channel is None:
+                return None, f"Cannot resolve PE calibration for client {client_name}"
+
+        elif threshold_pe is not None:
+            threshold_by_channel = self._convert_pe_map_to_mv(client_id=client_id, pe_by_channel={ch: threshold_pe for ch in range(7)})
+            if threshold_by_channel is None:
+                return None, f"Cannot resolve PE calibration for client {client_name}"
+
+        elif threshold_mv is not None:
+            threshold_by_channel = {ch: threshold_mv for ch in range(7)}
+
+        voltage_by_channel: dict[int, float] = {}
+
+        if voltage_map_raw is not None:
+            parsed = self._parse_channel_value_map(voltage_map_raw, int)
+            if parsed is None:
+                return None, f"Invalid --voltage-map format for client {client_name}"
+            voltage_by_channel = parsed
+
+        elif voltage is not None:
+            target_channels = set(threshold_by_channel.keys()) if threshold_by_channel else set(range(7))
+            voltage_by_channel = {ch: voltage for ch in target_channels}
+
+        all_channels = set(voltage_by_channel.keys()) | set(threshold_by_channel.keys())
+
+        if not all_channels:
+            return None, None
+
+        current_params = self.server_state.get_client_hv_parameters(client_id)
+
+        acq_info = {}
+        for ch in all_channels:
+            v = voltage_by_channel.get(ch)
+            t = threshold_by_channel.get(ch)
+
+            if v is None:
+                v = current_params.get(ch, {}).get("voltage")
+            if t is None:
+                t = current_params.get(ch, {}).get("threshold")
+
+            if v is None or t is None:
+                return None, (
+                    f"Channel {ch} for client {client_name} has no known "
+                    f"{'voltage' if v is None else 'threshold'} to fall back on "
+                    "(never configured for this client)"
+                )
+
+            acq_info[ch] = {"voltage": v, "threshold": t}
+
+        return acq_info, None
+    
+    
+    def record_hv_parameters_from_reply(self, client_id: bytes, command: str, payload: dict, reply_result: dict) -> None:
+        successful = set(reply_result.get("successful_channels", []))
+        if not successful:
+            return
+
+        if command == "set_common_voltage":
+            voltage = payload.get("common_voltage")
+            update = {ch - 1: {"voltage": voltage} for ch in successful}   
+
+        elif command == "set_common_threshold":
+            threshold = payload.get("common_threshold")
+            update = {ch - 1: {"threshold": threshold} for ch in successful}
+
+        elif command == "set_acquisition_configuration":
+            acq_configuration = payload.get("acquisition_configuration", {})
+            update = {}
+            for ch in successful:
+                external_ch = ch - 1
+                ch_config = acq_configuration.get(external_ch) or acq_configuration.get(str(external_ch))
+                if ch_config:
+                    update[external_ch] = ch_config
+
+        else:
+            return
+
+        self.server_state.set_client_hv_parameters(client_id, update)
+        
+    
+    def apply_hv_override(self, client_id: bytes, acq_info: dict[int, dict]) -> bool:
+        client_name = client_id.decode(errors="ignore")
+
+        reply, reason = self.command_service.send_hv_command(
+            client_id=client_id,
+            command="set_acquisition_configuration",
+            payload={
+                "channels": [ch + 1 for ch in acq_info.keys()],   
+                "acquisition_configuration": acq_info,             
+            },
+            plane=CommandPlane.ACQUISITION,
+            timeout_s=300.0,
+        )
+
+        if reply is None:
+            self.logger.error(f"HV override failed for client {client_name}: {reason}")
+            return False
+
+        payload = reply.payload or {}
+        if payload.get("status") != "ok":
+            self.logger.error(f"HV override error for client {client_name}: {payload.get('error')}")
+            return False
+
+        self.record_hv_parameters_from_reply(
+            client_id=client_id, command="set_acquisition_configuration",
+            payload={"acquisition_configuration": acq_info}, reply_result=payload.get("result", {}),
+        )
+        return True
+            
+
+    
+    def build_multipmt_configuration(self, client_id: bytes, pe_thr: int | float) -> dict[int, dict[str, float]] | None:
+        client_name = client_id.decode(errors="ignore")
+        identity = self.server_state.get_identity(client_id)
+                
+        if identity is None:
+            self.logger.error(f"Cannot build multipmt configuration: no identity for client {client_name}")
+            return None
+        
+        multipmt_id = identity.get("multipmt_id")
+        batch_id = identity.get("batch_id")
+        
+        if not multipmt_id or not batch_id:
+            self.logger.error(f"Cannot build multipmt configuration: incomplete identity for client {client_name}")
+            return None
+        
+        parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
+        
+        if parser.config_file is None:
+            self.logger.error(f"Cannot build multipmt configuration: no calibration file loaded for client {client_name}")
+            return None
+        
+        json_serial_by_channel = parser.get_json_serial_channel_map()
+        json_ch_configuration = parser.get_ch_configuration(pe_thr=pe_thr)
+        
+        if json_serial_by_channel is None or json_ch_configuration is None:
+            self.logger.error(f"Cannot build multipmt configuration: incomplete calibration data for client {client_name}")
+            return None
+        
+        analysis_channel_by_serial: dict[str, int] = {}
+        for analysis_ch, serial in json_serial_by_channel.items():
+            if not serial or serial == "0":
+                continue
+            if serial in analysis_channel_by_serial:
+                self.logger.error(
+                    f"Duplicate serial {serial!r} in calibration JSON: "
+                    f"channels {analysis_channel_by_serial[serial]} and {analysis_ch}"
+                )
+                return None
+            analysis_channel_by_serial[serial] = analysis_ch
+            
+        real_serial_map = self.command_service.get_pmt_serial_map_clients(
+            client_id=client_id, requested_channels="all", plane=CommandPlane.ACQUISITION,
+        ) or {}   
+        
+        if not real_serial_map:
+            self.logger.error(f"Cannot build multipmt configuration: no real serial map for client {client_name}")
+            return None
+        
+        acq_info = {}
+        excluded_channels = []
+        
+        for real_ch, real_serial in real_serial_map.items():
+            if not real_serial:
+                excluded_channels.append(real_ch)
+                continue
+            
+            analysis_ch = analysis_channel_by_serial.get(real_serial)
+            
+            if analysis_ch is None:
+                self.logger.warning(
+                    f"Client {client_name}: real channel {real_ch} (serial {real_serial}) "
+                    "has no matching calibration entry. Channel excluded."
+                )
+                excluded_channels.append(real_ch)
+                continue
+            
+            if analysis_ch not in json_ch_configuration:
+                self.logger.warning(
+                    f"Client {client_name}: analysis channel {analysis_ch} (real channel "
+                    f"{real_ch}, serial {real_serial}) has no gain/threshold data. Channel excluded."
+                )
+                excluded_channels.append(real_ch)
+                continue
+            
+            ch_config = json_ch_configuration[analysis_ch]
+            acq_info[real_ch] = {"voltage": ch_config["voltage"], "threshold": ch_config["threshold"],}
+        
+        if excluded_channels:
+            self.server_state.set_calibration_excluded_channels(client_id, excluded_channels)
+            self.poutput(
+                f"Client {client_name}: channels excluded from multiPMT configuration "
+                f"(no matching calibration): {sorted(excluded_channels)}"
+            )
+        else:
+            self.server_state.set_calibration_excluded_channels(client_id, [])
+        
+        if not acq_info:
+            self.logger.error(f"Cannot build multipmt configuration: no channels matched for client {client_name}")
+            return None
+        
+        return acq_info
+    
+    def recheck_calibration(self, client_id: bytes) -> bool:
+
+        client_name = client_id.decode(errors="ignore")
+
+        if self.server_state.get_mode() != "multipmt":
+            self.logger.error("recheck_calibration is only meaningful in multipmt mode")
+            return False
+
+        acq_info = self.build_multipmt_configuration(client_id=client_id, pe_thr=1)
+
+        if acq_info is None:
+            self.logger.error(f"Calibration recheck failed for client {client_name}")
+            return False
+
+        self.server_state.set_client_hv_parameters(client_id, acq_info)
+        self.logger.info(f"Calibration rechecked for client {client_name}: {sorted(acq_info.keys())} channels matched")
+        return True
+                
+
+    
     def build_trigger_configuration(self, args,) -> TriggerConfiguration | None:
 
         trigger_mode = args.trigger_mode
@@ -956,7 +1264,7 @@ class AcquisitionService:
         )
         return True
 
-    def disable_rc_channels(self, client_ids: List[bytes] | None = None) -> None:
+    def disable_rc_channels(self, client_ids: List[bytes] | None = None) -> bool:
         if client_ids is None:
             client_ids = self.command_service.list_clients_on_plane(CommandPlane.ACQUISITION)
 

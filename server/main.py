@@ -56,17 +56,19 @@ class Server(cmd2.Cmd):
             output_func=self.poutput,
         )
         
-        self.startup_service = StartupService(
-            control_manager=self.control_manager,
-            server_state=self.server_state,
-            output_func=self.poutput,
-        )
 
         self.acquisition_service = AcquisitionService(
             server_state=self.server_state,
             data_receiver_service=self.data_receiver_service,
             command_service=self.client_command_service,
             mac_identity_registry=self.mac_identity_registry,
+            output_func=self.poutput,
+        )
+        
+        self.startup_service = StartupService(
+            control_manager=self.control_manager,
+            server_state=self.server_state,
+            acquisition_service=self.acquisition_service,
             output_func=self.poutput,
         )
 
@@ -117,6 +119,7 @@ class Server(cmd2.Cmd):
         
         #CALIBRATION COMMANDS#
         self.do_calibration = calibration_commands.do_calibration.__get__(self, Server)
+        self.do_recheck_calibration = (calibration_commands.do_recheck_calibration.__get__(self, Server))
 
         #EVENT MESSAGES MANAGER#
         self.handle_event = app_commands.handle_event.__get__(self, Server)

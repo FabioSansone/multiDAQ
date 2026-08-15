@@ -252,6 +252,30 @@ class JsonParser:
             }
 
         return ch_config
+    
+    
+    def get_json_serial_channel_map(self, ) -> dict[int, str]:
+        if self.config_file is None:
+            self.logger.error("Cannot load PE data: config file not loaded")
+            return None
+        
+        try:
+            data = self.config_file["serials"]["data"]
+        except KeyError:
+            self.logger.error("Invalid config file structure: missing threshold/data")
+            return None
+        
+        json_serial_ch_info = {}
+        
+        for ch, _ in data.items():
+            try:
+                json_serial_ch_info[int(ch)] = data[str(ch)]
+            except KeyError:
+                self.logger.error(f"Missing serial number for channel {ch}")
+                json_serial_ch_info[int(ch)] = "0"
+
+        return json_serial_ch_info
+        
 
 
 

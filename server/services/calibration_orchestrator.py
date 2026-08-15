@@ -231,3 +231,36 @@ class CalibrationOrchestrator:
 
         self.acquisition_service.close_session(success=overall_success, reason="TTP scan completed")
         self.poutput("TTP scan completed.")
+        
+    
+    
+    ##############################
+    #CHECK PMT CALIBRATION STATUS#
+    ##############################
+    
+    def recheck_calibration(self, args) -> None:
+        self.poutput("Calibration recheck command received.")
+
+        client_id = self.server_state.get_client_id_by_multipmt_id(args.multipmt_id)
+
+        if client_id is None:
+            self.poutput(f"No connected client found for multipmt_id={args.multipmt_id}")
+            return
+
+        client_name = client_id.decode(errors="ignore")
+
+        ok = self.acquisition_service.recheck_calibration(client_id=client_id)
+
+        if not ok:
+            self.poutput(f"Client {client_name}: calibration recheck failed. See log for details.")
+            return
+
+        excluded = self.server_state.get_calibration_excluded_channels(client_id)
+
+        if excluded:
+            self.poutput(
+                f"Client {client_name}: calibration rechecked. "
+                f"Channels still excluded (no matching calibration): {excluded}"
+            )
+        else:
+            self.poutput(f"Client {client_name}: calibration rechecked. All channels matched — nothing excluded.")

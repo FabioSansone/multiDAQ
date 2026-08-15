@@ -73,6 +73,10 @@ class AcquisitionOrchestrator:
                 channels = self.channel_selection_service.get_test_rc_channels(
                     client_id=client_id, plane=CommandPlane.ACQUISITION
                 )
+                
+                if not channels:
+                    self.poutput(f"Client {client_name}: no channels available for RC enable.")
+                    continue
 
                 rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
 
@@ -107,6 +111,47 @@ class AcquisitionOrchestrator:
                 if not channels:
                     self.poutput(f"Client {client_name}: no channels available for RC enable.")
                     continue
+                
+                if mode == "multipmt":
+                    excluded = set(self.server_state.get_calibration_excluded_channels(client_id))
+                    excluded_by_calibration = sorted(set(channels) & excluded)
+                    channels = sorted(set(channels) - excluded)
+
+                    if excluded_by_calibration:
+                        self.poutput(
+                            f"Client {client_name}: channels excluded from acquisition "
+                            f"(calibration mismatch): {excluded_by_calibration}"
+                        )
+
+                hv_override, override_error = self.acquisition_service.resolve_hv_overrides(
+                    client_id=client_id, args=args,
+                )
+
+                if override_error is not None:
+                    self.poutput(f"Client {client_name}: {override_error}. Skipping acquisition start.")
+                    self.logger.error(f"HV override resolution failed for client {client_name}: {override_error}")
+                    continue
+
+                if hv_override is not None:
+                    
+                    if mode == "multipmt":
+                        overridden_channels = set(hv_override.keys())
+                        excluded_now = sorted(overridden_channels - set(channels))
+                        if excluded_now:
+                            self.poutput(
+                                f"Client {client_name}: HV override applies to channel(s) {excluded_now}, "
+                                "currently excluded from this acquisition (no matching calibration). "
+                                "Voltage/threshold will be stored, but these channels will NOT participate "
+                                "now -- start acquisition again after the calibration mismatch is resolved "
+                                "to include them."
+                            )
+
+                    override_ok = self.acquisition_service.apply_hv_override(
+                        client_id=client_id, acq_info=hv_override,
+                    )
+                    if not override_ok:
+                        self.poutput(f"Client {client_name}: failed to apply HV voltage/threshold override. Skipping acquisition start.")
+                        continue
 
                 rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
                 #rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
@@ -116,6 +161,7 @@ class AcquisitionOrchestrator:
                     continue
 
                 rc_ready_clients.append(client_id)
+
 
         failed_clients = [cid for cid in client_ids if cid not in rc_ready_clients]
 
@@ -180,6 +226,10 @@ class AcquisitionOrchestrator:
     def stop(self) -> None:
     
         current_state = self.server_state.get_server_state()
+        
+        if current_state == ServerFSM.FINALIZING:
+            self.acquisition_service.request_stop()
+            return
         
 
         if current_state == ServerFSM.ACQUIRING:

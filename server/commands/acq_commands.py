@@ -1,7 +1,7 @@
 import argparse
 import cmd2
 
-from server.core.server_state import command_guard, ServerFSM
+from server.core.server_state import command_guard, ServerFSM, acquisition_guard, AcquisitionMode
 from server.utils.logger import get_logger
 
 
@@ -62,6 +62,22 @@ def _add_common_acquisition_arguments(parser: argparse.ArgumentParser) -> None:
         default="csv",
         help="Output file format. Default: csv.",
     )
+    
+    voltage_group = parser.add_mutually_exclusive_group()
+    voltage_group.add_argument(
+        "--voltage", type=int, default=None,
+        help="Common voltage (V) applied to channels involved in this override.",
+    )
+    voltage_group.add_argument(
+        "--voltage-map", type=str, default=None,
+        help='Per-channel voltage (V), e.g. "0:1200,1:1250".',
+    )
+
+    threshold_group = parser.add_mutually_exclusive_group()
+    threshold_group.add_argument("--threshold-mv", type=float, default=None, help="Common threshold in mV.")
+    threshold_group.add_argument("--threshold-pe", type=float, default=None, help="Common threshold in PE (converted per-channel via calibration data).")
+    threshold_group.add_argument("--threshold-mv-map", type=str, default=None, help='Per-channel threshold in mV, e.g. "0:400,1:420".')
+    threshold_group.add_argument("--threshold-pe-map", type=str, default=None, help='Per-channel threshold in PE, e.g. "0:2,1:2.5".')
 
 
 acquisition_parser = argparse.ArgumentParser()
@@ -322,6 +338,7 @@ COMMAND_FSM_MAP = {
         ServerFSM.FINALIZING,
     ]
 )
+@acquisition_guard([AcquisitionMode.TEST, AcquisitionMode.MULTIPMT]) #TEST should be deleted after testing the system
 def do_acquisition(self, args: argparse.Namespace) -> None:
     """
     Acquisition commands:
@@ -352,6 +369,18 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
         return
 
     if args.command == "start":
+        
+        hv_overrides_start = ("voltage", "voltage_map", "threshold_mv", "threshold_pe",
+            "threshold_mv_map", "threshold_pe_map",)
+        specified_overrides = [name for name in hv_overrides_start if getattr(args, name, None) is not None]
+        current_mode = self.server_state.get_mode()
+        if specified_overrides and current_mode == AcquisitionMode.TEST:
+            self.poutput(
+                f"HV voltage/threshold overrides are not applicable in test mode "
+                f"(no HV control in this mode). Specified: {specified_overrides}"
+            )
+            logger.error(f"Rejected HV overrides in test mode: {specified_overrides}")
+            return
         self.acquisition_orchestrator.start(args)
         return
 
