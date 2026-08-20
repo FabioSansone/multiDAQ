@@ -1,3 +1,7 @@
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 from server.utils.logger import get_logger
 
 
@@ -14,6 +18,8 @@ class MonitoringOrchestrator:
         self.server_state = server_state
 
         self.poutput = output_func or (lambda message: None)
+        
+        self.console = Console()
 
         self.logger = get_logger("monitoring_orchestrator")
         self.logger.debug("Monitoring Orchestrator initialized")
@@ -35,7 +41,42 @@ class MonitoringOrchestrator:
             args.rc,
             args.hv,
         )
+        
+    @staticmethod
+    def _fmt(value, digits: int = 2) -> str:
+        if value is None:
+            return "—"
 
+        if isinstance(value, float):
+            return f"{value:.{digits}f}"
+
+        return str(value)
+
+    def _print_client_header(
+        self,
+        client_id: bytes,
+        identity: dict,
+    ) -> None:
+
+        client_name = client_id.decode(errors="ignore")
+
+        multipmt_id = identity.get("multipmt_id", "—")
+        batch_id = identity.get("batch_id", "—")
+
+        text = Text()
+        text.append(client_name, style="bold")
+        text.append("\n")
+        text.append(f"multiPMT ID: {multipmt_id}")
+        text.append("    ")
+        text.append(f"Batch ID: {batch_id}")
+
+        self.console.print(
+            Panel(
+                text,
+                title="multiDAQ Monitoring Snapshot",
+                expand=False,
+            )
+        )
 
     def _resolve_targets(self, args) -> list[bytes]:
 
@@ -167,26 +208,159 @@ class MonitoringOrchestrator:
     def _print_main(self, snapshot: dict) -> None:
 
         if not snapshot["success"]:
-            self.poutput(
-                f"  MAIN: ERROR - {snapshot['error']}"
+            self.console.print(
+                f"[bold red]MAIN snapshot error:[/bold red] "
+                f"{snapshot['error']}"
             )
             return
 
         result = snapshot["result"]
 
-        self.poutput("  MAIN")
+        #
+        # Environment
+        #
+        env = result.get("env", {})
 
-        for group, values in result.items():
-            self.poutput(
-                f"    {group}: {values}"
+        env_table = Table(
+            title="MAIN — Environment",
+            show_header=True,
+            header_style="bold",
+        )
+
+        env_table.add_column("Quantity")
+        env_table.add_column("Value", justify="right")
+        env_table.add_column("Unit")
+
+        env_table.add_row(
+            "Temperature",
+            self._fmt(env.get("temperature_c")),
+            "°C",
+        )
+
+        env_table.add_row(
+            "Pressure",
+            self._fmt(env.get("pressure_hpa")),
+            "hPa",
+        )
+
+        env_table.add_row(
+            "Humidity",
+            self._fmt(env.get("humidity_pct")),
+            "%",
+        )
+
+        self.console.print(env_table)
+
+        #
+        # Power
+        #
+        power = result.get("power", {})
+
+        power_table = Table(
+            title="MAIN — Power",
+            show_header=True,
+            header_style="bold",
+        )
+
+        power_table.add_column("Quantity")
+        power_table.add_column("Value", justify="right")
+        power_table.add_column("Unit")
+
+        power_table.add_row(
+            "Rail AIN0",
+            self._fmt(power.get("rail_ain0_v"), 3),
+            "V",
+        )
+
+        power_table.add_row(
+            "I MON 1",
+            self._fmt(power.get("i_mon_1_a"), 3),
+            "A",
+        )
+
+        power_table.add_row(
+            "Rail AIN2",
+            self._fmt(power.get("rail_ain2_v"), 3),
+            "V",
+        )
+
+        self.console.print(power_table)
+
+        #
+        # Magnetic field
+        #
+        mag = result.get("mag", {})
+
+        mag_table = Table(
+            title="MAIN — Magnetic Field",
+            show_header=True,
+            header_style="bold",
+        )
+
+        mag_table.add_column("Axis")
+        mag_table.add_column("Field", justify="right")
+        mag_table.add_column("Unit")
+
+        for axis in ("x", "y", "z"):
+            mag_table.add_row(
+                axis.upper(),
+                self._fmt(mag.get(f"mag_{axis}_ut"), 3),
+                "µT",
             )
+
+        self.console.print(mag_table)
+
+        #
+        # Motion
+        #
+        motion = result.get("motion", {})
+
+        motion_table = Table(
+            title="MAIN — Motion",
+            show_header=True,
+            header_style="bold",
+        )
+
+        motion_table.add_column("Axis")
+        motion_table.add_column(
+            "Acceleration [g]",
+            justify="right",
+        )
+        motion_table.add_column(
+            "Gyroscope [°/s]",
+            justify="right",
+        )
+
+        for axis in ("x", "y", "z"):
+            motion_table.add_row(
+                axis.upper(),
+                self._fmt(
+                    motion.get(f"acc_{axis}_g"),
+                    4,
+                ),
+                self._fmt(
+                    motion.get(f"gyr_{axis}_dps"),
+                    3,
+                ),
+            )
+
+        self.console.print(motion_table)
+
+        die_temperature = motion.get(
+            "die_temperature_c"
+        )
+
+        self.console.print(
+            f"  BMI270 die temperature: "
+            f"[bold]{self._fmt(die_temperature)} °C[/bold]"
+        )
             
             
     def _print_rc(self, snapshot: dict) -> None:
 
         if not snapshot["success"]:
-            self.poutput(
-                f"  RC: snapshot completed with errors - "
+            self.console.print(
+                f"[bold yellow]RC snapshot completed with errors:[/bold yellow] "
                 f"{snapshot['error']}"
             )
 
@@ -194,56 +368,206 @@ class MonitoringOrchestrator:
 
         free = result.get("free", {})
         trigger = result.get("trigger", {})
-        hv_state_by_channel = snapshot.get("hv_state_by_channel", {})
 
-        self.poutput("  RC")
-        self.poutput("    Free rates:")
-
-        for channel, data in free.get("channels", {}).items():
-            rc_channel = int(channel)
-
-            hv_info = hv_state_by_channel.get(
-                rc_channel, {}
-            )
-
-            self.poutput(
-                f"      ch {rc_channel}: "
-                f"{data.get('value')} Hz "
-                f"(enabled={data.get('enabled')}, "
-                f"hv_state={hv_info.get('channel_state')}, "
-                f"hv_power={hv_info.get('power_state')})"
-            )
-
-        for channel, data in trigger.get("channels", {}).items():
-            rc_channel = int(channel)
-
-            hv_info = hv_state_by_channel.get(
-                rc_channel, {}
-            )
-
-            self.poutput(
-                f"      ch {rc_channel}: "
-                f"{data.get('value')} Hz "
-                f"(enabled={data.get('enabled')}, "
-                f"hv_state={hv_info.get('channel_state')}, "
-                f"hv_power={hv_info.get('power_state')})"
-            )
-
-        self.poutput(
-            "    external trigger rate: "
-            f"{trigger.get('external_trigger_rate', {}).get('value')} Hz"
+        free_channels = free.get("channels", {})
+        trigger_channels = trigger.get(
+            "channels", {}
         )
 
-        self.poutput(
-            "    auto trigger rate: "
-            f"{trigger.get('auto_trigger_rate', {}).get('value')} Hz"
+        hv_state_by_channel = snapshot.get(
+            "hv_state_by_channel", {}
         )
+
+        table = Table(
+            title="RC Channel Rates",
+            show_header=True,
+            header_style="bold",
+        )
+
+        table.add_column("Ch", justify="right")
+        table.add_column(
+            "Free rate [Hz]",
+            justify="right",
+        )
+        table.add_column(
+            "Triggered rate [Hz]",
+            justify="right",
+        )
+        table.add_column("Rate enable")
+        table.add_column("HV state")
+        table.add_column("HV power")
+
+        all_channels = sorted(
+            {
+                int(ch)
+                for ch in (
+                    list(free_channels.keys())
+                    + list(trigger_channels.keys())
+                )
+            }
+        )
+
+        for channel in all_channels:
+
+            free_data = (
+                free_channels.get(channel)
+                or free_channels.get(str(channel))
+                or {}
+            )
+
+            trigger_data = (
+                trigger_channels.get(channel)
+                or trigger_channels.get(str(channel))
+                or {}
+            )
+
+            hv_info = hv_state_by_channel.get(
+                channel, {}
+            )
+
+            enabled = bool(
+                free_data.get("enabled")
+            )
+
+            if enabled:
+                enabled_text = Text(
+                    "ENABLED",
+                    style="green",
+                )
+            else:
+                enabled_text = Text(
+                    "DISABLED",
+                    style="dim",
+                )
+
+            hv_state = hv_info.get(
+                "channel_state"
+            )
+
+            if hv_state == "ok":
+                hv_state_text = Text(
+                    "OK",
+                    style="green",
+                )
+            elif hv_state == "bad":
+                hv_state_text = Text(
+                    "BAD",
+                    style="red",
+                )
+            elif hv_state == "fixed_bad":
+                hv_state_text = Text(
+                    "FIXED BAD",
+                    style="bold red",
+                )
+            else:
+                hv_state_text = Text(
+                    str(hv_state or "—")
+                )
+
+            table.add_row(
+                str(channel),
+                self._fmt(
+                    free_data.get("value"),
+                    0,
+                ),
+                self._fmt(
+                    trigger_data.get("value"),
+                    0,
+                ),
+                enabled_text,
+                hv_state_text,
+                str(
+                    hv_info.get("power_state")
+                    or "—"
+                ).upper(),
+            )
+
+        self.console.print(table)
+        
+        trigger_table = Table(
+            title="RC Trigger Monitoring",
+            show_header=True,
+            header_style="bold",
+        )
+
+        trigger_table.add_column("Counter")
+        trigger_table.add_column(
+            "Rate [Hz]",
+            justify="right",
+        )
+        trigger_table.add_column("Configuration")
+        
+        
+        external_data = trigger.get(
+            "external_trigger_rate", {}
+        )
+
+        auto_data = trigger.get(
+            "auto_trigger_rate", {}
+        )
+
+        auto_config = trigger.get(
+            "auto_trigger_config"
+        )
+        
+        
+        auto_description = "unavailable"
+
+        if auto_config is not None:
+
+            mode = auto_config.get("mode")
+
+            if mode == "majority":
+                multiplicity = auto_config.get(
+                    "majority_threshold"
+                )
+
+                if multiplicity == 0:
+                    auto_description = (
+                        "not configured"
+                    )
+                else:
+                    auto_description = (
+                        f"majority "
+                        f"(multiplicity={multiplicity})"
+                    )
+
+            elif mode == "exact":
+                channels = auto_config.get(
+                    "exact_channels", []
+                )
+
+                auto_description = (
+                    "exact channels "
+                    f"{channels}"
+                )
+            
+        trigger_table.add_row(
+            "External trigger",
+            self._fmt(
+                external_data.get("value"),
+                0,
+            ),
+            "—",
+        )
+
+        trigger_table.add_row(
+            "Auto trigger",
+            self._fmt(
+                auto_data.get("value"),
+                0,
+            ),
+            auto_description,
+        )
+
+        self.console.print(trigger_table)
+            
         
     def _print_hv(self, snapshot: dict) -> None:
 
         if not snapshot["success"]:
-            self.poutput(
-                f"  HV: snapshot completed with errors - "
+            self.console.print(
+                f"[bold yellow]HV snapshot completed with errors:[/bold yellow] "
                 f"{snapshot['error']}"
             )
 
@@ -261,7 +585,20 @@ class MonitoringOrchestrator:
             .get("channels", {})
         )
 
-        self.poutput("  HV")
+        table = Table(
+            title="HV Channels",
+            show_header=True,
+            header_style="bold",
+        )
+
+        table.add_column("Ch", justify="right")
+        table.add_column("State")
+        table.add_column("Power")
+        table.add_column("Voltage [V]", justify="right")
+        table.add_column("Current [µA]", justify="right")
+        table.add_column("Temp. [°C]", justify="right")
+        table.add_column("HW status")
+        table.add_column("Alarm")
 
         channels = sorted(
             {
@@ -289,16 +626,74 @@ class MonitoringOrchestrator:
 
             user_channel = hv_channel - 1
 
-            self.poutput(
-                f"    ch {user_channel}: "
-                f"V={electrical_data.get('voltage')} "
-                f"I={electrical_data.get('current')} "
-                f"T={electrical_data.get('temperature')} "
-                f"state={electrical_data.get('channel_state')} "
-                f"power={electrical_data.get('power_state')} "
-                f"status={status_data.get('hw_status')} "
-                f"alarm={status_data.get('hw_alarm')}"
+            state = electrical_data.get(
+                "channel_state"
             )
+
+            power = electrical_data.get(
+                "power_state"
+            )
+
+            if state == "ok":
+                state_text = Text("OK", style="green")
+            elif state == "bad":
+                state_text = Text("BAD", style="red")
+            elif state == "fixed_bad":
+                state_text = Text(
+                    "FIXED BAD",
+                    style="bold red",
+                )
+            else:
+                state_text = Text(
+                    str(state or "—")
+                )
+
+            if power == "on":
+                power_text = Text("ON", style="green")
+            elif power == "off":
+                power_text = Text("OFF", style="dim")
+            else:
+                power_text = Text("—")
+
+            alarm = status_data.get("hw_alarm")
+
+            if alarm and alarm != "none":
+                alarm_text = Text(
+                    str(alarm),
+                    style="bold red",
+                )
+            else:
+                alarm_text = Text(
+                    str(alarm or "—")
+                )
+
+            table.add_row(
+                str(user_channel),
+                state_text,
+                power_text,
+                self._fmt(
+                    electrical_data.get("voltage"),
+                    3,
+                ),
+                self._fmt(
+                    electrical_data.get("current"),
+                    3,
+                ),
+                self._fmt(
+                    electrical_data.get("temperature"),
+                    2,
+                ),
+                str(
+                    status_data.get("hw_status")
+                    or "—"
+                ),
+                alarm_text,
+            )
+
+        self.console.print(table)
+        
+        
+        
             
     def _print_snapshots(
         self,
@@ -307,28 +702,20 @@ class MonitoringOrchestrator:
 
         for client_id, snapshot in snapshots.items():
 
-            client_name = client_id.decode(
-                errors="ignore"
-            )
-
             identity = snapshot.get(
                 "identity", {}
             )
 
-            self.poutput("")
-            self.poutput(
-                f"Client {client_name} "
-                f"(multipmt_id="
-                f"{identity.get('multipmt_id')}, "
-                f"batch_id="
-                f"{identity.get('batch_id')})"
+            self._print_client_header(
+                client_id=client_id,
+                identity=identity,
             )
 
             if "main" in snapshot:
                 self._print_main(
                     snapshot["main"]
                 )
-                
+
             if "hv" in snapshot:
                 self._print_hv(
                     snapshot["hv"]
@@ -338,6 +725,8 @@ class MonitoringOrchestrator:
                 self._print_rc(
                     snapshot["rc"]
                 )
+
+            self.console.print()
 
             
     
