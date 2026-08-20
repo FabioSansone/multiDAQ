@@ -1,5 +1,4 @@
 from typing import Optional
-import time
 from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
 from client.hardware.hv.hv_service import HVService
@@ -12,6 +11,10 @@ from common.message_handler import MessageStatus
 
 
 SHUTDOWN_ZERO_REGISTERS = [19, 15, 1, 0, 39, 16, 18]
+RC39_CHANNEL_MASK = 0x7F
+RC39_EXTERNAL_RATE_BIT = 1 << 7
+RC39_AUTO_RATE_BIT = 1 << 8
+RC39_TRIGGER_RATE_MASK = (RC39_EXTERNAL_RATE_BIT | RC39_AUTO_RATE_BIT)
 
 
 class ClientRunTime:
@@ -42,10 +45,6 @@ class ClientRunTime:
         self.acquisition_service = AcquisitionService(self)
         
         self.mac_to_id: int | None = None
-        
-        self._last_rc39_sync_time = 0.0
-        self._last_rc39_mask = None
-        self._rc39_sync_period_s = 30.0
         
         self.channel_hv_parameters: dict[int, dict] = {}
 
@@ -145,13 +144,6 @@ class ClientRunTime:
 
             mask |= 1 << ch
 
-        now = time.time()
-
-        if (
-            self._last_rc39_mask == mask
-            and now - self._last_rc39_sync_time < self._rc39_sync_period_s
-        ):
-            return True
 
         read_response = self.rc_service._submit_command(
             command="rc_read_register",
@@ -164,9 +156,10 @@ class ClientRunTime:
             return False
 
         current_value = read_response.result.get("value", 0)
-        trigger_bits = current_value & ~0x7F
+        new_value = mask | RC39_TRIGGER_RATE_MASK
+        if current_value == new_value:
+            return True
 
-        new_value = trigger_bits | mask
 
         response = self.rc_service._submit_command(
             command="rc_write_register",
@@ -183,13 +176,13 @@ class ClientRunTime:
             )
             return False
 
-        self._last_rc39_mask = mask
-        self._last_rc39_sync_time = now
-
         self.logger.info(
-            f"RC register 39 synchronized: "
-            f"mode={self.acq_mode}, hv_channels={hv_enabled_channels}, "
-            f"rc_channels={rc_channels}, mask={mask}"
+            "RC register 39 synchronized: "
+            f"mode={self.acq_mode}, "
+            f"hv_channels={hv_enabled_channels}, "
+            f"rc_channels={rc_channels}, "
+            f"channel_mask={mask}, "
+            f"reg39={new_value}"
         )
 
         return True

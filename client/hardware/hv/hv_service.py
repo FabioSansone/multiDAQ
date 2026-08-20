@@ -102,7 +102,7 @@ class HVService:
             self.state_change_callback()
         except Exception as e:
             self.logger.error(
-                f"Error while synchronizing RC register 19 after {source}: {e}"
+                f"Error while synchronizing RC register 39 after {source}: {e}"
             )
     
     def _notify_hv_parameter_update(self, hv_request:HVRequest, hv_response:HVResponse) -> None:
@@ -273,6 +273,10 @@ class HVService:
                     "check_channel_safety",
                     "check_channel_power",
                     "check_recovery_bad",
+                    "hv_monitor_snapshot",
+                    "hv_electrical_monitoring",
+                    "hv_status_alarm_monitoring",
+                    "hv_channel_lists",
                 }:
                     self._notify_state_change(
                         source=hv_request.command,

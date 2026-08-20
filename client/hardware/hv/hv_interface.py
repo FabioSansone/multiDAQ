@@ -571,7 +571,7 @@ class HV:
             try:
                 voltage = self.hv.getVoltage(slave=ch)
                 current = self.hv.getCurrent(slave=ch)
-                temperature = self.hv.getTemperature(slave=ch)
+                temperature = self.hv.convertTemperature(self.hv.getTemperature(slave=ch))
  
                 result["channels"][ch] = {
                     "voltage": voltage,

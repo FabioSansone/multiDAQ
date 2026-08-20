@@ -58,6 +58,48 @@ class MonitoringOrchestrator:
 
         return [resolved]
 
+    @staticmethod
+    def _build_hv_state_lookup(
+        hv_snapshot: dict | None,
+    ) -> dict[int, dict]:
+
+        if not hv_snapshot:
+            return {}
+
+        result = hv_snapshot.get(
+            "result", {}
+        )
+
+        electrical = (
+            result
+            .get("electrical", {})
+            .get("channels", {})
+        )
+
+        lookup: dict[int, dict] = {}
+
+        for hv_key, data in electrical.items():
+            try:
+                hv_channel = int(hv_key)
+            except (TypeError, ValueError):
+                continue
+
+            rc_channel = hv_channel - 1
+
+            if rc_channel < 0 or rc_channel >= 7:
+                continue
+
+            lookup[rc_channel] = {
+                "channel_state": data.get(
+                    "channel_state"
+                ),
+                "power_state": data.get(
+                    "power_state"
+                ),
+            }
+
+        return lookup
+    
     
     def collect_snapshot(
         self,
@@ -75,7 +117,9 @@ class MonitoringOrchestrator:
 
             client_snapshot = {
                 "identity": (
-                    self.server_state.get_identity(client_id)
+                    self.server_state.get_identity(
+                        client_id
+                    )
                     or {}
                 )
             }
@@ -87,21 +131,34 @@ class MonitoringOrchestrator:
                     )
                 )
 
+            hv_snapshot = None
+
+            if include_hv or include_rc:
+                hv_snapshot = (
+                    self.monitoring_service.read_hv_snapshot(
+                        client_id=client_id,
+                        channels=channels,
+                    )
+                )
+
+                if include_hv:
+                    client_snapshot["hv"] = hv_snapshot
+
             if include_rc:
-                client_snapshot["rc"] = (
+                rc_snapshot = (
                     self.monitoring_service.read_rc_snapshot(
                         client_id=client_id,
                         channels=channels,
                     )
                 )
 
-            if include_hv:
-                client_snapshot["hv"] = (
-                    self.monitoring_service.read_hv_snapshot(
-                        client_id=client_id,
-                        channels=channels,
+                rc_snapshot["hv_state_by_channel"] = (
+                    self._build_hv_state_lookup(
+                        hv_snapshot
                     )
                 )
+
+                client_snapshot["rc"] = rc_snapshot
 
             snapshots[client_id] = client_snapshot
 
@@ -137,41 +194,49 @@ class MonitoringOrchestrator:
 
         free = result.get("free", {})
         trigger = result.get("trigger", {})
+        hv_state_by_channel = snapshot.get("hv_state_by_channel", {})
 
         self.poutput("  RC")
-
         self.poutput("    Free rates:")
 
-        for channel, data in free.get(
-            "channels", {}
-        ).items():
+        for channel, data in free.get("channels", {}).items():
+            rc_channel = int(channel)
 
-            self.poutput(
-                f"      ch {channel}: "
-                f"{data.get('value')} "
-                f"(enabled={data.get('enabled')})"
+            hv_info = hv_state_by_channel.get(
+                rc_channel, {}
             )
 
-        self.poutput("    Trigger rates:")
+            self.poutput(
+                f"      ch {rc_channel}: "
+                f"{data.get('value')} Hz "
+                f"(enabled={data.get('enabled')}, "
+                f"hv_state={hv_info.get('channel_state')}, "
+                f"hv_power={hv_info.get('power_state')})"
+            )
 
-        for channel, data in trigger.get(
-            "channels", {}
-        ).items():
+        for channel, data in trigger.get("channels", {}).items():
+            rc_channel = int(channel)
+
+            hv_info = hv_state_by_channel.get(
+                rc_channel, {}
+            )
 
             self.poutput(
-                f"      ch {channel}: "
-                f"{data.get('value')} "
-                f"(enabled={data.get('enabled')})"
+                f"      ch {rc_channel}: "
+                f"{data.get('value')} Hz "
+                f"(enabled={data.get('enabled')}, "
+                f"hv_state={hv_info.get('channel_state')}, "
+                f"hv_power={hv_info.get('power_state')})"
             )
 
         self.poutput(
             "    external trigger rate: "
-            f"{trigger.get('external_trigger_rate', {}).get('value')}"
+            f"{trigger.get('external_trigger_rate', {}).get('value')} Hz"
         )
 
         self.poutput(
             "    auto trigger rate: "
-            f"{trigger.get('auto_trigger_rate', {}).get('value')}"
+            f"{trigger.get('auto_trigger_rate', {}).get('value')} Hz"
         )
         
     def _print_hv(self, snapshot: dict) -> None:
@@ -263,16 +328,18 @@ class MonitoringOrchestrator:
                 self._print_main(
                     snapshot["main"]
                 )
+                
+            if "hv" in snapshot:
+                self._print_hv(
+                    snapshot["hv"]
+                )
 
             if "rc" in snapshot:
                 self._print_rc(
                     snapshot["rc"]
                 )
 
-            if "hv" in snapshot:
-                self._print_hv(
-                    snapshot["hv"]
-                )
+            
     
     
     def status(self, args) -> None:
