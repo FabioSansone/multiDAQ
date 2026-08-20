@@ -24,6 +24,7 @@ class ClientIdentity:
         self.hostname = socket.gethostname()
         self.mac = self._get_mac_address()
         self.fixed_bad_channels : Optional[list] = None
+        self.i2cbus_sensors: int | None = None
         
         self._load_from_file()
         
@@ -53,6 +54,17 @@ class ClientIdentity:
                         self.multipmt_id = data.get('multipmt_id')
                         self.batch_id = data.get('batch_id')
                         self.fixed_bad_channels = data.get('fixed_bad_channels')
+                        self.i2cbus_sensors = data.get("i2cbus_sensors")
+
+                        if self.i2cbus_sensors is not None:
+                            try:
+                                self.i2cbus_sensors = int(self.i2cbus_sensors)
+                            except (TypeError, ValueError):
+                                self.logger.warning(
+                                    f"Invalid cached I2C bus: {self.i2cbus_sensors!r}"
+                                )
+                                self.i2cbus_sensors = None
+                                
                         self.logger.info(f"Loaded identity from {path}: batch={self.batch_id}, multipmt={self.multipmt_id}, bad channels={self.fixed_bad_channels}")
         
                         return True
@@ -77,8 +89,9 @@ class ClientIdentity:
                         'multipmt_id': self.multipmt_id,
                         'hostname': self.hostname,
                         'mac_address': self.mac,
-                        'configured_at': str(__import__('datetime').datetime.now()),
-                        'fixed_bad_channels': self.fixed_bad_channels
+                        'configured_at': str(datetime.now()),
+                        'fixed_bad_channels': self.fixed_bad_channels,
+                        "i2cbus_sensors": self.i2cbus_sensors,
                     }, f, indent=2)
                     self.logger.info(f"Identity saved to {path}")
                     return
@@ -207,3 +220,54 @@ class ClientIdentity:
                 return
 
         self.logger.warning("Failed to retrieve client identity from config file.")
+    
+    
+    def get_i2cbus(self) -> int | None:
+        for path in CONFIG_PATHS:
+            if path.exists():
+                try:
+                    with open(path) as f:
+                        data = json.load(f)
+                    value = data.get("i2cbus_sensors")
+
+                    if value is None:
+                        return None
+
+                    return int(value)
+                except Exception as e:
+                    self.logger.error(f"Error loading {path}: {e}")
+                    return None
+
+        self.logger.warning("Failed to retrieve client identity from config file.")
+        return None
+    
+    def set_i2cbus(self, i2cbus: int) -> None:
+        """Persist the I2C bus used by the Main Board sensors."""
+        i2cbus = int(i2cbus)
+
+        for path in CONFIG_PATHS:
+            if path.exists():
+                try:
+                    with open(path) as f:
+                        data = json.load(f)
+
+                    data["i2cbus_sensors"] = i2cbus
+                    self.i2cbus_sensors = i2cbus
+
+                    with open(path, "w") as f:
+                        json.dump(data, f, indent=2)
+
+                    self.logger.info(
+                        f"Cached sensor I2C bus: i2c-{i2cbus}"
+                    )
+                    return
+
+                except Exception as e:
+                    self.logger.error(
+                        f"Error updating i2cbus_sensors in {path}: {e}"
+                    )
+                    return
+
+        self.logger.warning(
+            "Failed to retrieve client identity from config file."
+        )

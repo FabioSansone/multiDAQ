@@ -17,13 +17,48 @@ BMI270_ADDR = 0x68
 
 class MAIN:
     
-    def __init__(self):
+    def __init__(self, cached_i2c_bus: int | None = None):
         self.logger = get_logger('main')
         
-        self.bme = BME280(chip_addr=BME280_ADDR)
-        self.bmm = BMM150(chip_addr=BMM150_ADDR)
-        self.bmi = BMI270(chip_addr=BMI270_ADDR)
-        self.tla = TLA2024(chip_addr=TLA2024_ADRR)
+        if cached_i2c_bus is None:
+            candidate_buses = (0, 1, 2)
+        else:
+            candidate_buses = (cached_i2c_bus, *(bus for bus in (0, 1, 2) if bus != cached_i2c_bus))
+        
+        self.logger.info(f"Main Board I2C candidate buses: {candidate_buses}")
+        
+        self.bme = BME280(chip_addr=BME280_ADDR, candidate_buses=candidate_buses)
+        self.bmm = BMM150(chip_addr=BMM150_ADDR, candidate_buses=candidate_buses)
+        self.bmi = BMI270(chip_addr=BMI270_ADDR, candidate_buses=candidate_buses)
+        self.tla = TLA2024(chip_addr=TLA2024_ADRR, candidate_buses=candidate_buses)
+        
+        detected_buses = {
+            sensor.iic_bus
+            for sensor in (
+                self.bme,
+                self.bmm,
+                self.bmi,
+                self.tla,
+            )
+            if sensor.iic_bus is not None
+        }
+
+        if len(detected_buses) == 1:
+            self.i2c_bus = next(iter(detected_buses))
+            self.logger.info(f"Main Board sensors detected on I2C bus {self.i2c_bus}")
+
+        elif len(detected_buses) == 0:
+            self.i2c_bus = None
+            self.logger.error(
+                "No Main Board I2C sensor detected"
+            )
+
+        else:
+            self.i2c_bus = None
+            self.logger.error(
+                "Main Board sensors detected on inconsistent I2C buses: "
+                f"{sorted(detected_buses)}"
+            )
         
         
     def get_bme_data(self):

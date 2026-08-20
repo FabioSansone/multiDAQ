@@ -29,14 +29,17 @@ class ClientRunTime:
         self.identity = identity
         self.server_ip = server_ip
         self.hv_port = hv_port
+        self.cached_i2c_bus = self.identity.get_i2cbus()
 
         self.hv_service: Optional[HVService] = None
         self.rc_service: RCService = RCService()
         self.rc_service.start()
         self.evproducer = EVService()
         self.feb_service = FEBService(self)
-        self.main_service: MainService = MainService()
+        self.main_service: MainService = MainService(cached_i2c_bus=self.cached_i2c_bus)
+        self.sync_sensor_i2c_bus_cache()
         self.main_service.start()
+        
 
         self.acq_mode: Optional[str] = None
         self.acq_info: Optional[dict] = None
@@ -327,5 +330,35 @@ class ClientRunTime:
                     entry["voltage"] = ch_config["voltage"]
                 if "threshold" in ch_config:
                     entry["threshold"] = ch_config["threshold"]
-        
-        
+                    
+    
+    def sync_sensor_i2c_bus_cache(self) -> None:
+        detected_i2c_bus = self.main_service.get_i2c_bus()
+
+        if detected_i2c_bus is None:
+            self.logger.warning(
+                "Cannot update Main Board I2C bus cache: "
+                "no valid sensor bus detected"
+            )
+            return
+
+        if detected_i2c_bus == self.cached_i2c_bus:
+            self.logger.debug(
+                f"Main Board sensor I2C bus cache already valid: "
+                f"{detected_i2c_bus}"
+            )
+            return
+
+        self.identity.set_i2cbus(
+            detected_i2c_bus
+        )
+
+        self.logger.info(
+            "Main Board sensor I2C bus cache updated: "
+            f"{self.cached_i2c_bus} -> {detected_i2c_bus}"
+        )
+
+        self.cached_i2c_bus = detected_i2c_bus       
+            
+            
+            

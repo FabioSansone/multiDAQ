@@ -22,11 +22,11 @@ class MainService:
     SENSORS_CHECK_DEADLINE_S = 30.0
 
 
-    def __init__(self):
+    def __init__(self, cached_i2c_bus: int | None = None):
         self.logger = get_logger("main_service")
         self.logger.debug("Main Service Initialized")
 
-        self.main = MAIN()
+        self.main = MAIN(cached_i2c_bus=cached_i2c_bus)
 
         self.input_queue: queue.PriorityQueue = queue.PriorityQueue()
         self._counter = itertools.count()
@@ -40,6 +40,9 @@ class MainService:
         self.check_thread: Optional[threading.Thread] = None
         self.sensors_check_pending = False
         self.pending_lock = threading.Lock()
+    
+    def get_i2c_bus(self) -> int | None:
+        return self.main.i2c_bus
 
     def _submit_command(
         self,
