@@ -50,6 +50,8 @@ class ClientRunTime:
         self.mac_to_id: int | None = None
         
         self.channel_hv_parameters: dict[int, dict] = {}
+        
+        self._closed = False
 
         self.logger.info("ClientRuntime initialized")
 
@@ -241,6 +243,15 @@ class ClientRunTime:
         return overall_success
 
     def close(self) -> None:
+        
+        if self._closed:
+            self.logger.debug(
+                "ClientRuntime already closed"
+            )
+            return
+
+        self._closed = True
+        
         self.stop_main_service()
         self.stop_hv_service()
 

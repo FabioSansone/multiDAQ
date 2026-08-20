@@ -579,7 +579,7 @@ class ControlPlaneManager:
         """Close only the current control socket connection."""
 
         self.stop_listener()
-        self.runtime.close()
+        
 
         if self.socket is not None:
             try:
