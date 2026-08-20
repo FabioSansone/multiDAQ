@@ -6,9 +6,10 @@ import cmd2
 import zmq
 
 from server.utils.logger import get_logger, LoggerManager
-from server.commands import app_commands, hv_commands, rc_commands, acq_commands, calibration_commands
+from server.commands import app_commands, hv_commands, rc_commands, acq_commands, calibration_commands, mon_commands
 from server.communication.control_manager import ControlPlaneManager
 from server.communication.acquisition_manager import AcquisitionPlaneManager
+from server.communication.monitoring_manager import MonitoringPlaneManager
 from server.acquisition.receiver_service import DataReceiverService
 from common.constants import ACQUISITION_MODES
 from server.core.server_state import ServerState, ServerFSMEvent
@@ -17,6 +18,8 @@ from server.services.channel_selection_service import ChannelSelectionService
 from server.services.acquisition_orchestrator import AcquisitionOrchestrator
 from server.services.acquisition_service import AcquisitionService
 from server.services.calibration_orchestrator import CalibrationOrchestrator
+from server.services.monitoring_service import MonitoringService
+from server.services.monitoring_orchestrator import MonitoringOrchestrator
 from server.services.shutdown_service import ShutdownService
 from server.services.startup_service import StartupService
 from server.core.mac_id_registry import MacIdentityRegistry
@@ -27,7 +30,7 @@ from server.web.web_app import start_web_server
 class Server(cmd2.Cmd):
     "A terminal application to switch and interact with different multiPMTs"
 
-    def __init__(self, server_state: ServerState, mac_identity_registry: MacIdentityRegistry, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager, data_receiver_service: DataReceiverService) -> None:
+    def __init__(self, server_state: ServerState, mac_identity_registry: MacIdentityRegistry, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager, monitoring_manager: MonitoringPlaneManager, data_receiver_service: DataReceiverService) -> None:
         super().__init__(allow_cli_args=False)
 
         self.intro = "Welcome to the control interface for the multiPMTs. Type ? or help to list commands."
@@ -35,6 +38,7 @@ class Server(cmd2.Cmd):
         self.server_state = server_state
         self.control_manager = control_manager
         self.acq_manager = acquisition_manager
+        self.mon_manager = monitoring_manager
         self.mac_identity_registry = mac_identity_registry
         self.data_receiver_service = data_receiver_service
         if not self.data_receiver_service.receiver_ready:
@@ -48,11 +52,14 @@ class Server(cmd2.Cmd):
         self.client_command_service = ClientCommandService(
             control_manager=self.control_manager,
             acquisition_manager=self.acq_manager,
+            monitoring_manager=self.mon_manager,
+            server_state=self.server_state,
             output_func=self.poutput,
         )
 
         self.channel_selection_service = ChannelSelectionService(
             command_service=self.client_command_service,
+            server_state=self.server_state,
             output_func=self.poutput,
         )
         
@@ -62,6 +69,11 @@ class Server(cmd2.Cmd):
             data_receiver_service=self.data_receiver_service,
             command_service=self.client_command_service,
             mac_identity_registry=self.mac_identity_registry,
+            output_func=self.poutput,
+        )
+        
+        self.monitoring_service = MonitoringService(
+            command_service=self.client_command_service,
             output_func=self.poutput,
         )
         
@@ -86,6 +98,12 @@ class Server(cmd2.Cmd):
             channel_selection_service=self.channel_selection_service,
             command_service=self.client_command_service,
             get_mode=lambda: self.mode,
+            output_func=self.poutput,
+        )
+        
+        self.mon_orchestrator = MonitoringOrchestrator(
+            monitoring_service=self.monitoring_service,
+            server_state=self.server_state,
             output_func=self.poutput,
         )
 
@@ -120,6 +138,9 @@ class Server(cmd2.Cmd):
         #CALIBRATION COMMANDS#
         self.do_calibration = calibration_commands.do_calibration.__get__(self, Server)
         self.do_recheck_calibration = (calibration_commands.do_recheck_calibration.__get__(self, Server))
+        
+        #MONITORING COMMANDS#
+        self.do_status = mon_commands.do_status.__get__(self, Server)
 
         #EVENT MESSAGES MANAGER#
         self.handle_event = app_commands.handle_event.__get__(self, Server)
@@ -214,8 +235,13 @@ def main() -> int:
         context=context,
         state=server_state
     )
+    
+    monitoring_manager = MonitoringPlaneManager(
+        context=context,
+        state=server_state,
+    )
 
-    app = Server(server_state=server_state, mac_identity_registry=mac_identity_registry, control_manager=control_manager, acquisition_manager=acquisition_manager, data_receiver_service=data_receiver_service)
+    app = Server(server_state=server_state, mac_identity_registry=mac_identity_registry, control_manager=control_manager, acquisition_manager=acquisition_manager, monitoring_manager=monitoring_manager, data_receiver_service=data_receiver_service)
 
     if not args.no_web:
         start_web_server(server=app, host=args.web_host, port=args.web_port, grafana_url=args.grafana_url)
@@ -229,6 +255,10 @@ def main() -> int:
     except KeyboardInterrupt:
         app.poutput("\nShutting down...")
     finally:
+        if monitoring_manager.socket is not None:
+            monitoring_manager.clear_queues()
+            monitoring_manager.close_connection()
+            
         if acquisition_manager.socket is not None:
             acquisition_manager.clear_queues()
             acquisition_manager.close_connection()

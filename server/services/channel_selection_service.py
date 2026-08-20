@@ -8,8 +8,9 @@ from server.services.client_command_service import CommandPlane
 
 
 class ChannelSelectionService:
-    def __init__(self, command_service, output_func=None) -> None:
+    def __init__(self, command_service, server_state, output_func=None) -> None:
         self.command_service = command_service
+        self.server_state = server_state
         self.poutput = output_func or (lambda message: None)
         self.logger = get_logger("channel_selection_service")
         self.logger.debug("Channels Selection Service initialized")
@@ -226,7 +227,18 @@ class ChannelSelectionService:
             These are the channels that can be passed to RC register 19.
         """
 
-        client_ids = self.command_service.list_clients_on_plane(plane)
+        if plane == CommandPlane.CONTROL:
+            client_ids = self.server_state.list_connected_clients()
+
+        elif plane == CommandPlane.ACQUISITION:
+            client_ids = self.server_state.list_acquisition_clients()
+
+        elif plane == CommandPlane.MONITORING:
+            client_ids = self.server_state.list_monitoring_clients()
+
+        else:
+            self.logger.error(f"Unsupported plane: {plane}")
+            return {}
 
         if not client_ids:
             self.poutput(

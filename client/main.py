@@ -8,6 +8,7 @@ from client.communication.identity import ClientIdentity
 from client.core.client_runtime import ClientRunTime
 from client.communication.control_manager import ControlPlaneManager
 from client.communication.acquisition_manager import AcquisitionPlaneManager
+from client.communication.monitoring_manager import MonitoringPlaneManager
 
 
 def main() -> int:
@@ -18,6 +19,7 @@ def main() -> int:
     parser.add_argument("--server-ip", type=str, default="127.0.0.1", help="Server IP")
     parser.add_argument("--control-port", type=int, default=8888, help="Control plane port")
     parser.add_argument("--acq-port", type=int, default=8889, help="Acquisition plane port")
+    parser.add_argument("--mon-port", type=int, default=8890, help="Monitoring plane port",)
     parser.add_argument("--hv-port", type=str, default="/dev/ttyPS1", help="HV port")
     args = parser.parse_args()
 
@@ -39,9 +41,14 @@ def main() -> int:
         context=context,
         runtime=runtime,
     )
+    monitoring_manager = MonitoringPlaneManager(
+        context=context,
+        runtime=runtime,
+    )
 
     control_command_thread = None
     acquisition_command_thread = None
+    monitoring_command_thread = None
 
     try:
         while True:
@@ -52,6 +59,10 @@ def main() -> int:
             acquisition_manager.reconnect_requested.clear()
             acquisition_manager.stop_listening.clear()
             acquisition_manager.clear_queues()
+            
+            monitoring_manager.reconnect_requested.clear()
+            monitoring_manager.stop_listening.clear()
+            monitoring_manager.clear_queues()
 
             if not control_manager.start_connection(port=args.control_port):
                 logger.error("Failed to connect control socket")
@@ -76,6 +87,18 @@ def main() -> int:
                 continue
 
             logger.info("Client acquisition-plane handshake completed successfully")
+            
+            if not monitoring_manager.start_connection(port=args.mon_port):
+                logger.error("Failed to connect monitoring socket")
+                time.sleep(1)
+                continue
+
+            if not monitoring_manager.handshake(max_retries=None):
+                logger.error("Monitoring-plane handshake failed")
+                time.sleep(1)
+                continue
+
+            logger.info("Client monitoring-plane handshake completed successfully")
 
             if not control_manager.start_listener():
                 logger.error("Failed to start control listener")
@@ -84,6 +107,11 @@ def main() -> int:
 
             if not acquisition_manager.start_listener():
                 logger.error("Failed to start acquisition listener")
+                time.sleep(1)
+                continue
+            
+            if not monitoring_manager.start_listener():
+                logger.error("Failed to start monitoring listener")
                 time.sleep(1)
                 continue
 
@@ -98,10 +126,17 @@ def main() -> int:
                 daemon=True,
             )
             acquisition_command_thread.start()
+            
+            monitoring_command_thread = threading.Thread(
+                target=monitoring_manager.handle_commands,
+                daemon=True,
+            )
+            monitoring_command_thread.start()
 
             while (
                 not control_manager.reconnect_requested.is_set()
                 and not acquisition_manager.reconnect_requested.is_set()
+                and not monitoring_manager.reconnect_requested.is_set()
             ):
                 time.sleep(0.5)
 
@@ -109,6 +144,7 @@ def main() -> int:
 
             control_manager.close_connection()
             acquisition_manager.close_connection()
+            monitoring_manager.close_connection()
 
             time.sleep(1)
 
@@ -116,6 +152,7 @@ def main() -> int:
         logger.info("Client interrupted, shutting down")
 
     finally:
+        monitoring_manager.close_connection()
         acquisition_manager.close_connection()
         control_manager.close_connection()
         runtime.close()

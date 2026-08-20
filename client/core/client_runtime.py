@@ -4,6 +4,7 @@ from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
 from client.hardware.hv.hv_service import HVService
 from client.hardware.rc.rc_service import RCService
+from client.hardware.main.main_service import MainService
 from client.hardware.evproducer.ev_service import EVService
 from client.acquisition.acquisition_service import AcquisitionService
 from client.hardware.feb.feb_service import FEBService
@@ -31,6 +32,8 @@ class ClientRunTime:
         self.rc_service.start()
         self.evproducer = EVService()
         self.feb_service = FEBService(self)
+        self.main_service: MainService = MainService()
+        self.main_service.start()
 
         self.acq_mode: Optional[str] = None
         self.acq_info: Optional[dict] = None
@@ -106,6 +109,18 @@ class ClientRunTime:
             self.logger.error(f"Error while stopping RCService: {e}")
         finally:
             self.rc_service = None
+            
+    def stop_main_service(self) -> None:
+        if self.main_service is None:
+            return
+
+        try:
+            self.main_service.stop()
+            self.logger.info("MainService stopped")
+        except Exception as e:
+            self.logger.error(f"Error while stopping MainService: {e}")
+        finally:
+            self.main_service = None
     
     def sync_rc_register_39_with_hv(self) -> bool:
         if self.hv_service is None:
@@ -230,6 +245,7 @@ class ClientRunTime:
         return overall_success
 
     def close(self) -> None:
+        self.stop_main_service()
         self.stop_hv_service()
 
         try:

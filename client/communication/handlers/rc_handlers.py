@@ -98,3 +98,11 @@ def handle_rc_set_acq_registers(manager, message):
             rc_command="set_rc_acq",
             timeout_s=30.0,
         )
+    
+def handle_rc_all_rate_monitoring(manager, message):
+    _handle_rc_command(
+        manager,
+        message,
+        rc_command="rc_all_rate_monitoring",
+        timeout_s=30.0,
+    )

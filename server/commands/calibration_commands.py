@@ -1,6 +1,10 @@
 import argparse
 import cmd2
+
 from server.core.server_state import command_guard, acquisition_guard, ServerFSM, AcquisitionMode
+from server.utils.logger import get_logger
+
+logger = get_logger("calibration_commands")
 
 ########################
 # CALIBRATION COMMANDS #

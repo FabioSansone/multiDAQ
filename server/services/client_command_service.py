@@ -8,6 +8,7 @@ from server.utils.logger import get_logger
 class CommandPlane(str, Enum):
     CONTROL = "control"
     ACQUISITION = "acquisition"
+    MONITORING = "monitoring"
 
 
 class ClientCommandService:
@@ -15,10 +16,15 @@ class ClientCommandService:
         self,
         control_manager,
         acquisition_manager,
+        monitoring_manager,
+        server_state,
         output_func=None,
     ) -> None:
         self.control_manager = control_manager
         self.acquisition_manager = acquisition_manager
+        self.monitoring_manager = monitoring_manager
+        
+        self.server_state = server_state
 
         self.poutput = output_func or (lambda message: None)
 
@@ -32,7 +38,13 @@ class ClientCommandService:
         if plane == CommandPlane.ACQUISITION:
             return self.acquisition_manager
 
+        if plane == CommandPlane.MONITORING:
+            return self.monitoring_manager
+
+        self.logger.error(f"Unsupported command plane: {plane}")
         raise ValueError(f"Unsupported command plane: {plane}")
+        
+
 
     def _normalize_plane(
         self,
@@ -48,27 +60,6 @@ class ClientCommandService:
             )
             return None
 
-    def _client_available_on_plane(
-        self,
-        client_id: bytes,
-        plane: CommandPlane,
-    ) -> bool:
-        if plane == CommandPlane.CONTROL:
-            available = (
-                client_id
-                in self.control_manager.server_state.list_connected_clients()
-            )
-        else:
-            available = self.acquisition_manager.is_client_connected(client_id)
-
-        if not available:
-            client_name = client_id.decode(errors="ignore")
-            self.logger.error(
-                f"Client {client_name} is not available on "
-                f"{plane.value} plane"
-            )
-
-        return available
 
     def _send_command_and_wait_reply(
         self,
@@ -83,11 +74,21 @@ class ClientCommandService:
         if normalized_plane is None:
             return None, "invalid command plane"
 
-        if not self._client_available_on_plane(
+        if not self.server_state.is_client_on_plane(
             client_id=client_id,
-            plane=normalized_plane,
+            plane=normalized_plane.value,
         ):
-            return None, f"client unavailable on {normalized_plane.value} plane"
+            client_name = client_id.decode(errors="ignore")
+
+            self.logger.error(
+                f"Client {client_name} is not available on "
+                f"{normalized_plane.value} plane"
+            )
+
+            return (
+                None,
+                f"client unavailable on {normalized_plane.value} plane",
+            )
 
         manager = self._get_manager(normalized_plane)
 
@@ -132,6 +133,35 @@ class ClientCommandService:
         )
         return self._send_command_and_wait_reply(
             client_id=client_id, message=rc_command, plane=normalized_plane, timeout_s=timeout_s,
+        )
+        
+    def send_main_command(
+        self,
+        client_id,
+        command,
+        payload,
+        plane=CommandPlane.MONITORING,
+        timeout_s=35.0,
+        priority: int | None = None,
+    ):
+        normalized_plane = self._normalize_plane(plane)
+
+        if normalized_plane is None:
+            return None, "invalid command plane"
+
+        main_command = self._create_command(
+            plane=normalized_plane,
+            channel=Channel.MAIN,
+            command=command,
+            payload=payload,
+            priority=priority,
+        )
+
+        return self._send_command_and_wait_reply(
+            client_id=client_id,
+            message=main_command,
+            plane=normalized_plane,
+            timeout_s=timeout_s,
         )
 
     def read_rc_register(
@@ -286,19 +316,7 @@ class ClientCommandService:
         return True
     
     
-    def list_clients_on_plane(
-        self,
-        plane: CommandPlane | str,
-    ) -> list[bytes]:
-        normalized_plane = self._normalize_plane(plane)
 
-        if normalized_plane is None:
-            return []
-
-        if normalized_plane == CommandPlane.CONTROL:
-            return self.control_manager.server_state.list_connected_clients()
-
-        return self.acquisition_manager.list_connected_clients()
     
     
     def get_pmt_serial_map_clients(self, client_id: bytes, requested_channels: str | int | list[int] = "all",

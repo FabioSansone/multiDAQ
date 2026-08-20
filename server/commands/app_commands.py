@@ -171,6 +171,8 @@ def do_snapshot(self, _) -> None:
     lines.append(f"    {_decode(snap['acquisition_clients']) or '(none)'}")
     lines.append(f"  Common plane clients ({len(snap['common_clients'])}):")
     lines.append(f"    {_decode(snap['common_clients']) or '(none)'}")
+    lines.append(f"  Monitoring clients ({len(snap['monitoring_clients'])}):")
+    lines.append(f"    {_decode(snap['monitoring_clients']) or '(none)'}")
     lines.append(f"  Operational clients ({len(snap['operational_clients'])}):")
     lines.append(f"    {_decode(snap['operational_clients']) or '(none)'}")
     lines.append("-" * 60)
@@ -419,6 +421,7 @@ connect_parser = argparse.ArgumentParser()
 connect_parser.add_argument("--num_clients", type=int, help="The number of clients expected to connect", default=1)
 connect_parser.add_argument("--control_port", type=int, help="Selects the port to establish the connection", default=8888)
 connect_parser.add_argument("--acq_port", type=int, help="Selects the port to establish the acquisition connection", default=8889)
+connect_parser.add_argument("--mon_port", type=int, help="Selects the port to establish the monitoring connection", default=8890,)
 
 @cmd2.with_argparser(connect_parser)
 @cmd2.with_category("Connection Commands")
@@ -443,6 +446,11 @@ def do_connect(self, args: argparse.Namespace) -> None:
         self.acq_manager.acq_listener_thread is not None
         and self.acq_manager.acq_listener_thread.is_alive()
     )
+    
+    mon_listener_was_running = (
+        self.mon_manager.mon_listener_thread is not None
+        and self.mon_manager.mon_listener_thread.is_alive()
+    )
 
     if control_listener_was_running:
         self.poutput("Stopping control listener temporarily to accept new handshakes...")
@@ -451,6 +459,10 @@ def do_connect(self, args: argparse.Namespace) -> None:
     if acq_listener_was_running:
         self.poutput("Stopping acquisition listener temporarily to accept new handshakes...")
         self.acq_manager.stop_listener()
+        
+    if mon_listener_was_running:
+        self.poutput("Stopping monitoring listener temporarily to accept new handshakes...")
+        self.mon_manager.stop_listener()
 
     if self.control_manager.socket is None:
         started = self.control_manager.start_connection(port=args.control_port)
@@ -461,6 +473,8 @@ def do_connect(self, args: argparse.Namespace) -> None:
                 self.control_manager.start_listener()
             if acq_listener_was_running:
                 self.acq_manager.start_listener()
+            if mon_listener_was_running:
+                self.mon_manager.start_listener()
             return
 
     already_connected = len(self.server_state.list_connected_clients())
@@ -490,6 +504,8 @@ def do_connect(self, args: argparse.Namespace) -> None:
             self.control_manager.start_listener()
         if acq_listener_was_running:
             self.acq_manager.start_listener()
+        if mon_listener_was_running:
+            self.mon_manager.start_listener()
         return
 
     if current_state == ServerFSM.DISCONNECTED:
@@ -521,6 +537,8 @@ def do_connect(self, args: argparse.Namespace) -> None:
                 self.control_manager.start_listener()
             if acq_listener_was_running:
                 self.acq_manager.start_listener()
+            if mon_listener_was_running:
+                self.mon_manager.start_listener()
             return
 
     self.acq_manager.clear_queues()
@@ -540,6 +558,8 @@ def do_connect(self, args: argparse.Namespace) -> None:
             self.control_manager.start_listener()
         if acq_listener_was_running:
             self.acq_manager.start_listener()
+        if mon_listener_was_running:
+            self.mon_manager.start_listener()
         return
 
     acq_transitioned = self.server_state.process_event(
@@ -561,9 +581,65 @@ def do_connect(self, args: argparse.Namespace) -> None:
         f"Acquisition plane ready with "
         f"{len(self.server_state.list_acquisition_clients())}/{len(connected)} clients."
     )
+    
+    if self.mon_manager.socket is None:
+        monitoring_started = self.mon_manager.start_connection(
+            port=args.mon_port
+        )
+
+        if not monitoring_started:
+            self.poutput(
+                "Monitoring Plane unavailable. "
+                "Control and Acquisition planes remain operative."
+            )
+            logger.error(
+                f"Failed to start Monitoring Plane on port {args.mon_port}"
+            )
+            mon_ready = False
+
+        else:
+            mon_ready = None
+
+    else:
+        mon_ready = None
+
+
+    if self.mon_manager.socket is not None:
+
+        self.mon_manager.clear_queues()
+
+        self.poutput("Starting monitoring-plane handshake...")
+
+        mon_ready = self.mon_manager.handshake()
+
+        if mon_ready:
+            monitoring_clients = (
+                self.server_state.list_monitoring_clients()
+            )
+
+            self.poutput(
+                f"Monitoring plane ready with "
+                f"{len(monitoring_clients)}/{len(connected)} client(s)."
+            )
+
+            logger.info(
+                f"Monitoring plane ready with "
+                f"{len(monitoring_clients)}/{len(connected)} clients."
+            )
+
+        else:
+            self.poutput(
+                "No Monitoring Plane clients connected. "
+                "Control and Acquisition planes remain operative."
+            )
+
+            logger.warning(
+                "Monitoring Plane handshake did not connect any clients."
+            )
 
     self.control_manager.clear_queues()
     self.acq_manager.clear_queues()
+    self.mon_manager.clear_queues()
 
     if not self.control_manager.start_listener():
         logger.error("Failed to start control listener")
@@ -574,6 +650,11 @@ def do_connect(self, args: argparse.Namespace) -> None:
         logger.error("Failed to start acquisition listener")
         self.poutput("Failed to start acquisition listener")
         return
+
+    if mon_ready:
+        if not self.mon_manager.start_listener():
+            logger.error("Failed to start monitoring listener")
+            self.poutput("Failed to start monitoring listener")
 
 
     client_ids = self.server_state.list_common_plane_clients()

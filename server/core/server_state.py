@@ -193,9 +193,7 @@ ACQUISITION_PLANE_AVAILABLE_STATES = {
 
 @dataclass
 class ClientRecord:
-    """Tutto ciò che il server sa su un singolo client, in un solo posto —
-    una sola voce da rimuovere alla disconnessione, non più dizionari/liste
-    separati da tenere sincronizzati a mano."""
+    """Tutto ciò che il server sa su un singolo client."""
     state: ClientFSM = ClientFSM.CONNECTED
     previous_state: ClientFSM | None = None
     last_event_context: dict | None = None
@@ -206,6 +204,7 @@ class ClientRecord:
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     on_control_plane: bool = False
     on_acquisition_plane: bool = False
+    on_monitoring_plane: bool = False
     operational: bool = False
 
 
@@ -320,10 +319,7 @@ class ServerState:
 
         self.acq_mode = initial_mode
 
-        # Unica fonte di verità per tutto ciò che riguarda un client
-        # specifico: piani a cui appartiene, stato FSM, identità,
-        # parametri HV, canali esclusi per calibrazione, timestamp di
-        # connessione. Una sola voce da rimuovere alla disconnessione.
+
         self.clients: dict[bytes, ClientRecord] = {}
 
         self.run_state = ServerFSM.DISCONNECTED
@@ -363,9 +359,7 @@ class ServerState:
         with self._lock:
             return self.run_state
 
-    # ------------------------------------------------------------------
-    # Helper interni (assumono il lock già acquisito dal chiamante)
-    # ------------------------------------------------------------------
+
 
     def _control_client_ids_locked(self) -> list[bytes]:
         return [cid for cid, r in self.clients.items() if r.on_control_plane]
@@ -393,7 +387,6 @@ class ServerState:
         for record in self.clients.values():
             record.operational = False
 
-    # ------------------------------------------------------------------
 
     def has_control_clients(self) -> bool:
         with self._lock:
@@ -1186,6 +1179,7 @@ class ServerState:
                 "previous_state": self.previous_state,
                 "control_clients": self._control_client_ids_locked(),
                 "acquisition_clients": self._acquisition_client_ids_locked(),
+                "monitoring_clients": self._monitoring_client_ids_locked(),
                 "common_clients": self._common_plane_client_ids_locked(),
                 "operational_clients": self._operational_client_ids_locked(),
                 "pending_terminal_state": self.pending_terminal_state,
@@ -1235,3 +1229,109 @@ class ServerState:
         with self._lock:
             record = self.clients.get(client_id)
             return record.connected_at if record else None
+        
+
+    def _monitoring_client_ids_locked(self) -> list[bytes]:
+        return [cid for cid, r in self.clients.items() if r.on_monitoring_plane]
+
+    def list_monitoring_clients(self) -> list[bytes]:
+        with self._lock:
+            return self._monitoring_client_ids_locked()
+
+    def add_monitoring_client(self, client_id: bytes) -> None:
+        if not isinstance(client_id, bytes) or not client_id:
+            raise ValueError("client_id must be non-empty bytes")
+
+        with self._lock:
+            record = self.clients.get(client_id)
+            if record is None or not record.on_control_plane:
+                raise ValueError(
+                    "A Monitoring Plane client must already be registered "
+                    "on the Control Plane"
+                )
+
+            if not record.on_monitoring_plane:
+                record.on_monitoring_plane = True
+                self.logger.info(
+                    f"Monitoring client {client_id.decode(errors='ignore')} connected. "
+                    f"Total monitoring clients: {sum(1 for r in self.clients.values() if r.on_monitoring_plane)}"
+                )
+
+    def remove_monitoring_client(self, client_id: bytes) -> None:
+        with self._lock:
+            record = self.clients.get(client_id)
+            removed = bool(record and record.on_monitoring_plane)
+            if record is not None:
+                record.on_monitoring_plane = False
+
+        if removed:
+            self.logger.info(
+                f"Monitoring client {client_id.decode(errors='ignore')} removed "
+                "(Control Plane registration retained)"
+            )
+
+    def clear_monitoring_clients(self) -> None:
+        with self._lock:
+            for record in self.clients.values():
+                record.on_monitoring_plane = False
+        self.logger.debug("Monitoring Plane client registry cleared")
+        
+        
+    def is_client_on_plane(
+        self,
+        client_id: bytes,
+        plane: str,
+    ) -> bool:
+
+        normalized_plane = str(plane).strip().lower()
+
+        with self._lock:
+            record = self.clients.get(client_id)
+
+            if record is None:
+                return False
+
+            if normalized_plane == "control":
+                return record.on_control_plane
+
+            if normalized_plane == "acquisition":
+                return record.on_acquisition_plane
+
+            if normalized_plane == "monitoring":
+                return record.on_monitoring_plane
+
+            self.logger.error(
+                f"Unknown plane requested for client membership check: "
+                f"{plane!r}"
+            )
+            return False
+    
+    
+    def resolve_client_id(
+        self,
+        *,
+        client_id: bytes | None = None,
+        multipmt_id: str | None = None,
+        batch_id: str | None = None,
+    ) -> bytes | None:
+
+        provided = [
+            value is not None
+            for value in (
+                client_id,
+                multipmt_id,
+                batch_id,
+            )
+        ]
+
+        if sum(provided) != 1:
+            return None
+
+        if client_id is not None:
+            with self._lock:
+                return client_id if client_id in self.clients else None
+
+        if multipmt_id is not None:
+            return self.get_client_id_by_multipmt_id(multipmt_id)
+
+        return self.get_client_id_by_batch_id(batch_id)

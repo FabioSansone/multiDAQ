@@ -3,6 +3,7 @@ from client.communication.handlers.rc_handlers import *
 from client.communication.handlers.system_handlers import *
 from client.communication.handlers.acquisition_handler import *
 from client.communication.handlers.feb_handlers import *
+from client.communication.handlers.main_handlers import *
 
 COMMAND_MAP = {
     #System Handlers
@@ -29,6 +30,8 @@ COMMAND_MAP = {
     
     "get_serial_map": handle_get_serial_map,
     
+    "hv_monitor_snapshot": handle_hv_monitor_snapshot,
+    
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,
     "rc_boot": handle_rc_boot_mode,
@@ -39,6 +42,11 @@ COMMAND_MAP = {
     "rc_read_acq_registers": handle_rc_read_acq_registers,
     "set_rc_acq": handle_rc_set_acq_registers,
     
+    "rc_all_rate_monitoring": handle_rc_all_rate_monitoring,
+    
     #FEB Handlers
     "feb_program": handle_feb_program,
+    
+    #Main Handlers
+    "main_read_snapshot": handle_main_read_snapshot,
 }

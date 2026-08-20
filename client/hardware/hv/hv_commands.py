@@ -589,6 +589,90 @@ def command_get_serial_map(
     
 
 
+def command_hv_electrical_monitoring(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.get_ch_electrical(
+        channels=hv_request.payload.get("channels", "all"),
+    )
+
+    failed = result.get("failed_channels", [])
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.ERROR if failed else MessageStatus.OK,
+        result=result,
+        error=f"Failed to read V/I/T for channels: {failed}" if failed else None,
+    )
+
+
+def command_hv_status_alarm_monitoring(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.get_ch_status_and_alarm(
+        channels=hv_request.payload.get("channels", "all"),
+    )
+
+    failed = result.get("failed_channels", [])
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.ERROR if failed else MessageStatus.OK,
+        result=result,
+        error=f"Failed to read status/alarm for channels: {failed}" if failed else None,
+    )
+
+
+def command_hv_channel_lists(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    result = hv_interface.get_channel_lists()
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.OK,
+        result=result,
+    )
+
+
+def command_hv_monitor_snapshot(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.monitor_snapshot(
+        channels=hv_request.payload.get("channels", "all"),
+    )
+
+    electrical_failed = result.get("electrical", {}).get("failed_channels", [])
+    status_alarm_failed = result.get("status_alarm", {}).get("failed_channels", [])
+    any_failed = bool(electrical_failed or status_alarm_failed)
+
+    return HVResponse(
+        protocol_version=protocol_version,
+        request_id=hv_request.request_id,
+        in_reply_to=hv_request.request_id,
+        status=MessageStatus.ERROR if any_failed else MessageStatus.OK,
+        result=result,
+        error="Some HV channels failed to read during monitoring snapshot" if any_failed else None,
+    )
+
+
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
     "set_common_threshold": command_common_threshold,
@@ -615,5 +699,9 @@ COMMAND_HANDLERS = {
     "check_recovery_bad": command_check_recovery_bad,
     
     "check_channel_acquisition": command_check_channel_acquisition,
-}
 
+    "hv_electrical_monitoring": command_hv_electrical_monitoring,
+    "hv_status_alarm_monitoring": command_hv_status_alarm_monitoring,
+    "hv_channel_lists": command_hv_channel_lists,
+    "hv_monitor_snapshot": command_hv_monitor_snapshot,
+}

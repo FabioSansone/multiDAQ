@@ -20,6 +20,7 @@ class Channel(str, Enum):
     SYSTEM = "system"
     RC = "rc"
     HV = "hv"
+    MAIN = "main"
     MONITORING = "monitoring"
     ACQUISITION = "acquisition"
     

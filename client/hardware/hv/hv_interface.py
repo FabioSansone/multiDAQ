@@ -515,6 +515,136 @@ class HV:
             "alarm": alarm,
         }
     
+    def _build_channel_state_lookup(self, channels=None):
+
+        channel_list = channels if channels is not None else self.hv_channels_definition(channels="all")
+ 
+        fixed_bad_set = set(self.getFixedBad())
+        missing_serial_set = set(self.getMissingSerial())
+        bad_set = set(self.getBadChannels())
+        on_set = set(self.getOnChannels())
+        off_set = set(self.getOffChannels())
+ 
+        lookup = {}
+ 
+        for ch in channel_list:
+            if ch in fixed_bad_set:
+                lookup[ch] = {"channel_state": "fixed_bad", "power_state": None}
+            elif ch in missing_serial_set:
+                lookup[ch] = {"channel_state": "missing_serial", "power_state": None}
+            elif ch in bad_set:
+                lookup[ch] = {"channel_state": "bad", "power_state": None}
+            elif ch in on_set:
+                lookup[ch] = {"channel_state": "ok", "power_state": "on"}
+            elif ch in off_set:
+                lookup[ch] = {"channel_state": "ok", "power_state": "off"}
+            else:
+                lookup[ch] = {"channel_state": "unknown", "power_state": None}
+ 
+        return lookup
+ 
+    def get_channel_lists(self):
+
+        return {
+            "ok_channels": self.getOkChannels(),
+            "bad_channels": self.getBadChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+            "missing_serial_channels": self.getMissingSerial(),
+            "fixed_bad_channels": self.getFixedBad(),
+        }
+ 
+    def get_ch_electrical(self, channels):
+        
+        channel_list = self.hv_channels_definition(channels=channels)
+        state_lookup = self._build_channel_state_lookup(channel_list)
+ 
+        result = {
+            "requested_channels": channel_list,
+            "failed_channels": [],
+            "channels": {},
+        }
+ 
+        for ch in channel_list:
+            channel_state = state_lookup.get(ch, {"channel_state": "unknown", "power_state": None})
+ 
+            try:
+                voltage = self.hv.getVoltage(slave=ch)
+                current = self.hv.getCurrent(slave=ch)
+                temperature = self.hv.getTemperature(slave=ch)
+ 
+                result["channels"][ch] = {
+                    "voltage": voltage,
+                    "current": current,
+                    "temperature": temperature,
+                    **channel_state,
+                }
+ 
+            except Exception as e:
+                self.logger.error(f"Problem reading V/I/T from channel {ch}: {e}")
+                result["failed_channels"].append(ch)
+                self.moveToBad(ch)
+ 
+                result["channels"][ch] = {
+                    "voltage": None,
+                    "current": None,
+                    "temperature": None,
+                    **channel_state,
+                }
+ 
+        return result
+ 
+    def get_ch_status_and_alarm(self, channels):
+
+        channel_list = self.hv_channels_definition(channels=channels)
+        state_lookup = self._build_channel_state_lookup(channel_list)
+ 
+        result = {
+            "requested_channels": channel_list,
+            "failed_channels": [],
+            "channels": {},
+        }
+ 
+        for ch in channel_list:
+            channel_state = state_lookup.get(ch, {"channel_state": "unknown", "power_state": None})
+ 
+            try:
+                hw_status = self.hv.getStatus(slave=ch)
+                hw_alarm = self.hv.getAlarm(slave=ch)
+ 
+                result["channels"][ch] = {
+                    "hw_status": hw_status,
+                    "hw_alarm": hw_alarm,
+                    **channel_state,
+                }
+ 
+            except Exception as e:
+                self.logger.error(f"Problem reading status/alarm from channel {ch}: {e}")
+                result["failed_channels"].append(ch)
+                self.moveToBad(ch)
+ 
+                result["channels"][ch] = {
+                    "hw_status": None,
+                    "hw_alarm": None,
+                    **channel_state,
+                }
+ 
+        return result
+ 
+    def monitor_snapshot(self, channels="all"):
+
+        channel_list = self.hv_channels_definition(channels=channels)
+ 
+        return {
+            "type": "data",
+            "data_type": "hv_mon",
+            "electrical": self.get_ch_electrical(channel_list),
+            "status_alarm": self.get_ch_status_and_alarm(channel_list),
+            "channel_lists": self.get_channel_lists(),
+        }
+
+
+
     def on(self, channels: List[int] | str | int):
         list_channels_selected = self.hv_channels_definition(channels=channels)
 

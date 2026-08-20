@@ -13,6 +13,7 @@ LOGGER_NAMES = {
     #Communication
     'control_manager': 'client.comm.control',
     'acq_manager': 'client.comm.acq',
+    'mon_manager': 'client.comm.mon',
     'message_handler': 'client.comm.msg',
     'handshake': 'client.handshake',
     'identity': 'client.identity',
@@ -24,12 +25,20 @@ LOGGER_NAMES = {
     'run_control': 'client.hardware.rc.rc_interface',
     'rc_service': 'client.hardware.rc.rc_service',
     'hvmodbus': 'client.hardware.hv.hvmodbus',
-    'hv': 'client.hardware.hv_interface',
+    'hv': 'client.hardware.hv.hv_interface',
     'hv_service': 'client.hardware.hv.hv_service',
     'ev_service': 'client.hardware.evproducer.ev_service',
+    'main': 'client.hardware.main.main_interface',
+    'main_service': 'client.hardware.main.main_service',
 
     #Acquisition
     'acquisition_service': 'client.acquisition.acquisition_service',
+    
+    #Sensors
+    'bme280': 'client.hardware.main.sensors.bme280',
+    'tla2024': 'client.hardware.main.sensors.tla2024',
+    'bmm150': 'client.hardware.main.sensors.bmm150',
+    'bmi270': 'client.hardware.main.sensors.bmi270',
     
 
     #Main Application

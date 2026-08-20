@@ -200,4 +200,93 @@ def handle_hv_set_pmt_serials(manager, message):
 
 def handle_get_serial_map(manager, message):
     _handle_hv_command(manager, message, hv_command="get_serial_map", timeout_s=60.0)
+    
+    
+def handle_hv_monitor_snapshot(manager, message):
+    timeout_s = 60.0
+
+    if manager.runtime.hv_service is None:
+        manager.logger.error(
+            "Cannot execute HV monitoring snapshot: HVService unavailable"
+        )
+
+        reply = manager.message_handler.create_reply(
+            channel=Channel.HV,
+            in_reply_to=message.request_id,
+            payload={
+                "hv_request_id": message.request_id,
+                "status": "error",
+                "result": {},
+                "error": "HVService unavailable",
+            },
+            sender="client",
+            status=MessageStatus.ERROR,
+        )
+
+        manager.queue_message(reply)
+        return
+
+    payload = dict(message.payload or {})
+
+    try:
+        if "channels" in payload:
+            payload["channels"] = channels_definition(
+                payload["channels"],
+                hv_channels=True,
+            )
+    except Exception as e:
+        manager.logger.error(
+            f"Invalid payload for HV monitoring snapshot: {e}"
+        )
+
+        reply = manager.message_handler.create_reply(
+            channel=Channel.HV,
+            in_reply_to=message.request_id,
+            payload={
+                "hv_request_id": message.request_id,
+                "status": "error",
+                "result": {},
+                "error": f"Invalid channels payload: {e}",
+            },
+            sender="client",
+            status=MessageStatus.ERROR,
+        )
+
+        manager.queue_message(reply)
+        return
+
+    hv_request = HVRequest(
+        protocol_version=message.protocol_version,
+        request_id=message.request_id,
+        sender=f"{manager.plane_name}_manager",
+        command="hv_monitor_snapshot",
+        payload=payload,
+        status=message.status,
+        deadline_s=time.time() + timeout_s,
+    )
+
+    priority = HVMessagePriority(
+        resolve_priority_value(manager, message)
+    )
+
+    hv_response = manager.runtime.hv_service.request(
+        hv_request=hv_request,
+        priority=priority,
+        timeout_s=timeout_s,
+    )
+
+    reply = manager.message_handler.create_reply(
+        channel=Channel.HV,
+        in_reply_to=message.request_id,
+        payload={
+            "hv_request_id": hv_response.request_id,
+            "status": hv_response.status.value,
+            "result": hv_response.result,
+            "error": hv_response.error,
+        },
+        sender="client",
+        status=hv_response.status,
+    )
+
+    manager.queue_message(reply)
               

@@ -18,6 +18,10 @@ LOGGER_NAMES = {
 
     #Acquisition
     'acquisition_manager': 'server.comm.acq',
+    
+    #Monitoring
+    'monitoring_manager': 'server.comm.mon',
+    
 
     #Receiver
     'data_receiver': 'server.acquisition.receiver',
@@ -29,9 +33,11 @@ LOGGER_NAMES = {
     #Commands
     'generic_commands': 'server.commands.generic',
     'acquisition_commands': 'server.commands.acquisition',
+    'monitoring_commands': 'server.commands.monitoring',
     'hv_commands': 'server.commands.hv',
     'rc_commands': 'server.commands.rc',
-    'acq_commands': 'server.commands.acq',
+    'calibration_commands': 'server.commands.calibration',
+
 
     #Server Services
     'client_command_service': 'server.services.client_command',
@@ -40,6 +46,8 @@ LOGGER_NAMES = {
     'calibration_orchestrator': 'server.services.calibration_orchestrator',
     'shutdown_service': 'server.services.shutdown',
     'acquisition_service': 'server.services.acquisition',
+    'monitoring_service': 'server.services.monitoring',
+    'monitoring_orchestrator': 'server.services.monitoring_orchestrator',
 
     #Main Application
     'app': 'server.app'

@@ -2,7 +2,6 @@ from client.utils.logger import get_logger
 from client.utils.channels import channels_definition
 import mmap
 from typing import Optional
-import datetime
 import time
 
 
@@ -17,6 +16,9 @@ ACQ_REGISTER_WRITE_ORDER = [16, 18, 31, 39, 19]
 TRIGGER_REG15_ALLOWED_MASK = (
     (1 << 1) | (1 << 4) | (1 << 7) | (1 << 8)
 )  # deve combaciare con TRIGGER_REG15_MASK lato server (acquisition_service.py)
+
+RC_REG31_MODE_BIT = 1 << 7      # 1 = exact combination, 0 = majority
+RC_REG31_CHANNEL_MASK = 0x7F    # bits 0-6, one-hot
 
 
 
@@ -788,12 +790,9 @@ class RC:
         
 
     def free_rate_monitoring(self, channels):
-        """
-        Read free-running rates for specified channels.
-        Free mode registers: 20-26 (channel 0-6)
-        """
-        channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
         
+        channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
+ 
         if not channel_list:
             self.logger.warning(f"No valid channels specified: {channels}")
             return {
@@ -802,35 +801,66 @@ class RC:
                 "success": False,
                 "message": "No valid channels"
             }
-        
+ 
+        enable_mask = self.read(39)
+ 
         result = {
             "type": "data",
             "data_type": "free_rc_mon",
-            "timestamp": datetime.datetime.now().isoformat(),
+            "success": enable_mask is not None,
+            "enable_mask_register": 39,
+            "enable_mask": enable_mask,
             "channels": {}
         }
-        
+ 
+        if enable_mask is None:
+            self.logger.error("Failed to read RC channel enable mask (register 39)")
+ 
         for channel in channel_list:
             reg_addr = channel + 20  # Register 20-26
             value = self.read(reg_addr)
-            
+ 
             result["channels"][str(channel)] = {
                 "value": value,
                 "register": reg_addr,
+                "enabled": bool(enable_mask & (1 << channel)) if enable_mask is not None else None,
             }
-            
+ 
             if value is None:
+                result["success"] = False
                 self.logger.error(f"Failed to read free rate for channel {channel} (reg {reg_addr})")
-        
+ 
         return result
-
-    def trg_rate_monitoring(self, channels):
-        """
-        Read trigger-gated rates for specified channels.
-        Trigger mode registers: 30-36 (channel 0-6)
-        """
-        channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
+ 
+    
+ 
+    def _decode_auto_trigger_config(self, reg31_value):
         
+        if reg31_value is None:
+            return None
+ 
+        exact_mode = bool(reg31_value & RC_REG31_MODE_BIT)
+        decoded = {
+            "raw": reg31_value,
+            "mode": "exact" if exact_mode else "majority",
+        }
+ 
+        if exact_mode:
+            channel_mask = reg31_value & RC_REG31_CHANNEL_MASK
+            decoded["exact_channels"] = [
+                ch for ch in range(self.num_channels) if channel_mask & (1 << ch)
+            ]
+        else:
+            channel_mask = reg31_value & RC_REG31_CHANNEL_MASK
+            decoded["majority_threshold"] = bin(channel_mask).count("1")
+        
+ 
+        return decoded
+ 
+    def trg_rate_monitoring(self, channels):
+
+        channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
+ 
         if not channel_list:
             self.logger.warning(f"No valid channels specified: {channels}")
             return {
@@ -839,39 +869,53 @@ class RC:
                 "success": False,
                 "message": "No valid channels"
             }
-        
+ 
+        ext_trg_rate = self.read(27)
+        auto_trg_rate = self.read(28)
+        auto_trg_config_raw = self.read(31)
+        enable_mask = self.read(39)
+ 
         result = {
             "type": "data",
             "data_type": "trg_rc_mon",
-            "timestamp": datetime.datetime.now().isoformat(),
-            "channels": {}
+            "success": None not in (ext_trg_rate, auto_trg_rate, auto_trg_config_raw, enable_mask),
+            "external_trigger_rate": {"value": ext_trg_rate, "register": 27},
+            "auto_trigger_rate": {"value": auto_trg_rate, "register": 28},
+            "auto_trigger_config": self._decode_auto_trigger_config(auto_trg_config_raw),
+            "enable_mask_register": 39,
+            "enable_mask": enable_mask,
+            "channels": {},
         }
-        
+ 
+        if not result["success"]:
+            self.logger.error(
+                "Failed to read one or more RC trigger monitoring registers "
+                "(27=external, 28=auto, 31=auto-trigger config, 39=enable mask)"
+            )
+ 
         for channel in channel_list:
             reg_addr = channel + 32  # Register 32-38
             value = self.read(reg_addr)
-            
+ 
             result["channels"][str(channel)] = {
                 "value": value,
                 "register": reg_addr,
+                "enabled": bool(enable_mask & (1 << channel)) if enable_mask is not None else None,
             }
-            
+ 
             if value is None:
-                self.logger.error(f"Failed to read trigger rate for channel {channel} (reg {reg_addr})")
-        
+                result["success"] = False
+                self.logger.error(f"Failed to read triggered rate for channel {channel} (reg {reg_addr})")
+ 
         return result
+ 
+    def monitor_all_rates(self, channels="all"):
 
-    def monitor_all_rates(self):
-        """
-        Convenience method: read both free and trigger rates for all channels.
-        """
-        all_channels = list(range(self.num_channels))
-        
         return {
             "type": "data",
             "data_type": "all_rates",
-            "timestamp": datetime.datetime.now().isoformat(),
-            "free": self.free_rate_monitoring(all_channels),
-            "trigger": self.trg_rate_monitoring(all_channels)
+            "free": self.free_rate_monitoring(channels),
+            "trigger": self.trg_rate_monitoring(channels),
         }
+
         
