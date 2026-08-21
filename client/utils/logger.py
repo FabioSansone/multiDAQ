@@ -39,6 +39,7 @@ LOGGER_NAMES = {
     'tla2024': 'client.hardware.main.sensors.tla2024',
     'bmm150': 'client.hardware.main.sensors.bmm150',
     'bmi270': 'client.hardware.main.sensors.bmi270',
+    'xadc': 'client.hardware.main.sensors.xadc',
     
 
     #Main Application

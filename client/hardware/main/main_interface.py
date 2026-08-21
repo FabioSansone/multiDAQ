@@ -6,6 +6,7 @@ from client.hardware.main.sensors.BME280 import BME280
 from client.hardware.main.sensors.BMM150 import BMM150
 from client.hardware.main.sensors.BMI270 import BMI270
 from client.hardware.main.sensors.TLA2024 import TLA2024
+from client.hardware.main.sensors.XADC import XADC
 from client.utils.logger import get_logger
 
 BME280_ADDR = 0x76
@@ -31,6 +32,7 @@ class MAIN:
         self.bmm = BMM150(chip_addr=BMM150_ADDR, candidate_buses=candidate_buses)
         self.bmi = BMI270(chip_addr=BMI270_ADDR, candidate_buses=candidate_buses)
         self.tla = TLA2024(chip_addr=TLA2024_ADRR, candidate_buses=candidate_buses)
+        self.xadc = XADC()
         
         detected_buses = {
             sensor.iic_bus
@@ -107,6 +109,16 @@ class MAIN:
             self.logger.error(f"BMI270 read failed: {e}")
             return None
 
+    def get_xadc_data(self):
+        temperature = self.xadc.get_temperature()
+
+        if temperature is None:
+            self.logger.error("XADC FPGA temperature read failed")
+            return None
+
+        return {
+            "temperature_c": temperature,
+        }
 
     def get_all_sensors_data(self):
         return {
@@ -114,12 +126,13 @@ class MAIN:
             "power": self.get_tla_data(),
             "mag": self.get_bmm_data(),
             "motion": self.get_bmi_data(),
+            "fpga": self.get_xadc_temp(),
         }
 
 
     def close(self) -> None:
         for sensor_name, sensor in (
-            ("bme", self.bme), ("bmm", self.bmm), ("bmi", self.bmi), ("tla", self.tla)
+            ("bme", self.bme), ("bmm", self.bmm), ("bmi", self.bmi), ("tla", self.tla), ("xadc", self.xadc)
         ):
             try:
                 sensor.close()

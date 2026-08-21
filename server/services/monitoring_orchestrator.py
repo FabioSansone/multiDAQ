@@ -354,6 +354,37 @@ class MonitoringOrchestrator:
             f"  BMI270 die temperature: "
             f"[bold]{self._fmt(die_temperature)} °C[/bold]"
         )
+
+
+        ######
+        #XADC#
+        ######
+
+        fpga = result.get("fpga", {})
+
+        fpga_table = Table(
+            title="MAIN — FPGA",
+            show_header=True,
+            header_style="bold",
+        )
+
+        fpga_table.add_column("Quantity")
+        fpga_table.add_column(
+            "Value",
+            justify="right",
+        )
+        fpga_table.add_column("Unit")
+
+        fpga_table.add_row(
+            "FPGA temperature",
+            self._fmt(
+                fpga.get("temperature_c"),
+                2,
+            ),
+            "°C",
+        )
+
+        self.console.print(fpga_table)
             
             
     def _print_rc(self, snapshot: dict) -> None:
