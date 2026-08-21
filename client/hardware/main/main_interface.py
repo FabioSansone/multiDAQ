@@ -126,7 +126,7 @@ class MAIN:
             "power": self.get_tla_data(),
             "mag": self.get_bmm_data(),
             "motion": self.get_bmi_data(),
-            "fpga": self.get_xadc_temp(),
+            "fpga": self.get_xadc_data(),
         }
 
 
