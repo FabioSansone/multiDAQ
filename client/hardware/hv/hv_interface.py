@@ -633,13 +633,44 @@ class HV:
  
     def monitor_snapshot(self, channels="all"):
 
-        channel_list = self.hv_channels_definition(channels=channels)
- 
+        requested_channels = self.hv_channels_definition(channels=channels)
+
+        fixed_bad_set = set(self.getFixedBad())
+
+        monitored_channels = [ch for ch in requested_channels if ch not in fixed_bad_set]
+        skipped_channels = [ch for ch in requested_channels if ch in fixed_bad_set]
+
+        state_lookup = self._build_channel_state_lookup(requested_channels)
+        electrical = self.get_ch_electrical(requested_channels)
+        status_alarm = self.get_ch_status_and_alarm(requested_channels)
+
+        for ch in skipped_channels:
+            electrical["channels"][ch] = {
+                "voltage": None,
+                "current": None,
+                "temperature": None,
+                **state_lookup[ch],
+            }
+
+            status_alarm["channels"][ch] = {
+                "hw_status": None,
+                "hw_alarm": None,
+                **state_lookup[ch],
+            }
+
+        electrical["requested_channels"] = requested_channels
+        electrical["used_channels"] = monitored_channels
+        electrical["skipped_channels"] = skipped_channels
+
+        status_alarm["requested_channels"] = requested_channels
+        status_alarm["used_channels"] = monitored_channels
+        status_alarm["skipped_channels"] = skipped_channels
+        
         return {
             "type": "data",
             "data_type": "hv_mon",
-            "electrical": self.get_ch_electrical(channel_list),
-            "status_alarm": self.get_ch_status_and_alarm(channel_list),
+            "electrical": electrical,
+            "status_alarm": status_alarm,
             "channel_lists": self.get_channel_lists(),
         }
 
