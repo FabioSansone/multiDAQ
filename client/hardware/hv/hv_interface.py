@@ -641,8 +641,8 @@ class HV:
         skipped_channels = [ch for ch in requested_channels if ch in fixed_bad_set]
 
         state_lookup = self._build_channel_state_lookup(requested_channels)
-        electrical = self.get_ch_electrical(requested_channels)
-        status_alarm = self.get_ch_status_and_alarm(requested_channels)
+        electrical = self.get_ch_electrical(monitored_channels)
+        status_alarm = self.get_ch_status_and_alarm(monitored_channels)
 
         for ch in skipped_channels:
             electrical["channels"][ch] = {
@@ -665,7 +665,7 @@ class HV:
         status_alarm["requested_channels"] = requested_channels
         status_alarm["used_channels"] = monitored_channels
         status_alarm["skipped_channels"] = skipped_channels
-        
+
         return {
             "type": "data",
             "data_type": "hv_mon",
