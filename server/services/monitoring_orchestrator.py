@@ -2,6 +2,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+import time
+
 from server.utils.logger import get_logger
 
 
@@ -762,14 +765,7 @@ class MonitoringOrchestrator:
             
     
     
-    def status(self, args) -> None:
-
-        if args.interval is not None:
-            self.poutput(
-                "Repeated monitoring is not enabled yet. "
-                "Use status without --interval/--duration."
-            )
-            return
+    def snapshot(self, args) -> None:
 
         client_ids = self._resolve_targets(args)
 
@@ -794,4 +790,111 @@ class MonitoringOrchestrator:
             channels=args.channels,
         )
 
-        self._print_snapshots(snapshots)
+        self._print_snapshots(
+            snapshots
+        )
+
+
+    def poll(self, args) -> None:
+
+        client_ids = self._resolve_targets(args)
+
+        if not client_ids:
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+            return
+
+        (
+            include_main,
+            include_rc,
+            include_hv,
+        ) = self._resolve_sections(args)
+
+        interval_s = args.interval
+        duration_s = args.duration
+
+        start_time = time.monotonic()
+        next_poll_time = start_time
+
+        self.logger.info(
+            "Monitoring poll started: "
+            f"clients={len(client_ids)}, "
+            f"interval={interval_s}s, "
+            f"duration={duration_s}s"
+        )
+
+        try:
+
+            while True:
+
+                now = time.monotonic()
+
+                if now - start_time >= duration_s:
+                    break
+
+                if now < next_poll_time:
+                    time.sleep(
+                        next_poll_time - now
+                    )
+
+                now = time.monotonic()
+
+                if now - start_time >= duration_s:
+                    break
+
+                snapshots = self.collect_snapshot(
+                    client_ids=client_ids,
+                    include_main=include_main,
+                    include_rc=include_rc,
+                    include_hv=include_hv,
+                    channels=args.channels,
+                )
+
+                elapsed_s = (
+                    time.monotonic()
+                    - start_time
+                )
+
+                self.console.print(
+                    f"[bold cyan]"
+                    f"Monitoring poll — "
+                    f"t={elapsed_s:.1f}s"
+                    f"[/bold cyan]"
+                )
+
+                self._print_snapshots(
+                    snapshots
+                )
+
+                next_poll_time += interval_s
+
+                now = time.monotonic()
+
+                while next_poll_time <= now:
+                    next_poll_time += interval_s
+
+        except KeyboardInterrupt:
+
+            self.console.print(
+                "\n[yellow]"
+                "Monitoring poll interrupted by user."
+                "[/yellow]"
+            )
+
+            self.logger.info(
+                "Monitoring poll interrupted by user"
+            )
+
+            return
+
+        self.logger.info(
+            "Monitoring poll completed"
+        )
+
+        self.console.print(
+            "[green]"
+            "Monitoring poll completed."
+            "[/green]"
+        )
