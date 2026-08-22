@@ -14,6 +14,32 @@ TLA2024_ADRR = 0x49
 BMM150_ADDR = 0x10
 BMI270_ADDR = 0x68
 
+MAIN_SENSOR_THRESHOLDS = {
+    "env.temperature_c": {
+        "min": -25.0,
+        "max": 40.0,
+    },
+
+    "env.humidity_pct": {
+        "min": 0.0,
+        "max": 75.0,
+    },
+
+    "power.rail_ain0_v": {
+        "min": 4.4,
+        "max": 5.4,
+    },
+
+    "power.rail_ain2_v": {
+        "min": 3.2,
+        "max": 3.4,
+    },
+
+    "fpga.temperature_c": {
+        "max": 80,
+    },
+}
+
 
 
 class MAIN:
@@ -62,6 +88,14 @@ class MAIN:
                 f"{sorted(detected_buses)}"
             )
         
+        if self.bmi.i2cbus is not None:
+            any_motion_ok = self.bmi.configure_any_motion()
+
+            if not any_motion_ok:
+                self.logger.warning(
+                    "BMI270 any-motion monitoring could not be enabled"
+                )
+                
         
     def get_bme_data(self):
         bme_data = self.bme.readReg()
@@ -128,7 +162,107 @@ class MAIN:
             "motion": self.get_bmi_data(),
             "fpga": self.get_xadc_data(),
         }
+        
+    def check_sensor_thresholds(self):
 
+        env_data = self.get_bme_data()
+        power_data = self.get_tla_data()
+        fpga_data = self.get_xadc_data()
+
+        sensor_values = {
+            "env.temperature_c": (
+                env_data.get("temperature_c")
+                if env_data is not None
+                else None
+            ),
+
+            "env.humidity_pct": (
+                env_data.get("humidity_pct")
+                if env_data is not None
+                else None
+            ),
+
+            "power.rail_ain0_v": (
+                power_data.get("rail_ain0_v")
+                if power_data is not None
+                else None
+            ),
+
+            "power.rail_ain2_v": (
+                power_data.get("rail_ain2_v")
+                if power_data is not None
+                else None
+            ),
+
+            "fpga.temperature_c": (
+                fpga_data.get("temperature_c")
+                if fpga_data is not None
+                else None
+            ),
+        }
+
+        out_of_range = []
+        unavailable = []
+
+        for sensor_name, limits in MAIN_SENSOR_THRESHOLDS.items():
+
+            value = sensor_values.get(sensor_name)
+
+            if value is None:
+                unavailable.append(sensor_name)
+                continue
+
+            min_value = limits.get("min")
+            max_value = limits.get("max")
+
+            if min_value is not None and value < min_value:
+
+                out_of_range.append({
+                    "sensor": sensor_name,
+                    "value": value,
+                    "min": min_value,
+                    "max": max_value,
+                    "direction": "low",
+                })
+
+                continue
+
+            if max_value is not None and value > max_value:
+
+                out_of_range.append({
+                    "sensor": sensor_name,
+                    "value": value,
+                    "min": min_value,
+                    "max": max_value,
+                    "direction": "high",
+                })
+
+        return {
+            "values": sensor_values,
+            "out_of_range": out_of_range,
+            "unavailable": unavailable,
+        }
+        
+    def check_sensor_events(self):
+
+        events = []
+
+        try:
+            if self.bmi.get_any_motion_status():
+                events.append({
+                    "event": "motion_detected",
+                    "sensor": "bmi270",
+                })
+
+        except Exception as e:
+            self.logger.error(
+                f"BMI270 any-motion check failed: {e}"
+            )
+
+        return {
+            "events": events,
+        }
+        
 
     def close(self) -> None:
         for sensor_name, sensor in (

@@ -330,12 +330,12 @@ class MonitoringPlaneManager:
         )
         self.listener_thread.start()
 
-        # if self.sensors_warning_thread is None or not self.sensors_warning_thread.is_alive():
-        #     self.sensors_warning_thread = threading.Thread(
-        #         target=self._sensors_warning_loop,
-        #         daemon=True,
-        #     )
-        #     self.sensors_warning_thread.start()
+        if self.sensors_warning_thread is None or not self.sensors_warning_thread.is_alive():
+            self.sensors_warning_thread = threading.Thread(
+                target=self._main_warning_loop,
+                daemon=True,
+            )
+            self.sensors_warning_thread.start()
 
         self.logger.info("Monitoring listener started")
         return True
@@ -427,23 +427,29 @@ class MonitoringPlaneManager:
         self.close_connection()
         self.logger.info("MonitoringPlaneManager closed")
         
-    def _sensors_warning_loop(self) -> None:
+    def _main_warning_loop(self) -> None:
         while not self.stop_listening.is_set():
+            
+            main_service = self.runtime.main_service
 
-            if self.runtime.monitoring_service is None:
-                time.sleep(0.5)
+            if main_service is None:
+                self.stop_listening.wait(0.5)
                 continue
 
             try:
-                warning = self.runtime.monitoring_service.warning_queue.get(timeout=0.5)
+                warning = main_service.warning_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
+            
+            try:
+                event_message = self.message_handler.create_event(
+                    channel=Channel.MAIN,
+                    payload=warning,
+                    sender="client",
+                    status=MessageStatus.OK,
+                )
 
-            event_message = self.message_handler.create_event(
-                channel=Channel.MONITORING,
-                payload=warning,
-                sender="client",
-                status=MessageStatus.ERROR,
-            )
-
-            self.queue_message(event_message)
+                self.queue_message(event_message)
+            
+            except Exception as e:
+                self.logger.error(f"Failed to create MAIN monitoring event: {e}")

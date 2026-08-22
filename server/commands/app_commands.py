@@ -717,6 +717,136 @@ def _print_power_alignment_event(self, payload):
             f"  CH {ch}: software ON -> hardware DOWN, moved to OFF"
         )
 
+
+def _print_sensor_threshold_exceeded_event(
+    self,
+    client_id,
+    payload,
+):
+    client_name = client_id.decode(
+        errors="ignore"
+    )
+
+    details = payload.get(
+        "details",
+        {}
+    )
+
+    sensor = details.get(
+        "sensor",
+        "unknown",
+    )
+
+    value = details.get(
+        "value"
+    )
+
+    min_value = details.get(
+        "min"
+    )
+
+    max_value = details.get(
+        "max"
+    )
+
+    direction = details.get(
+        "direction",
+        "unknown",
+    )
+
+    self.poutput(
+        f"\n[WARNING] MAIN sensor threshold exceeded "
+        f"on {client_name}"
+    )
+
+    self.poutput(
+        f"  Sensor: {sensor}"
+    )
+
+    self.poutput(
+        f"  Value: {value}"
+    )
+
+    self.poutput(
+        f"  Direction: {direction}"
+    )
+
+    self.poutput(
+        f"  Allowed range: "
+        f"{min_value if min_value is not None else '-'} "
+        f".. "
+        f"{max_value if max_value is not None else '-'}"
+    )
+    
+    
+    
+def _print_sensor_threshold_recovered_event(
+    self,
+    client_id,
+    payload,
+):
+    client_name = client_id.decode(
+        errors="ignore"
+    )
+
+    details = payload.get(
+        "details",
+        {}
+    )
+
+    sensor = details.get(
+        "sensor",
+        "unknown",
+    )
+
+    value = details.get(
+        "value"
+    )
+
+    self.poutput(
+        f"\n[INFO] MAIN sensor threshold recovered "
+        f"on {client_name}"
+    )
+
+    self.poutput(
+        f"  Sensor: {sensor}"
+    )
+
+    self.poutput(
+        f"  Current value: {value}"
+    )
+    
+    
+def _print_motion_detected_event(
+    self,
+    client_id,
+    payload,
+):
+    client_name = client_id.decode(
+        errors="ignore"
+    )
+
+    details = payload.get(
+        "details",
+        {}
+    )
+
+    sensor = details.get(
+        "sensor",
+        "bmi270",
+    )
+
+    self.poutput(
+        f"\n[WARNING] Motion detected "
+        f"on {client_name}"
+    )
+
+    self.poutput(
+        f"  Sensor: {sensor}"
+    )
+
+
+
 ########END HELPERS###############
 
 def handle_event(self, message):
@@ -734,4 +864,55 @@ def handle_event(self, message):
 
     else:
         self.poutput(f"\n[INFO] {event}: {payload}")
+        
+        
+
+def handle_monitoring_event(
+    self,
+    client_id,
+    message,
+):
+
+    payload = message.payload or {}
+
+    event = payload.get(
+        "event",
+        "unknown",
+    )
+
+    if event == "sensor_threshold_exceeded":
+
+        _print_sensor_threshold_exceeded_event(
+            self,
+            client_id,
+            payload,
+        )
+
+    elif event == "sensor_threshold_recovered":
+
+        _print_sensor_threshold_recovered_event(
+            self,
+            client_id,
+            payload,
+        )
+
+    elif event == "motion_detected":
+
+        _print_motion_detected_event(
+            self,
+            client_id,
+            payload,
+        )
+
+    else:
+
+        client_name = client_id.decode(
+            errors="ignore"
+        )
+
+        self.poutput(
+            f"\n[INFO] Monitoring event "
+            f"from {client_name}: "
+            f"{event} - {payload}"
+        )
             

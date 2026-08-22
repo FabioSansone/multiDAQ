@@ -18,8 +18,11 @@ from client.hardware.main.main_commands import COMMAND_HANDLERS
 
 class MainService:
 
-    CHECK_SENSORS_PERIOD_S = 300.0   # 5 minuti
-    SENSORS_CHECK_DEADLINE_S = 30.0
+    CHECK_THRESHOLDS_PERIOD_S = 300.0
+    CHECK_THRESHOLDS_DEADLINE_S = 30.0
+
+    CHECK_EVENTS_PERIOD_S = 5.0
+    CHECK_EVENTS_DEADLINE_S = 20.0
 
 
     def __init__(self, cached_i2c_bus: int | None = None):
@@ -39,7 +42,11 @@ class MainService:
         self.stop_check_sensors = threading.Event()
         self.check_thread: Optional[threading.Thread] = None
         self.sensors_check_pending = False
+        self.event_check_pending = False
         self.pending_lock = threading.Lock()
+        
+        self.active_threshold_alarms: set[str] = set()
+        self.threshold_alarm_lock = threading.Lock()
     
     def get_i2c_bus(self) -> int | None:
         return self.main.i2c_bus
@@ -98,24 +105,109 @@ class MainService:
                 error=str(e),
             )
 
-    def _main_warnings(self, main_request: MainRequest, main_response: MainResponse) -> None:
-
-        if main_request.sender != "main_sensors_check":
-            return
-
-        if main_request.command != "check_sensor_thresholds":
-            return
-
+    
+    def _handle_threshold_result(self, main_request: MainRequest, main_response: MainResponse) -> None:
+        
         out_of_range = main_response.result.get("out_of_range", [])
+        
+        current_alarms = {item["sensor"] for item in out_of_range}
+        alarm_data = {item["sensor"]: item for item in out_of_range}
+        unavailable = set(main_response.result.get("unavailable"), [])
+        
+        with self.threshold_alarm_lock:
+            previous_alarms = set(self.active_threshold_alarms)
+            new_alarms = (current_alarms - previous_alarms)
+            recovered_alarms = (previous_alarms - current_alarms - unavailable)
+            still_active_unavailable = (previous_alarms & unavailable)
+            
+            
+            self.active_threshold_alarms = (current_alarms | still_active_unavailable)
+            
+        for sensor in sorted(new_alarms):
+            details = alarm_data[sensor]
+            
+            self.logger.warning(
+                "MAIN sensor threshold exceeded: "
+                f"sensor={sensor}, "
+                f"value={details.get('value')}, "
+                f"min={details.get('min')}, "
+                f"max={details.get('max')}"
+            )
 
-        if out_of_range:
             self.warning_queue.put({
                 "event": "sensor_threshold_exceeded",
                 "severity": "warning",
-                "source_request_id": main_request.request_id,
-                "details": out_of_range,
-                "error": main_response.error,
+                "source_request_id": (
+                    main_request.request_id
+                ),
+                "details": details,
+                "error": None,
             })
+            
+            values = main_response.result.get("values", {})
+            
+            for sensor in sorted(recovered_alarms):
+                value = values.get(sensor)
+                
+                self.logger.info(
+                    "MAIN sensor threshold recovered: "
+                    f"sensor={sensor}, "
+                    f"value={value}"
+                )
+
+                self.warning_queue.put({
+                    "event": "sensor_threshold_recovered",
+                    "severity": "info",
+                    "source_request_id": (
+                        main_request.request_id
+                    ),
+                    "details": {
+                        "sensor": sensor,
+                        "value": value,
+                    },
+                    "error": None,
+                })
+                
+        
+        
+    def _main_warnings(self, main_request: MainRequest, main_response: MainResponse) -> None:
+
+        if main_request.sender not in {"main_sensors_check", "main_event_check"}:
+            return
+
+        if main_request.command not in {"main_check_thresholds", "main_check_events"}:
+            return
+        
+        if main_response.status != MessageStatus.OK:
+            self.logger.warning(
+                f"Periodic MAIN check failed: "
+                f"command={main_request.command}, "
+                f"error={main_response.error}"
+            )
+            return
+
+        if main_request.command == "main_check_thresholds":
+            self._handle_threshold_result(
+                main_request,
+                main_response,
+            )
+
+            return
+        
+        if main_request.command == "main_check_events":
+            events = main_response.result.get("events", [])
+            
+            for event in events:
+                self.warning_queue.put({
+                    "event": event.get(
+                        "event",
+                        "main_sensor_event",
+                    ),
+                    "severity": "warning",
+                    "source_request_id": main_request.request_id,
+                    "details": event,
+                    "error": None,
+                })
 
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -153,9 +245,13 @@ class MainService:
                     main_request.response_queue.put(response)
 
             finally:
-                if main_request.command == "check_sensor_thresholds":
+                if main_request.command == "main_check_thresholds":
                     with self.pending_lock:
                         self.sensors_check_pending = False
+
+                elif main_request.command == "main_check_events":
+                    with self.pending_lock:
+                        self.event_check_pending = False
 
                 self.input_queue.task_done()
 
@@ -202,7 +298,7 @@ class MainService:
 
         self.worker_thread.start()
 
-        #self.start_check()
+        self.start_check()
 
         self.logger.info("MainService worker started")
 
@@ -222,26 +318,83 @@ class MainService:
         self.logger.info("MainService worker stopped")
 
     def _check_sensors_loop(self) -> None:
+        
+        next_threshold_check = time.monotonic()
+        next_event_check = time.monotonic()
+        
         while not self.stop_check_sensors.is_set():
-            now = time.time()
+            
+            now_monotonic = time.monotonic()
+            now_wall = time.time()
+            
+            if now_monotonic >= next_threshold_check:
+                with self.pending_lock:
+                    threshold_pending = self.sensors_check_pending
+                    if not threshold_pending:
+                        self.sensors_check_pending = True
+                    if not threshold_pending:
+                        threshold_request = MainRequest(
+                            protocol_version=PROTOCOL_VERSION,
+                            request_id=f"sensors_check_{now_wall}",
+                            command="main_check_thresholds",
+                            payload={},
+                            sender="main_sensors_check",
+                            deadline_s=now_wall + self.CHECK_THRESHOLDS_DEADLINE_S,
+                        )
 
-            with self.pending_lock:
-                if not self.sensors_check_pending:
-                    self.sensors_check_pending = True
-                    sensors_request = MainRequest(
+                        self.input_queue.put(
+                            (MainMessagePriority.MONITORING, next(self._counter), threshold_request)
+                        )
+                        
+                        next_threshold_check += self.CHECK_THRESHOLDS_PERIOD_S
+                        
+                        while next_threshold_check <= now_monotonic:
+                            next_threshold_check += self.CHECK_THRESHOLDS_PERIOD_S
+                
+            
+            if now_monotonic >= next_event_check:
+
+                with self.pending_lock:
+                    event_pending = self.event_check_pending
+
+                    if not event_pending:
+                        self.event_check_pending = True
+
+                if not event_pending:
+
+                    event_request = MainRequest(
                         protocol_version=PROTOCOL_VERSION,
-                        request_id=f"sensors_check_{now}",
-                        command="check_sensor_thresholds",
+                        request_id=f"event_check_{now_wall}",
+                        command="main_check_events",
                         payload={},
-                        sender="main_sensors_check",
-                        deadline_s=now + self.SENSORS_CHECK_DEADLINE_S,
+                        sender="main_event_check",
+                        deadline_s=(
+                            now_wall
+                            + self.CHECK_EVENTS_DEADLINE_S
+                        ),
                     )
 
                     self.input_queue.put(
-                        (MainMessagePriority.MONITORING, next(self._counter), sensors_request)
+                        (
+                            MainMessagePriority.MONITORING,
+                            next(self._counter),
+                            event_request,
+                        )
                     )
 
-            self.stop_check_sensors.wait(self.CHECK_SENSORS_PERIOD_S)
+                next_event_check += (
+                    self.CHECK_EVENTS_PERIOD_S
+                )
+
+                while next_event_check <= now_monotonic:
+                    next_event_check += (
+                        self.CHECK_EVENTS_PERIOD_S
+                    )   
+                
+
+            next_check = min(next_threshold_check, next_event_check,)
+            wait_s = max(0.0, next_check - time.monotonic(),)
+            self.stop_check_sensors.wait(wait_s)
 
     def start_check(self) -> None:
         if self.check_thread and self.check_thread.is_alive():

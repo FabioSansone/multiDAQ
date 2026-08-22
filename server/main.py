@@ -140,11 +140,15 @@ class Server(cmd2.Cmd):
         self.do_recheck_calibration = (calibration_commands.do_recheck_calibration.__get__(self, Server))
         
         #MONITORING COMMANDS#
-        self.do_status = mon_commands.do_status.__get__(self, Server)
+        self.do_monitor = mon_commands.do_monitor.__get__(self, Server)
 
         #EVENT MESSAGES MANAGER#
         self.handle_event = app_commands.handle_event.__get__(self, Server)
         self.control_manager.event_callback = self.handle_event
+        
+        self.handle_monitoring_event = app_commands.handle_monitoring_event.__get__(self, Server)
+        self.mon_manager.mon_event_callback = self.handle_monitoring_event
+        
     
 
     def set_mode(self, new_mode: str) -> bool:

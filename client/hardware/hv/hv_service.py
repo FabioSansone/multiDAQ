@@ -422,6 +422,8 @@ class HVService:
                                 power_request,
                             )
                         )
+                        
+                        last_power_check = now
 
             if (
                 bad_channels

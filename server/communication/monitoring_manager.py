@@ -430,46 +430,154 @@ class MonitoringPlaneManager:
                         f"request_id={outgoing_message.request_id}"
                     )
 
+    def _handle_main_event(
+        self,
+        client_id: bytes,
+        message: ProtocolMessage,
+    ) -> None:
+
+        client_name = client_id.decode(errors="ignore")
+        payload = message.payload or {}
+
+        event = payload.get("event")
+        details = payload.get("details", {})
+
+        if event == "sensor_threshold_exceeded":
+
+            sensor = details.get("sensor", "unknown")
+            value = details.get("value")
+            min_value = details.get("min")
+            max_value = details.get("max")
+            direction = details.get("direction")
+
+            self.logger.warning(
+                "MAIN sensor threshold exceeded: "
+                f"client={client_name}, "
+                f"sensor={sensor}, "
+                f"value={value}, "
+                f"direction={direction}, "
+                f"min={min_value}, "
+                f"max={max_value}"
+            )
+
+            return
+
+        if event == "sensor_threshold_recovered":
+
+            sensor = details.get("sensor", "unknown")
+            value = details.get("value")
+
+            self.logger.info(
+                "MAIN sensor threshold recovered: "
+                f"client={client_name}, "
+                f"sensor={sensor}, "
+                f"value={value}"
+            )
+
+            return
+
+        if event == "motion_detected":
+
+            sensor = details.get(
+                "sensor",
+                "bmi270",
+            )
+
+            self.logger.warning(
+                "MAIN motion detected: "
+                f"client={client_name}, "
+                f"sensor={sensor}"
+            )
+
+            return
+
+        self.logger.info(
+            f"Unknown MAIN monitoring event from "
+            f"{client_name}: {payload}"
+        )
+    
+    
+    
     def _event_loop(self) -> None:
 
-
         while not self.mon_stop_listening.is_set():
+
             try:
-                client_id, message = self.mon_event_queue.get(timeout=0.5)
+                client_id, message = (
+                    self.mon_event_queue.get(
+                        timeout=0.5
+                    )
+                )
+
             except queue.Empty:
                 continue
 
             try:
-                client_name = client_id.decode(errors="ignore")
-                payload = message.payload or {}
-
-                event = payload.get("event", "unknown_event")
-                severity = payload.get("severity", "info")
-
-                try:
-                    channel_name = message.channel.value
-                except AttributeError:
-                    channel_name = str(message.channel)
 
                 if self.mon_event_callback is not None:
                     try:
-                        self.mon_event_callback(message)
+                        self.mon_event_callback(
+                            client_id,
+                            message,
+                        )
+
                     except Exception as exc:
-                        self.logger.error(f"Monitoring event callback failed: {exc}")
+                        self.logger.error(
+                            f"Monitoring event callback failed: {exc}"
+                        )
+
+                if message.channel == Channel.MAIN:
+                    self._handle_main_event(
+                        client_id,
+                        message,
+                    )
+                    continue
+
+
+                client_name = client_id.decode(
+                    errors="ignore"
+                )
+
+                payload = message.payload or {}
+                event = payload.get(
+                    "event",
+                    "unknown_event",
+                )
+
+                severity = payload.get(
+                    "severity",
+                    "info",
+                )
+
+                try:
+                    channel_name = (
+                        message.channel.value
+                    )
+                except AttributeError:
+                    channel_name = str(
+                        message.channel
+                    )
 
                 log_message = (
                     f"{channel_name} event on MonitoringPlane "
-                    f"from {client_name}: {event} - {payload}"
+                    f"from {client_name}: "
+                    f"{event} - {payload}"
                 )
 
                 if severity == "warning":
-                    self.logger.warning(log_message)
+                    self.logger.warning(
+                        log_message
+                    )
 
                 elif severity == "error":
-                    self.logger.error(log_message)
+                    self.logger.error(
+                        log_message
+                    )
 
                 else:
-                    self.logger.info(log_message)
+                    self.logger.info(
+                        log_message
+                    )
 
             finally:
                 self.mon_event_queue.task_done()

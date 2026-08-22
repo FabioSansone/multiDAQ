@@ -230,7 +230,7 @@ class DataReceiverService:
         self.logger.info("Starting persistent evreceiver process...")
 
         try:
-            self.process = subprocess.Popen([str(self.evr_exe)])
+            self.process = subprocess.Popen([str(self.evr_exe)], start_new_session=True,)
         except Exception as e:
             self.logger.error(f"Failed to start evreceiver: {e}")
             self.process = None
