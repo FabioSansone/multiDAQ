@@ -112,7 +112,7 @@ class MainService:
         
         current_alarms = {item["sensor"] for item in out_of_range}
         alarm_data = {item["sensor"]: item for item in out_of_range}
-        unavailable = set(main_response.result.get("unavailable"), [])
+        unavailable = set(main_response.result.get("unavailable", []))
         
         with self.threshold_alarm_lock:
             previous_alarms = set(self.active_threshold_alarms)
