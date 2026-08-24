@@ -36,7 +36,7 @@ MAIN_SENSOR_THRESHOLDS = {
     },
 
     "fpga.temperature_c": {
-        "max": 60,
+        "max": 80,
     },
 }
 

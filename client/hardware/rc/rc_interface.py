@@ -17,6 +17,8 @@ TRIGGER_REG15_ALLOWED_MASK = (
     (1 << 1) | (1 << 4) | (1 << 7) | (1 << 8)
 )  # deve combaciare con TRIGGER_REG15_MASK lato server (acquisition_service.py)
 
+RC_REG15_TRIGGERED_RATE_ENABLE_BIT = 1 << 1
+
 RC_REG31_MODE_BIT = 1 << 7      # 1 = exact combination, 0 = majority
 RC_REG31_CHANNEL_MASK = 0x7F    # bits 0-6, one-hot
 
@@ -857,7 +859,7 @@ class RC:
  
         return decoded
  
-    def trg_rate_monitoring(self, channels):
+    def trg_rate_monitoring(self, channels, include_trg_channels: bool = True,):
 
         channel_list = channels_definition(channels=channels, n_channels=self.num_channels)
  
@@ -892,7 +894,10 @@ class RC:
                 "Failed to read one or more RC trigger monitoring registers "
                 "(27=external, 28=auto, 31=auto-trigger config, 39=enable mask)"
             )
- 
+
+        if not include_trg_channels:
+            return result
+        
         for channel in channel_list:
             reg_addr = channel + 32  # Register 32-38
             value = self.read(reg_addr)
@@ -910,12 +915,37 @@ class RC:
         return result
  
     def monitor_all_rates(self, channels="all"):
+        
+        reg15_value = self.read(15)
+        if reg15_value is None:
+            self.logger.error(
+                "Failed to read RC register 15 while checking "
+                "triggered channel rate enable"
+            )
 
+            return {
+                "type": "data",
+                "data_type": "all_rates",
+                "success": False,
+                "message": "Failed to read register 15",
+            }
+            
+        triggered_channel_rates_enabled = bool(reg15_value & RC_REG15_TRIGGERED_RATE_ENABLE_BIT)
+        free_rates = self.free_rate_monitoring(channels)
+        trigger_rates = self.trg_rate_monitoring(channels, include_trg_channels=triggered_channel_rates_enabled,)
+        
         return {
             "type": "data",
             "data_type": "all_rates",
-            "free": self.free_rate_monitoring(channels),
-            "trigger": self.trg_rate_monitoring(channels),
+            "success": (
+                free_rates.get("success", False)
+                and trigger_rates.get("success", False)
+            ),
+            "triggered_channel_rates_enabled": (
+                triggered_channel_rates_enabled
+            ),
+            "free": free_rates,
+            "trigger": trigger_rates,
         }
 
         

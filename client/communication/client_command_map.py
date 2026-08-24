@@ -4,6 +4,7 @@ from client.communication.handlers.system_handlers import *
 from client.communication.handlers.acquisition_handler import *
 from client.communication.handlers.feb_handlers import *
 from client.communication.handlers.main_handlers import *
+from client.communication.handlers.monitoring_handlers import *
 
 COMMAND_MAP = {
     #System Handlers
@@ -49,4 +50,8 @@ COMMAND_MAP = {
     
     #Main Handlers
     "main_read_snapshot": handle_main_read_snapshot,
+
+    # Monitoring Handlers
+    "sample_start": handle_sample_start,
+    "sample_stop": handle_sample_stop,
 }

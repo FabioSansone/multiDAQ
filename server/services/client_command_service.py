@@ -361,3 +361,29 @@ class ClientCommandService:
             user_serial_map[user_channel] = serial_map[ch_key]
         
         return user_serial_map
+
+    def send_monitoring_command(
+        self,
+        client_id,
+        command,
+        payload,
+        timeout_s=10.0,
+        priority: int | None = None,
+    ):
+
+        plane = CommandPlane.MONITORING
+
+        monitoring_command = self._create_command(
+            plane=plane,
+            channel=Channel.MONITORING,
+            command=command,
+            payload=payload,
+            priority=priority,
+        )
+
+        return self._send_command_and_wait_reply(
+            client_id=client_id,
+            message=monitoring_command,
+            plane=plane,
+            timeout_s=timeout_s,
+        )

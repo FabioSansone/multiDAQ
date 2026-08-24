@@ -9,6 +9,7 @@ LOGGER_NAMES = {
 
     #Core
     'run_time': 'client.core.runtime',
+    'monitor_service': 'client.core.monitor_service',
     
     #Communication
     'control_manager': 'client.comm.control',

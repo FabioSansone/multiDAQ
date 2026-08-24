@@ -47,6 +47,14 @@ class MonitoringPlaneManager:
         self.message_handler = MessageHandler(
             logger=get_logger("message_handler")
         )
+        
+        self.sample_thread: Optional[threading.Thread] = None
+        self.latest_samples = {
+            Channel.RC: None,
+            Channel.HV: None,
+            Channel.MAIN: None,
+        }
+        self.sample_lock = threading.Lock()
 
         self.logger = get_logger("mon_manager")
         self.logger.info("ZMQ Monitoring Client Manager initialized")
@@ -311,6 +319,15 @@ class MonitoringPlaneManager:
                         f"Failed to send queued monitoring message: "
                         f"request_id={outgoing_message.request_id}"
                     )
+                
+            for sample_message in self._take_latest_samples():
+                if not self.send_message(sample_message):
+                    self.logger.warning(
+                        "Monitoring sample could not be sent; "
+                        "dropping stale sample: "
+                        f"channel={sample_message.channel.value}, "
+                        f"sequence={sample_message.payload.get('sequence')}"
+                    )
 
     def start_listener(self) -> bool:
 
@@ -336,6 +353,13 @@ class MonitoringPlaneManager:
                 daemon=True,
             )
             self.sensors_warning_thread.start()
+        
+        if self.sample_thread is None or not self.sample_thread.is_alive():
+            self.sample_thread = threading.Thread(target=self._sample_loop,
+                                                  daemon=True,
+                                                  name="monitoring-sample-forwarder,")
+            
+            self.sample_thread.start()
 
         self.logger.info("Monitoring listener started")
         return True
@@ -348,6 +372,9 @@ class MonitoringPlaneManager:
 
         if self.sensors_warning_thread and self.sensors_warning_thread.is_alive():
             self.sensors_warning_thread.join(timeout=2.0)
+        
+        if self.sample_thread and self.sample_thread.is_alive():
+            self.sample_thread.join(timeout=2.0)
 
         self.logger.info("Monitoring listener stopped")
 
@@ -399,6 +426,10 @@ class MonitoringPlaneManager:
                 self.outgoing_queue.get_nowait()
             except queue.Empty:
                 break
+        
+        with self.sample_lock:
+            for channel in self.latest_samples:
+                self.latest_samples[channel] = None
 
     def close_connection(self) -> None:
         """Close only the current monitoring socket connection."""
@@ -453,3 +484,63 @@ class MonitoringPlaneManager:
             
             except Exception as e:
                 self.logger.error(f"Failed to create MAIN monitoring event: {e}")
+                
+
+
+    def queue_sample(self, channel: Channel, message: ProtocolMessage) -> None:
+        
+        with self.sample_lock:
+            self.latest_samples[channel] = message
+            
+    
+    def _sample_loop(self) -> None:
+        
+        while not self.stop_listening.is_set():
+            
+            sample_service = self.runtime.monitor_sample_service
+            
+            if sample_service is None:
+                self.stop_listening.wait(0.5)
+                continue
+            
+            sample_found = False
+            
+            for channel, sample_queue in sample_service.sample_queues.items():
+                try:
+                    sample = sample_queue.get_nowait()
+                except queue.Empty:
+                    continue
+                
+                sample_found = True
+                
+                try:
+                    sample_message = self.message_handler.create_sample(
+                        channel=channel,
+                        payload=sample,
+                        sender="client",
+                        status=MessageStatus.OK,
+                    )
+                    
+                    self.queue_sample(channel=channel, message=sample_message)
+                
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to create monitoring sample: "
+                        f"channel={channel.value}, error={e}"
+                    )
+                
+            if not sample_found:
+                self.stop_listening.wait(0.05)
+                    
+    def _take_latest_samples(self) -> list[ProtocolMessage]:
+        
+        with self.sample_lock:
+            samples = [message for message in self.latest_samples.values() if message is not None]
+            
+            for channel in self.latest_samples:
+                self.latest_samples[channel] = None
+            
+            return samples
+        
+    
+                   

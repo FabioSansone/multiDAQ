@@ -46,6 +46,15 @@ class MonitoringPlaneManager:
         self.mon_event_thread: Optional[threading.Thread] = None
         self.mon_event_callback = None
 
+        self.mon_latest_samples = {}
+
+        self.mon_sample_lock = threading.Lock()
+        self.mon_sample_available = threading.Event()
+
+        self.mon_sample_thread: Optional[threading.Thread] = None
+
+        self.mon_sample_callback = None
+
         self.logger = get_logger("monitoring_manager")
         self.logger.debug("ZMQ Monitoring Server Manager initialized")
 
@@ -406,6 +415,8 @@ class MonitoringPlaneManager:
             if message is not None:
                 if message.msg_type == MessageType.EVENT:
                     self.mon_event_queue.put((client_id, message))
+                elif message.msg_type == MessageType.SAMPLE:
+                    self._store_latest_sample(client_id, message)
                 else:
                     self.mon_incoming_queue.put((client_id, message, reason))
 
@@ -582,6 +593,72 @@ class MonitoringPlaneManager:
             finally:
                 self.mon_event_queue.task_done()
 
+
+    def _store_latest_sample(self, client_id: bytes, message: ProtocolMessage) -> None:
+
+        if message.channel not in {Channel.RC, Channel.HV, Channel.MAIN,}:
+            self.logger.warning(f"Received SAMPLE with unsupported channel: {message.channel}")
+            return
+
+        key = (client_id, message.channel)
+
+        with self.mon_sample_lock:
+            self.mon_latest_samples[key] = message
+
+        self.mon_sample_available.set()
+
+    def _take_latest_sample(self,) -> list[tuple[bytes, ProtocolMessage]]:
+        with self.mon_sample_lock:
+
+            samples = [(client_id, message) for (client_id, _), message in self.mon_latest_samples.items()]
+            self.mon_latest_samples.clear()
+            self.mon_sample_available.clear()
+
+        return samples
+
+    def _handle_sample(self, client_id: bytes, message: ProtocolMessage) -> None:
+
+        client_name = client_id.decode(errors="ignore")
+
+        payload = message.payload or {}
+
+        sequence = payload.get("sequence")
+        sample_monotonic_ns = payload.get("sample_monotonic_ns")
+
+        try:
+            channel_name = message.channel.value
+        except AttributeError:
+            channel_name = str(message.channel)
+        
+        self.logger.info(
+            "Monitoring sample received: "
+            f"client={client_name}, "
+            f"channel={channel_name}, "
+            f"sequence={sequence}, "
+            f"sample_monotonic_ns={sample_monotonic_ns}"
+        )
+
+    def _sample_loop(self) -> None:
+        while not self.mon_stop_listening.is_set():
+        
+            self.mon_sample_available.wait(timeout=0.5)
+
+            if self.mon_stop_listening.is_set():
+                break
+
+            samples = self._take_latest_sample()
+
+            for client_id, message in samples:
+                try:
+                    self._handle_sample(client_id, message,)
+                    if self.mon_sample_callback is not None:
+                        self.mon_sample_callback(client_id, message,)
+                        
+                except Exception as e:
+                    self.logger.error(f"Failed to process monitoring sample: {e}")
+
+
+
     def start_listener(self) -> bool:
         if self.socket is None:
             self.logger.error("Cannot start monitoring listener: socket not initialized")
@@ -614,11 +691,20 @@ class MonitoringPlaneManager:
             )
             self.mon_event_thread.start()
 
+        if self.mon_sample_thread is None or not self.mon_sample_thread.is_alive():
+            self.mon_sample_thread  = threading.Thread(
+                target=self._sample_loop,
+                daemon=True,
+                name="monitoring-plane-sample"
+            )
+            self.mon_sample_thread.start()
+
         self.logger.info("Monitoring listener started")
         return True
 
     def stop_listener(self) -> None:
         self.mon_stop_listening.set()
+        self.mon_sample_available.set()
 
         if (
             self.mon_listener_thread is not None
@@ -631,6 +717,9 @@ class MonitoringPlaneManager:
             and self.mon_event_thread.is_alive()
         ):
             self.mon_event_thread.join(timeout=2.0)
+
+        if self.mon_sample_thread  is not None and self.mon_sample_thread .is_alive():
+            self.mon_sample_thread .join(timeout=2.0)
 
         self.logger.info("Monitoring listener stopped")
 
@@ -652,6 +741,11 @@ class MonitoringPlaneManager:
                 self.mon_event_queue.get_nowait()
             except queue.Empty:
                 break
+
+        with self.mon_sample_lock:
+            self.mon_latest_samples.clear()
+
+        self.mon_sample_available.clear()
 
     def close_connection(self) -> None:
         self.stop_listener()

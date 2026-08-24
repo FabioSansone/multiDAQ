@@ -6,6 +6,7 @@ from rich.text import Text
 import time
 
 from server.utils.logger import get_logger
+from common.message_handler import Channel
 
 
 class MonitoringOrchestrator:
@@ -44,6 +45,29 @@ class MonitoringOrchestrator:
             args.rc,
             args.hv,
         )
+
+    @staticmethod
+    def _resolve_save_sections(args) -> list[Channel]:
+
+        sections = []
+
+        if args.main:
+            sections.append(Channel.MAIN)
+
+        if args.rc:
+            sections.append(Channel.RC)
+
+        if args.hv:
+            sections.append(Channel.HV)
+
+        if sections:
+            return sections
+
+        return [
+            Channel.MAIN,
+            Channel.RC,
+            Channel.HV,
+        ]
         
     @staticmethod
     def _fmt(value, digits: int = 2) -> str:
@@ -898,3 +922,105 @@ class MonitoringOrchestrator:
             "Monitoring poll completed."
             "[/green]"
         )
+
+    def save_start(self, args) -> None:
+
+        client_ids = self._resolve_targets(args)
+
+        if not client_ids:
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+            return
+
+        sections = self._resolve_save_sections(args)
+
+        interval_s = args.interval
+
+        for client_id in client_ids:
+
+            client_name = client_id.decode(
+                errors="ignore"
+            )
+
+            for section in sections:
+
+                result = (
+                    self.monitoring_service.start_sample(
+                        client_id=client_id,
+                        section=section,
+                        interval_s=interval_s,
+                    )
+                )
+
+                if result["success"]:
+
+                    self.poutput(
+                        f"{client_name}: "
+                        f"{section.value.upper()} monitoring stream "
+                        f"started (interval={interval_s}s)"
+                    )
+
+                else:
+
+                    error = result.get(
+                        "error",
+                        "unknown error",
+                    )
+
+                    self.poutput(
+                        f"{client_name}: failed to start "
+                        f"{section.value.upper()} monitoring stream: "
+                        f"{error}"
+                    )
+
+
+    def save_stop(self, args) -> None:
+
+        client_ids = self._resolve_targets(args)
+
+        if not client_ids:
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+            return
+
+        sections = self._resolve_save_sections(args)
+
+        for client_id in client_ids:
+
+            client_name = client_id.decode(
+                errors="ignore"
+            )
+
+            for section in sections:
+
+                result = (
+                    self.monitoring_service.stop_sample(
+                        client_id=client_id,
+                        section=section,
+                    )
+                )
+
+                if result["success"]:
+
+                    self.poutput(
+                        f"{client_name}: "
+                        f"{section.value.upper()} monitoring stream "
+                        "stopped"
+                    )
+
+                else:
+
+                    error = result.get(
+                        "error",
+                        "unknown error",
+                    )
+
+                    self.poutput(
+                        f"{client_name}: failed to stop "
+                        f"{section.value.upper()} monitoring stream: "
+                        f"{error}"
+                    )

@@ -14,6 +14,7 @@ class MessageType(str, Enum):
     COMMAND = "command"
     REPLY = "reply"
     EVENT = "event"
+    SAMPLE = "sample"
     ERROR = "error"
     
 class Channel(str, Enum):
@@ -23,6 +24,7 @@ class Channel(str, Enum):
     MAIN = "main"
     MONITORING = "monitoring"
     ACQUISITION = "acquisition"
+    
     
 class MessageStatus(str, Enum):
     OK = "ok"
@@ -388,6 +390,26 @@ class MessageHandler:
     ) -> ProtocolMessage:
         return self.build_message(
             msg_type=MessageType.ERROR,
+            channel=channel,
+            payload=payload,
+            request_id=request_id,
+            in_reply_to=in_reply_to,
+            sender=sender,
+            status=status,
+        )
+    
+    def create_sample(
+        self,
+        *,
+        channel: Channel,
+        payload: Optional[dict[str, Any]] = None,
+        request_id: Optional[str] = None,
+        in_reply_to: Optional[str] = None,
+        sender: Optional[str] = None,
+        status: MessageStatus = MessageStatus.OK,
+    ) -> ProtocolMessage:
+        return self.build_message(
+            msg_type=MessageType.SAMPLE,
             channel=channel,
             payload=payload,
             request_id=request_id,

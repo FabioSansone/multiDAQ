@@ -6,6 +6,7 @@ from client.hardware.rc.rc_service import RCService
 from client.hardware.main.main_service import MainService
 from client.hardware.evproducer.ev_service import EVService
 from client.acquisition.acquisition_service import AcquisitionService
+from client.core.monitor_sample_service import MonitorSampleService
 from client.hardware.feb.feb_service import FEBService
 from common.message_handler import MessageStatus
 
@@ -39,6 +40,9 @@ class ClientRunTime:
         self.main_service: MainService = MainService(cached_i2c_bus=self.cached_i2c_bus)
         self.sync_sensor_i2c_bus_cache()
         self.main_service.start()
+        
+        self.monitor_sample_service = MonitorSampleService(main_service=self.main_service, rc_service=self.rc_service, hv_service=self.hv_service, client_identity=self.zmq_identity(),)
+        self.monitor_sample_service.start()
         
 
         self.acq_mode: Optional[str] = None
@@ -81,6 +85,7 @@ class ClientRunTime:
 
         try:
             self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=self.identity.get_fixed_bad_channels(), state_change_callback=self.sync_rc_register_39_with_hv, hv_parameters_callback=self.update_hv_parameters_after_command)
+            self.monitor_sample_service.set_hv_service(self.hv_service)
             self.logger.info("HVService initialized")
             return True
 
@@ -94,6 +99,7 @@ class ClientRunTime:
             return
 
         try:
+            self.monitor_sample_service.set_hv_service(None)
             self.hv_service.stop()
             self.logger.info("HVService stopped")
         except Exception as e:
@@ -252,6 +258,7 @@ class ClientRunTime:
 
         self._closed = True
         
+        self.monitor_sample_service.stop()
         self.stop_main_service()
         self.stop_hv_service()
 
