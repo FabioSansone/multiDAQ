@@ -59,6 +59,38 @@ class MonitoringPlaneManager:
         self.logger = get_logger("mon_manager")
         self.logger.info("ZMQ Monitoring Client Manager initialized")
 
+    
+    
+    
+    def _is_time_sync_reply(
+        self,
+        message: ProtocolMessage,
+    ) -> bool:
+
+        if message.msg_type != MessageType.REPLY:
+            return False
+
+        if message.channel != Channel.MONITORING:
+            return False
+
+        payload = message.payload or {}
+
+        return (
+            payload.get("time_sync_protocol_version") == 1
+        )
+    
+    
+    def _is_time_sync_probe(
+        self,
+        message: ProtocolMessage,
+    ) -> bool:
+
+        return (
+            message.msg_type == MessageType.COMMAND
+            and message.channel == Channel.MONITORING
+            and message.command == "time_sync_probe"
+        )
+        
     def start_connection(self, port: int) -> bool:
         if self.socket is not None:
             try:
@@ -111,23 +143,24 @@ class MonitoringPlaneManager:
             )
             return False
 
-    def receive_message(self, timeout_ms: int) -> tuple[Optional[ProtocolMessage], str]:
+    def receive_message(self, timeout_ms: int) -> tuple[Optional[ProtocolMessage], str, Optional[int],]:
 
         if self.socket is None:
             self.logger.error("Cannot receive message: monitoring socket not initialized")
-            return None, "monitoring socket not initialized"
+            return None, "monitoring socket not initialized", None
 
         try:
             socks = dict(self.recv_poller.poll(timeout=timeout_ms))
 
             if self.socket not in socks:
-                return None, "timeout elapsed"
+                return None, "timeout elapsed", None
 
             raw_message = self.socket.recv()
+            client_c2_monotonic_ns = time.monotonic_ns()
 
             if not raw_message:
                 self.logger.error("Received empty monitoring message")
-                return None, "empty message"
+                return None, "empty message", None
 
             message, reason = self.message_handler.deserialize(raw_message)
 
@@ -135,25 +168,25 @@ class MonitoringPlaneManager:
                 self.logger.error(
                     f"Failed to deserialize monitoring message from server: {reason}"
                 )
-                return None, reason
+                return None, reason, None
 
             self.logger.debug(
                 f"Received monitoring message from server: "
                 f"type={message.msg_type.value}, request_id={message.request_id}"
             )
 
-            return message, "ok"
+            return message, "ok", client_c2_monotonic_ns
 
         except zmq.ZMQError as e:
             self.logger.error(f"ZMQ error while receiving monitoring message: {e}")
-            return None, f"zmq error: {e}"
+            return None, f"zmq error: {e}", None
 
         except Exception as e:
             self.logger.error(f"Unexpected error while receiving monitoring message: {e}")
-            return None, f"unexpected error: {e}"
+            return None, f"unexpected error: {e}", None
 
     def send_message(self, message: ProtocolMessage) -> bool:
-
+                
         if self.socket is None:
             self.logger.error("Cannot send message: monitoring socket not initialized")
             return False
@@ -162,8 +195,12 @@ class MonitoringPlaneManager:
             if threading.current_thread() != self.listener_thread:
                 self.logger.error("send_message called outside monitoring IO thread")
                 return False
+        
 
         try:
+            if self._is_time_sync_reply(message=message):
+                c3_client_monotonic_ns = time.monotonic_ns()
+                message.payload["client_send_monotonic_ns"] = c3_client_monotonic_ns
             message_raw = self.message_handler.serialize(message)
 
             if not message_raw:
@@ -172,7 +209,8 @@ class MonitoringPlaneManager:
                     f"with request_id={message.request_id}"
                 )
                 return False
-
+            
+                
             self.socket.send(message_raw)
 
             self.logger.debug(
@@ -210,7 +248,7 @@ class MonitoringPlaneManager:
             self.logger.error("Failed to send monitoring hello message")
             return False
 
-        message, reason = self.receive_message(timeout_ms)
+        message, reason, _ = self.receive_message(timeout_ms)
 
         if message is None:
             self.logger.error(
@@ -300,10 +338,36 @@ class MonitoringPlaneManager:
 
         while not self.stop_listening.is_set():
 
-            message, reason = self.receive_message(timeout_ms=100)
+            message, reason, c2_client_monotonic_ns = self.receive_message(timeout_ms=100)
 
             if message is not None:
-                self.incoming_queue.put((message, reason))
+                if self._is_time_sync_probe(message):
+                    payload = {
+                        "time_sync_protocol_version": 1,
+                        "boot_id": self.runtime.boot_id,
+                        "client_receive_monotonic_ns": (
+                            c2_client_monotonic_ns
+                        ),
+                        "client_send_monotonic_ns": None,
+                    }
+                    
+                    reply = (
+                        self.message_handler.create_reply(
+                            channel=Channel.MONITORING,
+                            payload=payload,
+                            in_reply_to=message.request_id,
+                            sender="client",
+                            status=MessageStatus.OK,
+                        )
+                    )
+
+                    if not self.send_message(reply):
+                        self.logger.error(
+                            "Failed to send time-sync reply"
+                        )
+                
+                else:
+                    self.incoming_queue.put((message, reason))
 
             elif reason != "timeout elapsed":
                 self.logger.warning(f"Monitoring receive problem: {reason}")

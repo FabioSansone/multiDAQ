@@ -56,6 +56,8 @@ class ClientRunTime:
         self.channel_hv_parameters: dict[int, dict] = {}
         
         self._closed = False
+        
+        self.boot_id = self._read_boot_id()
 
         self.logger.info("ClientRuntime initialized")
 
@@ -67,6 +69,15 @@ class ClientRunTime:
             .replace(" ", "_")
             .replace("/", "_")
         )
+    
+    @staticmethod
+    def _read_boot_id() -> str:
+        with open(
+            "/proc/sys/kernel/random/boot_id",
+            "r",
+            encoding="utf-8",
+        ) as f:
+            return f.read().strip()
 
     def zmq_identity(self) -> str:
         multipmt_id = self._sanitize_identity_part(

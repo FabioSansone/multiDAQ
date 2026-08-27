@@ -13,6 +13,7 @@ from common.message_handler import (
     ProtocolMessage,
 )
 from server.core.server_state import ServerState
+from server.services.time_sync_service import TimeSyncService, TimeSyncMeasurement
 from server.utils.logger import get_logger
 
 
@@ -24,6 +25,7 @@ class MonitoringPlaneManager:
         self,
         context: zmq.Context,
         state: ServerState,
+        time_sync_service: TimeSyncService
     ) -> None:
         self.context = context
         self.socket: Optional[zmq.Socket] = None
@@ -54,6 +56,9 @@ class MonitoringPlaneManager:
         self.mon_sample_thread: Optional[threading.Thread] = None
 
         self.mon_sample_callback = None
+        
+        self.time_sync_service = time_sync_service
+        self.time_sync_measurement_queue = queue.Queue()
 
         self.logger = get_logger("monitoring_manager")
         self.logger.debug("ZMQ Monitoring Server Manager initialized")
@@ -84,6 +89,17 @@ class MonitoringPlaneManager:
 
     def get_identity(self, client_id: bytes) -> Optional[dict]:
         return self.server_state.get_identity(client_id)
+    
+    def _is_time_sync_reply(self, message: ProtocolMessage) -> bool:
+        
+        if message.msg_type != MessageType.REPLY:
+            return False
+        if message.channel != Channel.MONITORING:
+            return False
+        
+        payload = message.payload or {}
+        return payload.get("time_sync_protocol_version") == 1
+    
 
     def start_connection(self, port: int) -> bool:
         """Start the MonitoringPlane ROUTER socket."""
@@ -136,29 +152,31 @@ class MonitoringPlaneManager:
     def receive_message(
         self,
         timeout_ms: int,
-    ) -> tuple[Optional[bytes], Optional[ProtocolMessage], str]:
+    ) -> tuple[Optional[bytes], Optional[ProtocolMessage], str, Optional[int], Optional[int]]:
 
         if self.socket is None:
             self.logger.error(
                 "Cannot receive message: monitoring socket not initialized"
             )
-            return None, None, "monitoring socket not initialized"
+            return None, None, "monitoring socket not initialized", None, None
 
         try:
             socks = dict(self.recv_poller.poll(timeout=timeout_ms))
 
             if self.socket not in socks:
-                return None, None, "timeout elapsed"
+                return None, None, "timeout elapsed", None, None
 
             frames = self.socket.recv_multipart()
+            received_server_monotonic_ns = time.monotonic_ns()
+            received_server_utc_ns = time.time_ns()
 
             if not frames:
                 self.logger.error("Received empty multipart message")
-                return None, None, "empty multipart message"
+                return None, None, "empty multipart message", None, None
 
             if len(frames) < 2:
                 self.logger.error(f"Invalid multipart message format: {frames}")
-                return None, None, "invalid multipart format"
+                return None, None, "invalid multipart format", None, None
 
             client_id = frames[0]
             raw_message = frames[-1]
@@ -170,7 +188,7 @@ class MonitoringPlaneManager:
                     "Failed to deserialize monitoring message "
                     f"from client {client_id!r}: {reason}"
                 )
-                return client_id, None, reason
+                return client_id, None, reason, None, None
 
             self.logger.debug(
                 f"Received monitoring message from client {client_id!r}: "
@@ -178,17 +196,17 @@ class MonitoringPlaneManager:
                 f"request_id={message.request_id}"
             )
 
-            return client_id, message, "ok"
+            return client_id, message, "ok", received_server_monotonic_ns, received_server_utc_ns
 
         except zmq.ZMQError as exc:
             self.logger.error(f"ZMQ error while receiving monitoring message: {exc}")
-            return None, None, f"zmq error: {exc}"
+            return None, None, f"zmq error: {exc}", None, None
 
         except Exception as exc:
             self.logger.error(
                 f"Unexpected error while receiving monitoring message: {exc}"
             )
-            return None, None, f"unexpected error: {exc}"
+            return None, None, f"unexpected error: {exc}", None, None
 
     def send_message(
         self,
@@ -201,6 +219,8 @@ class MonitoringPlaneManager:
                 "Cannot send message: monitoring socket not initialized"
             )
             return False
+        
+        is_time_sync_probe = message.msg_type == MessageType.COMMAND and message.channel == Channel.MONITORING and message.command == "time_sync_probe"
 
         try:
             message_raw = self.message_handler.serialize(message)
@@ -211,6 +231,12 @@ class MonitoringPlaneManager:
                     f"with request_id={message.request_id}"
                 )
                 return False
+
+            if is_time_sync_probe:
+                t1_utc_ns = time.time_ns()
+                t1_server_monotonic_ns = time.monotonic_ns()  
+                
+                self.time_sync_service.register_probe_sent(client_id=client_id, request_id=message.request_id, t1_utc_ns=t1_utc_ns, t1_server_monotonic_ns=t1_server_monotonic_ns)
 
             self.socket.send_multipart([client_id, message_raw])
 
@@ -226,6 +252,8 @@ class MonitoringPlaneManager:
             self.logger.error(
                 f"ZMQ error while sending monitoring message to client {client_id!r}: {exc}"
             )
+            if is_time_sync_probe:
+                self.time_sync_service.cancel_probe(message.request_id)
 
             if exc.errno == zmq.EHOSTUNREACH:
                 self.remove_client(client_id)
@@ -236,6 +264,8 @@ class MonitoringPlaneManager:
             self.logger.error(
                 f"Unexpected error while sending monitoring message to client {client_id!r}: {exc}"
             )
+            if is_time_sync_probe:
+                self.time_sync_service.cancel_probe(message.request_id)
             return False
 
     def handshake_core(self, timeout_ms: int = 20000) -> bool:
@@ -245,7 +275,7 @@ class MonitoringPlaneManager:
             )
             return False
 
-        client_id, message, reason = self.receive_message(timeout_ms)
+        client_id, message, reason, _, _ = self.receive_message(timeout_ms)
 
         if message is None or client_id is None:
             self.logger.error(
@@ -401,6 +431,50 @@ class MonitoringPlaneManager:
             for deferred_message in deferred_messages:
                 self.mon_incoming_queue.put(deferred_message)
 
+    def wait_for_time_sync_measurement(
+        self,
+        *,
+        client_id: bytes,
+        request_id: str,
+        timeout_s: float = 2.0,
+    ) -> tuple[Optional[TimeSyncMeasurement], str]:
+
+        deadline = time.monotonic() + timeout_s
+        deferred_measurements = []
+
+        try:
+            while True:
+
+                remaining_s = deadline - time.monotonic()
+
+                if remaining_s <= 0:
+                    return None, "timeout waiting for time-sync measurement"
+
+                try:
+                    measurement = self.time_sync_measurement_queue.get(
+                        timeout=remaining_s
+                    )
+
+                except queue.Empty:
+                    return None, "timeout waiting for time-sync measurement"
+
+                if (
+                    measurement.client_id == client_id
+                    and measurement.request_id == request_id
+                ):
+                    return measurement, "ok"
+
+                deferred_measurements.append(
+                    measurement
+                )
+
+        finally:
+            for measurement in deferred_measurements:
+                self.time_sync_measurement_queue.put(
+                    measurement
+                )
+                
+                
     def _monitoring_io_loop(self) -> None:
         """
         Own the ROUTER socket after completion of the handshake.
@@ -410,13 +484,26 @@ class MonitoringPlaneManager:
         """
 
         while not self.mon_stop_listening.is_set():
-            client_id, message, reason = self.receive_message(timeout_ms=100)
+            client_id, message, reason, received_server_monotonic_ns, received_server_utc_ns = self.receive_message(timeout_ms=100)
 
             if message is not None:
                 if message.msg_type == MessageType.EVENT:
                     self.mon_event_queue.put((client_id, message))
                 elif message.msg_type == MessageType.SAMPLE:
+                    self._timestamp_sample(client_id=client_id, message=message, server_receive_utc_ns=received_server_monotonic_ns)
                     self._store_latest_sample(client_id, message)
+                elif self._is_time_sync_reply(message=message):
+                    payload = message.payload or {}
+                    measurement = self.time_sync_service.complete_probe(
+                        client_id=client_id,
+                        in_reply_to=message.in_reply_to,
+                        boot_id=payload.get("boot_id"),
+                        c2_client_monotonic_ns=payload.get("client_receive_monotonic_ns"),
+                        c3_client_monotonic_ns=payload.get("client_send_monotonic_ns"),
+                        t4_server_monotonic_ns=received_server_monotonic_ns
+                    )
+                    if measurement is not None:
+                        self.time_sync_measurement_queue.put(measurement)
                 else:
                     self.mon_incoming_queue.put((client_id, message, reason))
 
@@ -619,23 +706,36 @@ class MonitoringPlaneManager:
     def _handle_sample(self, client_id: bytes, message: ProtocolMessage) -> None:
 
         client_name = client_id.decode(errors="ignore")
-
         payload = message.payload or {}
 
         sequence = payload.get("sequence")
-        sample_monotonic_ns = payload.get("sample_monotonic_ns")
+        sample_monotonic_ns = payload.get(
+            "sample_monotonic_ns"
+        )
+        timestamp_utc_ns = payload.get(
+            "timestamp_utc_ns"
+        )
+        server_received_utc_ns = payload.get(
+            "server_received_utc_ns"
+        )
+        time_sync_status = payload.get(
+            "time_sync_status"
+        )
 
         try:
             channel_name = message.channel.value
         except AttributeError:
             channel_name = str(message.channel)
-        
+
         self.logger.info(
             "Monitoring sample received: "
             f"client={client_name}, "
             f"channel={channel_name}, "
             f"sequence={sequence}, "
-            f"sample_monotonic_ns={sample_monotonic_ns}"
+            f"sample_monotonic_ns={sample_monotonic_ns}, "
+            f"timestamp_utc_ns={timestamp_utc_ns}, "
+            f"server_received_utc_ns={server_received_utc_ns}, "
+            f"time_sync_status={time_sync_status}"
         )
 
     def _sample_loop(self) -> None:
@@ -746,11 +846,20 @@ class MonitoringPlaneManager:
             self.mon_latest_samples.clear()
 
         self.mon_sample_available.clear()
+        
+        while True:
+            try:
+                self.time_sync_measurement_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        
 
     def close_connection(self) -> None:
         self.stop_listener()
         self.clear_clients()
         self.clear_queues()
+        self.time_sync_service.clear()
 
         if self.socket is not None:
             try:
@@ -773,3 +882,21 @@ class MonitoringPlaneManager:
                 self.endpoint = None
 
         self.logger.info("Monitoring connection closed")
+    
+    def _timestamp_sample(self, *, client_id: bytes, message: ProtocolMessage, server_receive_utc_ns: int) -> None:
+        
+        payload = message.payload or {}
+        sample_monotonic_ns = payload.get("sample_monotonic_ns")
+        payload["server_received_utc_ns"] = server_receive_utc_ns
+        
+        if sample_monotonic_ns is None:
+            payload["timestamp_utc_ns"] = None
+            payload["time_sync_status"] = (
+                "missing sample_monotonic_ns"
+            )
+            return
+
+        timestamp_utc_ns, reason = self.time_sync_service.client_monotonic_to_utc(client_id=client_id, client_monotonic_ns=sample_monotonic_ns)
+        payload["timestamp_utc_ns"] = timestamp_utc_ns
+        payload["time_sync_status"] = reason
+        
