@@ -31,7 +31,7 @@ from server.web.web_app import start_web_server
 class Server(cmd2.Cmd):
     "A terminal application to switch and interact with different multiPMTs"
 
-    def __init__(self, server_state: ServerState, mac_identity_registry: MacIdentityRegistry, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager, monitoring_manager: MonitoringPlaneManager, data_receiver_service: DataReceiverService) -> None:
+    def __init__(self, server_state: ServerState, mac_identity_registry: MacIdentityRegistry, control_manager: ControlPlaneManager, acquisition_manager: AcquisitionPlaneManager, monitoring_manager: MonitoringPlaneManager, time_sync_service: TimeSyncService, data_receiver_service: DataReceiverService) -> None:
         super().__init__(allow_cli_args=False)
 
         self.intro = "Welcome to the control interface for the multiPMTs. Type ? or help to list commands."
@@ -40,6 +40,7 @@ class Server(cmd2.Cmd):
         self.control_manager = control_manager
         self.acq_manager = acquisition_manager
         self.mon_manager = monitoring_manager
+        self.time_service = time_sync_service
         self.mac_identity_registry = mac_identity_registry
         self.data_receiver_service = data_receiver_service
         if not self.data_receiver_service.receiver_ready:
@@ -49,8 +50,6 @@ class Server(cmd2.Cmd):
                 source="server_init",
             )
         self.mode = self.server_state.get_mode()
-        
-        self.time_sync_service = TimeSyncService()
 
         self.client_command_service = ClientCommandService(
             control_manager=self.control_manager,
@@ -77,7 +76,7 @@ class Server(cmd2.Cmd):
         
         self.monitoring_service = MonitoringService(
             command_service=self.client_command_service,
-            time_sync_service=self.time_sync_service,
+            time_sync_service=self.time_service,
             monitoring_manager=self.mon_manager,
             output_func=self.poutput,
         )
@@ -231,6 +230,7 @@ def main() -> int:
     mac_identity_registry = MacIdentityRegistry()
     context = zmq.Context()
     data_receiver_service = DataReceiverService(context=context)
+    time_sync_service = TimeSyncService()
 
     control_manager = ControlPlaneManager(
         context=context,
@@ -248,9 +248,10 @@ def main() -> int:
     monitoring_manager = MonitoringPlaneManager(
         context=context,
         state=server_state,
+        time_sync_service=time_sync_service
     )
 
-    app = Server(server_state=server_state, mac_identity_registry=mac_identity_registry, control_manager=control_manager, acquisition_manager=acquisition_manager, monitoring_manager=monitoring_manager, data_receiver_service=data_receiver_service)
+    app = Server(server_state=server_state, mac_identity_registry=mac_identity_registry, control_manager=control_manager, acquisition_manager=acquisition_manager, monitoring_manager=monitoring_manager, time_sync_service=time_sync_service, data_receiver_service=data_receiver_service)
 
     if not args.no_web:
         start_web_server(server=app, host=args.web_host, port=args.web_port, grafana_url=args.grafana_url)
