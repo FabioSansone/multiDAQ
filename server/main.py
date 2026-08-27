@@ -23,6 +23,7 @@ from server.services.monitoring_orchestrator import MonitoringOrchestrator
 from server.services.shutdown_service import ShutdownService
 from server.services.startup_service import StartupService
 from server.core.mac_id_registry import MacIdentityRegistry
+from server.services.time_sync_service import TimeSyncService
 from server.web.web_app import start_web_server
 
 
@@ -48,6 +49,8 @@ class Server(cmd2.Cmd):
                 source="server_init",
             )
         self.mode = self.server_state.get_mode()
+        
+        self.time_sync_service = TimeSyncService()
 
         self.client_command_service = ClientCommandService(
             control_manager=self.control_manager,
@@ -74,6 +77,8 @@ class Server(cmd2.Cmd):
         
         self.monitoring_service = MonitoringService(
             command_service=self.client_command_service,
+            time_sync_service=self.time_sync_service,
+            monitoring_manager=self.mon_manager,
             output_func=self.poutput,
         )
         
