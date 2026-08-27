@@ -259,22 +259,6 @@ class MonitoringService:
             "error": payload.get("error"),
         }
         
-    def _queue_time_sync_probe(self, client_id: bytes,) -> str:
-        probe = self.message_handler.create_command(
-            channel=Channel.MONITORING,
-            command="time_sync_probe",
-            payload={
-                "time_sync_protocol_version": 1,
-            },
-            sender="server",
-        )
-        
-        self.queue_message(
-            client_id,
-            probe,
-        )
-        
-        return probe.request_id
 
         
     def synchronize_client(self, client_id: bytes, *, probe_count: int = 5, probe_timeout_s: float = 2.0,) -> Optional[ClientTimeSyncState]:
@@ -284,7 +268,7 @@ class MonitoringService:
         
         
         for _ in range(probe_count):
-            probe_request_id = self._queue_time_sync_probe(client_id=client_id)
+            probe_request_id = self.monitoring_manager.queue_time_sync_probe(client_id=client_id)
             
             measurement, reason = (
                 self.monitoring_manager.wait_for_time_sync_measurement(

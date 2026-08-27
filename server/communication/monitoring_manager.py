@@ -899,4 +899,22 @@ class MonitoringPlaneManager:
         timestamp_utc_ns, reason = self.time_sync_service.client_monotonic_to_utc(client_id=client_id, client_monotonic_ns=sample_monotonic_ns)
         payload["timestamp_utc_ns"] = timestamp_utc_ns
         payload["time_sync_status"] = reason
+    
+    
+    def queue_time_sync_probe(self, client_id: bytes,) -> str:
+        probe = self.message_handler.create_command(
+            channel=Channel.MONITORING,
+            command="time_sync_probe",
+            payload={
+                "time_sync_protocol_version": 1,
+            },
+            sender="server",
+        )
+        
+        self.queue_message(
+            client_id,
+            probe,
+        )
+        
+        return probe.request_id
         
