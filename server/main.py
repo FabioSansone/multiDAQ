@@ -265,6 +265,8 @@ def main() -> int:
     except KeyboardInterrupt:
         app.poutput("\nShutting down...")
     finally:
+        app.monitoring_service.stop_time_sync_scheduler()
+        
         if monitoring_manager.socket is not None:
             monitoring_manager.clear_queues()
             monitoring_manager.close_connection()

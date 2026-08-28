@@ -58,7 +58,8 @@ class MonitoringPlaneManager:
         self.mon_sample_callback = None
         
         self.time_sync_service = time_sync_service
-        self.time_sync_measurement_queue = queue.Queue()
+        self.time_sync_waiters: dict[tuple[bytes, str], queue.Queue] = {}
+        self.time_sync_waiters_lock = threading.Lock()
 
         self.logger = get_logger("monitoring_manager")
         self.logger.debug("ZMQ Monitoring Server Manager initialized")
@@ -81,6 +82,7 @@ class MonitoringPlaneManager:
 
     def remove_client(self, client_id: bytes) -> None:
         self.server_state.remove_monitoring_client(client_id)
+        self.time_sync_service.invalidate_client(client_id, reason="monitoring client disconnected",)
         self.logger.info(f"MonitoringPlane client removed: {client_id!r}")
 
     def clear_clients(self) -> None:
@@ -332,6 +334,9 @@ class MonitoringPlaneManager:
             "Monitoring handshake completed successfully with "
             f"client {client_id!r}, multipmt_id={multipmt_id}, batch_id={batch_id}"
         )
+        
+
+        self.time_sync_service.invalidate_client(client_id=client_id, reason="monitoring client reconnected")
 
         return True
 
@@ -439,40 +444,26 @@ class MonitoringPlaneManager:
         timeout_s: float = 2.0,
     ) -> tuple[Optional[TimeSyncMeasurement], str]:
 
-        deadline = time.monotonic() + timeout_s
-        deferred_measurements = []
+        key = (client_id, request_id)
+        
+        with self.time_sync_waiters_lock:
+            waiter = self.time_sync_waiters.get(key)
+        
+        if waiter is None:
+            return None, "time-sync waiter not registered"
 
         try:
-            while True:
-
-                remaining_s = deadline - time.monotonic()
-
-                if remaining_s <= 0:
-                    return None, "timeout waiting for time-sync measurement"
-
-                try:
-                    measurement = self.time_sync_measurement_queue.get(
-                        timeout=remaining_s
-                    )
-
-                except queue.Empty:
-                    return None, "timeout waiting for time-sync measurement"
-
-                if (
-                    measurement.client_id == client_id
-                    and measurement.request_id == request_id
-                ):
-                    return measurement, "ok"
-
-                deferred_measurements.append(
-                    measurement
-                )
-
+            try:
+                measurement = waiter.get(timeout=timeout_s)
+            except queue.Empty:
+                self.time_sync_service.cancel_probe(request_id=request_id)
+                return None, "timeout waiting for time-sync measurement"
+            return measurement, "ok"
         finally:
-            for measurement in deferred_measurements:
-                self.time_sync_measurement_queue.put(
-                    measurement
-                )
+            with self.time_sync_waiters_lock:
+                current_waiter = self.time_sync_waiters.get(key)
+                if current_waiter is waiter:
+                    self.time_sync_waiters.pop(key, None)
                 
                 
     def _monitoring_io_loop(self) -> None:
@@ -490,7 +481,7 @@ class MonitoringPlaneManager:
                 if message.msg_type == MessageType.EVENT:
                     self.mon_event_queue.put((client_id, message))
                 elif message.msg_type == MessageType.SAMPLE:
-                    self._timestamp_sample(client_id=client_id, message=message, server_receive_utc_ns=received_server_monotonic_ns)
+                    self._timestamp_sample(client_id=client_id, message=message, server_receive_utc_ns=received_server_utc_ns)
                     self._store_latest_sample(client_id, message)
                 elif self._is_time_sync_reply(message=message):
                     payload = message.payload or {}
@@ -503,7 +494,7 @@ class MonitoringPlaneManager:
                         t4_server_monotonic_ns=received_server_monotonic_ns
                     )
                     if measurement is not None:
-                        self.time_sync_measurement_queue.put(measurement)
+                        self._deliver_time_sync_measurement(measurement=measurement)
                 else:
                     self.mon_incoming_queue.put((client_id, message, reason))
 
@@ -847,11 +838,8 @@ class MonitoringPlaneManager:
 
         self.mon_sample_available.clear()
         
-        while True:
-            try:
-                self.time_sync_measurement_queue.get_nowait()
-            except queue.Empty:
-                break
+        with self.time_sync_waiters_lock:
+            self.time_sync_waiters.clear()
         
         
 
@@ -911,10 +899,46 @@ class MonitoringPlaneManager:
             sender="server",
         )
         
+        key = (client_id, probe.request_id)
+        waiter = queue.Queue(maxsize=1)
+        
+        with self.time_sync_waiters_lock:
+            if key in self.time_sync_waiters:
+                raise RuntimeError(
+                    "Duplicate time-sync waiter: "
+                    f"client={client_id!r}, "
+                    f"request_id={probe.request_id}"
+                )
+            self.time_sync_waiters[key] = waiter
+        
         self.queue_message(
             client_id,
             probe,
         )
         
         return probe.request_id
+    
+    def _deliver_time_sync_measurement(self, measurement: TimeSyncMeasurement) -> None:
         
+        key = (measurement.client_id, measurement.request_id)
+        with self.time_sync_waiters_lock:
+            waiter = self.time_sync_waiters.get(key)
+            
+            if waiter is None:
+                self.logger.warning(
+                    "Received time-sync measurement "
+                    "without an active waiter: "
+                    f"client={measurement.client_id!r}, "
+                    f"request_id={measurement.request_id}"
+                )
+                return
+
+            try:
+                waiter.put_nowait(measurement)
+
+            except queue.Full:
+                self.logger.warning(
+                    "Duplicate time-sync measurement: "
+                    f"client={measurement.client_id!r}, "
+                    f"request_id={measurement.request_id}"
+                )

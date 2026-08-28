@@ -123,7 +123,9 @@ def do_quit(self, _) -> bool:
         logger.error("DISCONNECT_REQUESTED rejected by FSM")
         return False
 
-   
+
+    self.monitoring_service.stop_time_sync_scheduler()
+
     self.acquisition_orchestrator.stop()
     completed = self.acquisition_service.wait_for_session_end(timeout=60.0)
     if not completed:
@@ -262,6 +264,7 @@ def do_force(self, args: argparse.Namespace) -> bool:
             logger.error("DISCONNECT_REQUESTED rejected by FSM for force quit")
             return False
 
+        self.monitoring_service.stop_time_sync_scheduler()
         self.acquisition_orchestrator.stop()
         self.acquisition_service.wait_for_session_end(timeout=5.0)
     
@@ -461,6 +464,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
         self.acq_manager.stop_listener()
         
     if mon_listener_was_running:
+        self.monitoring_service.stop_time_sync_scheduler()
         self.poutput("Stopping monitoring listener temporarily to accept new handshakes...")
         self.mon_manager.stop_listener()
 
@@ -475,6 +479,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
                 self.acq_manager.start_listener()
             if mon_listener_was_running:
                 self.mon_manager.start_listener()
+                self.monitoring_service.start_time_sync_scheduler()
             return
 
     already_connected = len(self.server_state.list_connected_clients())
@@ -506,6 +511,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
             self.acq_manager.start_listener()
         if mon_listener_was_running:
             self.mon_manager.start_listener()
+            self.monitoring_service.start_time_sync_scheduler()
         return
 
     if current_state == ServerFSM.DISCONNECTED:
@@ -539,6 +545,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
                 self.acq_manager.start_listener()
             if mon_listener_was_running:
                 self.mon_manager.start_listener()
+                self.monitoring_service.start_time_sync_scheduler()
             return
 
     self.acq_manager.clear_queues()
@@ -560,6 +567,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
             self.acq_manager.start_listener()
         if mon_listener_was_running:
             self.mon_manager.start_listener()
+            self.monitoring_service.start_time_sync_scheduler()
         return
 
     acq_transitioned = self.server_state.process_event(
@@ -655,6 +663,8 @@ def do_connect(self, args: argparse.Namespace) -> None:
         if not self.mon_manager.start_listener():
             logger.error("Failed to start monitoring listener")
             self.poutput("Failed to start monitoring listener")
+        else:
+            self.monitoring_service.start_time_sync_scheduler()
 
 
     client_ids = self.server_state.list_common_plane_clients()

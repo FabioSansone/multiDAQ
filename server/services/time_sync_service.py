@@ -236,4 +236,8 @@ class TimeSyncService:
         age_ns = time.monotonic_ns() - state.synced_at_server_monotonic_ns
         return age_ns >= int(max_age_s * 1_000_000_000)
     
+    def list_synchronized_clients(self) -> list[bytes]:
+        with self._lock:
+            return list(self._client_states.keys())
+    
         
