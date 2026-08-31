@@ -53,27 +53,51 @@ class MonitoringOrchestrator:
         )
 
     @staticmethod
-    def _resolve_save_sections(args) -> list[Channel]:
+    def _resolve_save_selection(
+        args,
+    ) -> tuple[list[Channel], bool]:
 
-        sections = []
+        sample_sections = []
 
         if args.main:
-            sections.append(Channel.MAIN)
+            sample_sections.append(
+                Channel.MAIN
+            )
 
         if args.rc:
-            sections.append(Channel.RC)
+            sample_sections.append(
+                Channel.RC
+            )
 
         if args.hv:
-            sections.append(Channel.HV)
+            sample_sections.append(
+                Channel.HV
+            )
 
-        if sections:
-            return sections
+        events_selected = bool(
+            args.events
+        )
 
-        return [
-            Channel.MAIN,
-            Channel.RC,
-            Channel.HV,
-        ]
+        #
+        # Preserve previous default:
+        # no explicit section means all periodic
+        # sample streams, but not EVENTS.
+        #
+        if (
+            not sample_sections
+            and not events_selected
+        ):
+
+            sample_sections = [
+                Channel.MAIN,
+                Channel.RC,
+                Channel.HV,
+            ]
+
+        return (
+            sample_sections,
+            events_selected,
+        )
         
     @staticmethod
     def _fmt(value, digits: int = 2) -> str:
@@ -179,6 +203,8 @@ class MonitoringOrchestrator:
         self,
         client_id: bytes,
     ) -> dict | None:
+        
+        mode = self.server_state.get_mode()
 
         schemas = (
             self.monitor_persistence_service
@@ -202,6 +228,11 @@ class MonitoringOrchestrator:
 
         metadata_schema_version = schemas.get(
             "mon_metadata_version"
+        )
+        
+        event_columns = schemas.get(
+            "events",
+            [],
         )
 
         session = (
@@ -245,17 +276,20 @@ class MonitoringOrchestrator:
         )
 
         
-        pmt_serial_map = (
-            command_service
-            .get_pmt_serial_map_clients(
-                client_id=client_id,
-                requested_channels="all",
-                plane=CommandPlane.MONITORING,
-            )
-        )
-
-        if pmt_serial_map is None:
+        if mode == "test":
             pmt_serial_map = {}
+        else:
+            pmt_serial_map = (
+                command_service
+                .get_pmt_serial_map_clients(
+                    client_id=client_id,
+                    requested_channels="all",
+                    plane=CommandPlane.MONITORING,
+                )
+            )
+
+            if pmt_serial_map is None:
+                pmt_serial_map = {}
 
         metadata = {
             "schema_version": (
@@ -269,6 +303,7 @@ class MonitoringOrchestrator:
                 "started_at_utc_ns": (
                     session.started_at_utc_ns
                 ),
+                "acquisition_mode": mode,
             },
 
             "client": {
@@ -317,6 +352,11 @@ class MonitoringOrchestrator:
                 "hv": {
                     "columns": list(
                         hv_columns
+                    ),
+                },
+                "events": {
+                    "columns": list(
+                        event_columns
                     ),
                 },
             },
@@ -1084,35 +1124,110 @@ class MonitoringOrchestrator:
             "Monitoring poll completed."
             "[/green]"
         )
+        
+    
+    def handle_configuration_event(
+        self,
+        client_id: bytes,
+        message,
+    ) -> bool:
+
+        payload = message.payload or {}
+
+        if payload.get("event") != (
+            "rc_configuration_changed"
+        ):
+            return True
+
+        details = payload.get(
+            "details",
+            {},
+        )
+
+        register = details.get(
+            "register"
+        )
+
+        new_value = details.get(
+            "new_value"
+        )
+
+        if register not in {
+            31,
+            39,
+        }:
+            return True
+
+        timestamp_utc_ns = payload.get(
+            "timestamp_utc_ns"
+        )
+
+        if timestamp_utc_ns is None:
+
+            self.logger.warning(
+                "Cannot record RC configuration "
+                "history without synchronized timestamp: "
+                f"client={client_id!r}, "
+                f"register={register}"
+            )
+
+            return False
+
+        return (
+            self.monitor_persistence_service
+            .record_configuration_change(
+                client_id=client_id,
+                register=register,
+                new_value=new_value,
+                timestamp_utc_ns=(
+                    timestamp_utc_ns
+                ),
+            )
+        )
 
     def save_start(self, args) -> None:
 
-        client_ids = self._resolve_targets(args)
+        client_ids = self._resolve_targets(
+            args
+        )
 
         if not client_ids:
+
             self.poutput(
                 "No Monitoring Plane clients match "
                 "the requested target."
             )
+
             return
 
+        #
+        # One monitoring persistence session is shared
+        # by samples and events.
+        #
         if not (
             self.monitor_persistence_service
             .ensure_session()
         ):
+
             self.poutput(
                 "Failed to create monitoring "
                 "persistence session."
             )
+
             return
 
-        sections = self._resolve_save_sections(
+        (
+            sample_sections,
+            events_selected,
+        ) = self._resolve_save_selection(
             args
         )
 
         interval_s = args.interval
+
         requested_interval_ns = int(
-            interval_s * 1_000_000_000
+            interval_s
+            * 1_000_000_000
         )
 
         for client_id in client_ids:
@@ -1121,12 +1236,16 @@ class MonitoringOrchestrator:
                 errors="ignore"
             )
 
+            # ============================================================
+            # Initialize metadata once per client/session
+            # ============================================================
+
             existing_metadata = (
-            self.monitor_persistence_service
-            .get_client_metadata(
-                client_id=client_id
+                self.monitor_persistence_service
+                .get_client_metadata(
+                    client_id=client_id
+                )
             )
-)
 
             if existing_metadata is None:
 
@@ -1137,10 +1256,12 @@ class MonitoringOrchestrator:
                 )
 
                 if metadata is None:
+
                     self.poutput(
                         f"{client_name}: failed to build "
                         "monitoring persistence metadata"
                     )
+
                     continue
 
                 metadata_ok = (
@@ -1152,13 +1273,19 @@ class MonitoringOrchestrator:
                 )
 
                 if not metadata_ok:
+
                     self.poutput(
                         f"{client_name}: failed to initialize "
                         "monitoring persistence metadata"
                     )
+
                     continue
 
-            for section in sections:
+            # ============================================================
+            # Periodic sample persistence
+            # ============================================================
+
+            for section in sample_sections:
 
                 prepared = (
                     self.monitor_persistence_service
@@ -1173,10 +1300,12 @@ class MonitoringOrchestrator:
                 )
 
                 if not prepared:
+
                     self.poutput(
                         f"{client_name}: failed to prepare "
                         f"{section.value.upper()} persistence"
                     )
+
                     continue
 
                 activated = (
@@ -1188,14 +1317,20 @@ class MonitoringOrchestrator:
                 )
 
                 if not activated:
+
                     self.poutput(
                         f"{client_name}: failed to activate "
                         f"{section.value.upper()} persistence"
                     )
+
                     continue
 
+                #
+                # Samples require producer orchestration.
+                #
                 subscribed = (
-                    self.monitor_stream_service.subscribe(
+                    self.monitor_stream_service
+                    .subscribe(
                         client_id=client_id,
                         section=section,
                         consumer="persistence",
@@ -1217,6 +1352,7 @@ class MonitoringOrchestrator:
                         f"{section.value.upper()} "
                         "monitoring persistence"
                     )
+
                     continue
 
                 metadata_updated = (
@@ -1235,9 +1371,7 @@ class MonitoringOrchestrator:
                 if not metadata_updated:
 
                     #
-                    # Roll back the complete operation:
-                    # persistence without valid metadata is
-                    # not considered successfully enabled.
+                    # Full rollback.
                     #
                     self.monitor_stream_service.unsubscribe(
                         client_id=client_id,
@@ -1254,6 +1388,7 @@ class MonitoringOrchestrator:
                         f"{client_name}: failed to update "
                         f"{section.value.upper()} metadata"
                     )
+
                     continue
 
                 self.poutput(
@@ -1263,19 +1398,93 @@ class MonitoringOrchestrator:
                     f"(interval={interval_s}s)"
                 )
 
+            # ============================================================
+            # Event persistence
+            # ============================================================
+
+            if not events_selected:
+                continue
+
+            prepared = (
+                self.monitor_persistence_service
+                .prepare_events(
+                    client_id=client_id,
+                    save_format=args.save_format,
+                )
+            )
+
+            if not prepared:
+
+                self.poutput(
+                    f"{client_name}: failed to prepare "
+                    "EVENT persistence"
+                )
+
+                continue
+
+            activated = (
+                self.monitor_persistence_service
+                .activate_events(
+                    client_id=client_id
+                )
+            )
+
+            if not activated:
+
+                self.poutput(
+                    f"{client_name}: failed to activate "
+                    "EVENT persistence"
+                )
+
+                continue
+
+            metadata_updated = (
+                self.monitor_persistence_service
+                .update_event_metadata(
+                    client_id=client_id,
+                    enabled=True,
+                    save_format=args.save_format,
+                )
+            )
+
+            if not metadata_updated:
+
+                self.monitor_persistence_service.deactivate_events(
+                    client_id=client_id
+                )
+
+                self.poutput(
+                    f"{client_name}: failed to update "
+                    "EVENT persistence metadata"
+                )
+
+                continue
+
+            self.poutput(
+                f"{client_name}: "
+                "EVENT monitoring persistence enabled"
+            )
+
 
     def save_stop(self, args) -> None:
 
-        client_ids = self._resolve_targets(args)
+        client_ids = self._resolve_targets(
+            args
+        )
 
         if not client_ids:
+
             self.poutput(
                 "No Monitoring Plane clients match "
                 "the requested target."
             )
+
             return
 
-        sections = self._resolve_save_sections(
+        (
+            sample_sections,
+            events_selected,
+        ) = self._resolve_save_selection(
             args
         )
 
@@ -1285,7 +1494,11 @@ class MonitoringOrchestrator:
                 errors="ignore"
             )
 
-            for section in sections:
+            # ============================================================
+            # Periodic sample streams
+            # ============================================================
+
+            for section in sample_sections:
 
                 stream_state = (
                     self.monitor_persistence_service
@@ -1296,15 +1509,21 @@ class MonitoringOrchestrator:
                 )
 
                 if stream_state is None:
+
                     self.poutput(
                         f"{client_name}: "
                         f"{section.value.upper()} persistence "
                         "is not configured"
                     )
+
                     continue
 
+                #
+                # First stop future delivery to persistence.
+                #
                 unsubscribed = (
-                    self.monitor_stream_service.unsubscribe(
+                    self.monitor_stream_service
+                    .unsubscribe(
                         client_id=client_id,
                         section=section,
                         consumer="persistence",
@@ -1312,13 +1531,19 @@ class MonitoringOrchestrator:
                 )
 
                 if not unsubscribed:
+
                     self.poutput(
                         f"{client_name}: failed to disable "
                         f"{section.value.upper()} monitoring "
                         "subscription"
                     )
+
                     continue
 
+                #
+                # Once unsubscribed, no new persistence samples
+                # should be selected for this stream.
+                #
                 deactivated = (
                     self.monitor_persistence_service
                     .deactivate_stream(
@@ -1328,12 +1553,17 @@ class MonitoringOrchestrator:
                 )
 
                 if not deactivated:
+
                     self.poutput(
                         f"{client_name}: failed to deactivate "
                         f"{section.value.upper()} persistence"
                     )
+
                     continue
 
+                #
+                # Wait for all previously accepted items.
+                #
                 idle = (
                     self.monitor_persistence_service
                     .wait_stream_idle(
@@ -1344,13 +1574,19 @@ class MonitoringOrchestrator:
                 )
 
                 if not idle:
+
                     self.poutput(
                         f"{client_name}: timeout waiting for "
                         f"{section.value.upper()} persistence "
                         "queue to drain"
                     )
+
                     continue
 
+                #
+                # Flush residual partial batch and wait for any
+                # write already in flight.
+                #
                 flushed = (
                     self.monitor_persistence_service
                     .flush_stream(
@@ -1360,10 +1596,12 @@ class MonitoringOrchestrator:
                 )
 
                 if not flushed:
+
                     self.poutput(
                         f"{client_name}: failed to flush "
                         f"{section.value.upper()} persistence"
                     )
+
                     continue
 
                 metadata_ok = (
@@ -1383,11 +1621,13 @@ class MonitoringOrchestrator:
                 )
 
                 if not metadata_ok:
+
                     self.poutput(
                         f"{client_name}: "
                         f"{section.value.upper()} stopped, "
                         "but metadata update failed"
                     )
+
                     continue
 
                 self.poutput(
@@ -1395,6 +1635,110 @@ class MonitoringOrchestrator:
                     f"{section.value.upper()} monitoring "
                     "persistence disabled"
                 )
+
+            # ============================================================
+            # Events
+            # ============================================================
+
+            if not events_selected:
+                continue
+
+            event_state = (
+                self.monitor_persistence_service
+                .get_event_state(
+                    client_id=client_id
+                )
+            )
+
+            if event_state is None:
+
+                self.poutput(
+                    f"{client_name}: "
+                    "EVENT persistence is not configured"
+                )
+
+                continue
+
+            #
+            # Prevent new EVENT items from being accepted.
+            #
+            deactivated = (
+                self.monitor_persistence_service
+                .deactivate_events(
+                    client_id=client_id
+                )
+            )
+
+            if not deactivated:
+
+                self.poutput(
+                    f"{client_name}: failed to deactivate "
+                    "EVENT persistence"
+                )
+
+                continue
+
+            #
+            # Wait until every EVENT accepted before deactivation
+            # has completed process_event_item().
+            #
+            idle = (
+                self.monitor_persistence_service
+                .wait_events_idle(
+                    client_id=client_id,
+                    timeout_s=30.0,
+                )
+            )
+
+            if not idle:
+
+                self.poutput(
+                    f"{client_name}: timeout waiting for "
+                    "EVENT persistence queue to drain"
+                )
+
+                continue
+
+            flushed = (
+                self.monitor_persistence_service
+                .flush_events(
+                    client_id=client_id
+                )
+            )
+
+            if not flushed:
+
+                self.poutput(
+                    f"{client_name}: failed to flush "
+                    "EVENT persistence"
+                )
+
+                continue
+
+            metadata_ok = (
+                self.monitor_persistence_service
+                .update_event_metadata(
+                    client_id=client_id,
+                    enabled=False,
+                    save_format=(
+                        event_state.save_format
+                    ),
+                )
+            )
+
+            if not metadata_ok:
+
+                self.poutput(
+                    f"{client_name}: EVENT persistence "
+                    "stopped, but metadata update failed"
+                )
+
+                continue
+
+            self.poutput(
+                f"{client_name}: "
+                "EVENT monitoring persistence disabled"
+            )
     
     def save_status(self, args) -> None:
 
@@ -1403,10 +1747,12 @@ class MonitoringOrchestrator:
         )
 
         if not client_ids:
+
             self.poutput(
                 "No Monitoring Plane clients match "
                 "the requested target."
             )
+
             return
 
         session = (
@@ -1419,11 +1765,18 @@ class MonitoringOrchestrator:
             .get_queue_status()
         )
 
+        # ================================================================
+        # Global persistence state
+        # ================================================================
+
         if session is None:
+
             self.poutput(
                 "Monitoring persistence session: none"
             )
+
         else:
+
             self.poutput(
                 f"Monitoring persistence session: "
                 f"{session.session_id}\n"
@@ -1435,6 +1788,10 @@ class MonitoringOrchestrator:
             f"{queue_status['size']}/"
             f"{queue_status['maxsize']}"
         )
+
+        # ================================================================
+        # Client state
+        # ================================================================
 
         for client_id in client_ids:
 
@@ -1449,15 +1806,28 @@ class MonitoringOrchestrator:
                 )
             )
 
+            event_state = (
+                self.monitor_persistence_service
+                .get_event_state(
+                    client_id=client_id
+                )
+            )
+
             self.poutput(
                 f"\n{client_name}:"
             )
 
-            if not streams:
+            if not streams and event_state is None:
+
                 self.poutput(
                     "  no persistence streams configured"
                 )
+
                 continue
+
+            # ============================================================
+            # Periodic sample streams
+            # ============================================================
 
             for stream in streams:
 
@@ -1473,4 +1843,22 @@ class MonitoringOrchestrator:
                     f"pending={stream.queue_pending}, "
                     f"rows={stream.rows_written}, "
                     f"error={stream.last_error or '-'}"
+                )
+
+            # ============================================================
+            # Events
+            # ============================================================
+
+            if event_state is not None:
+
+                self.poutput(
+                    "  EVENTS: "
+                    f"{'ACTIVE' if event_state.enabled else 'inactive'}, "
+                    f"format={event_state.save_format}, "
+                    f"enqueued={event_state.events_enqueued}, "
+                    f"written={event_state.events_written}, "
+                    f"dropped={event_state.events_dropped}, "
+                    f"pending={event_state.queue_pending}, "
+                    f"rows={event_state.rows_written}, "
+                    f"error={event_state.last_error or '-'}"
                 )

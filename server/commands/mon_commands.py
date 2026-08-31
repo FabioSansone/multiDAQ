@@ -281,13 +281,11 @@ add_monitor_save_section_arguments(
 
 save_start_parser.add_argument(
     "--interval",
-    type=int,
-    choices=MONITOR_INTERVALS_S,
+    type=float,
     default=DEFAULT_MONITOR_INTERVAL_S,
     help=(
-        "Sampling interval for the selected MAIN/RC/HV streams. "
-        "Ignored for EVENTS. "
-        f"Allowed values: {MONITOR_INTERVALS_S}. "
+        "Sampling interval in seconds for "
+        "MAIN/RC/HV streams. "
         f"Default: {DEFAULT_MONITOR_INTERVAL_S}s."
     ),
 )
@@ -502,9 +500,14 @@ def do_monitor(
     if args.monitor_command == "save":
 
         if args.save_action == "start":
-            self.mon_orchestrator.save_start(
-                args
-            )
+
+            if args.interval <= 0:
+                self.perror(
+                    "--interval must be greater than 0."
+                )
+                return
+
+            self.mon_orchestrator.save_start(args)
             return
 
         if args.save_action == "stop":

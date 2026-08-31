@@ -40,7 +40,7 @@ class MonitoringPlaneManager:
         self.listener_thread: Optional[threading.Thread] = None
         self.reconnect_requested = threading.Event()
         
-        self.sensors_warning_thread: Optional[threading.Thread] = None
+        self.event_thread: Optional[threading.Thread] = None
 
         self.command_map = COMMAND_MAP
 
@@ -411,12 +411,12 @@ class MonitoringPlaneManager:
         )
         self.listener_thread.start()
 
-        if self.sensors_warning_thread is None or not self.sensors_warning_thread.is_alive():
-            self.sensors_warning_thread = threading.Thread(
-                target=self._main_warning_loop,
+        if self.event_thread is None or not self.event_thread.is_alive():
+            self.event_thread = threading.Thread(
+                target=self._event_loop,
                 daemon=True,
             )
-            self.sensors_warning_thread.start()
+            self.event_thread.start()
         
         if self.sample_thread is None or not self.sample_thread.is_alive():
             self.sample_thread = threading.Thread(target=self._sample_loop,
@@ -434,8 +434,8 @@ class MonitoringPlaneManager:
         if self.listener_thread and self.listener_thread.is_alive():
             self.listener_thread.join(timeout=2.0)
 
-        if self.sensors_warning_thread and self.sensors_warning_thread.is_alive():
-            self.sensors_warning_thread.join(timeout=2.0)
+        if self.event_thread and self.event_thread.is_alive():
+            self.event_thread.join(timeout=2.0)
         
         if self.sample_thread and self.sample_thread.is_alive():
             self.sample_thread.join(timeout=2.0)
@@ -522,33 +522,111 @@ class MonitoringPlaneManager:
         self.close_connection()
         self.logger.info("MonitoringPlaneManager closed")
         
-    def _main_warning_loop(self) -> None:
+    def _event_loop(self) -> None:
+
         while not self.stop_listening.is_set():
-            
-            main_service = self.runtime.main_service
 
-            if main_service is None:
-                self.stop_listening.wait(0.5)
-                continue
+            event_found = False
+
+            # ============================================================
+            # Generic runtime events
+            # ============================================================
 
             try:
-                warning = main_service.warning_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            
-            try:
-                event_message = self.message_handler.create_event(
-                    channel=Channel.MAIN,
-                    payload=warning,
-                    sender="client",
-                    status=MessageStatus.OK,
+
+                runtime_event = (
+                    self.runtime
+                    .monitor_event_queue
+                    .get_nowait()
                 )
 
-                self.queue_message(event_message)
-            
-            except Exception as e:
-                self.logger.error(f"Failed to create MAIN monitoring event: {e}")
-                
+            except queue.Empty:
+                runtime_event = None
+
+            if runtime_event is not None:
+
+                event_found = True
+
+                try:
+
+                    event_message = (
+                        self.message_handler
+                        .create_event(
+                            channel=(
+                                runtime_event["channel"]
+                            ),
+                            payload=(
+                                runtime_event["payload"]
+                            ),
+                            sender="client",
+                            status=MessageStatus.OK,
+                        )
+                    )
+
+                    self.queue_message(
+                        event_message
+                    )
+
+                except Exception as exc:
+
+                    self.logger.error(
+                        "Failed to create runtime "
+                        f"monitoring event: {exc}"
+                    )
+
+            # ============================================================
+            # Main Board warning/events
+            # ============================================================
+
+            main_service = (
+                self.runtime.main_service
+            )
+
+            if main_service is not None:
+
+                try:
+
+                    warning = (
+                        main_service
+                        .warning_queue
+                        .get_nowait()
+                    )
+
+                except queue.Empty:
+                    warning = None
+
+                if warning is not None:
+
+                    event_found = True
+
+                    try:
+
+                        event_message = (
+                            self.message_handler
+                            .create_event(
+                                channel=Channel.MAIN,
+                                payload=warning,
+                                sender="client",
+                                status=MessageStatus.OK,
+                            )
+                        )
+
+                        self.queue_message(
+                            event_message
+                        )
+
+                    except Exception as exc:
+
+                        self.logger.error(
+                            "Failed to create MAIN "
+                            f"monitoring event: {exc}"
+                        )
+
+            if not event_found:
+
+                self.stop_listening.wait(
+                    0.05
+                )  
 
 
     def queue_sample(self, channel: Channel, message: ProtocolMessage) -> None:

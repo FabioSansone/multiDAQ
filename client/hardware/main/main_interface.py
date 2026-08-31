@@ -88,12 +88,15 @@ class MAIN:
                 f"{sorted(detected_buses)}"
             )
         
-        if self.bmi.i2cbus is not None:
-            any_motion_ok = self.bmi.configure_any_motion()
+        if self.bmi.available:
+            any_motion_ok = (
+                self.bmi.configure_any_motion()
+            )
 
             if not any_motion_ok:
                 self.logger.warning(
-                    "BMI270 any-motion monitoring could not be enabled"
+                    "BMI270 any-motion monitoring "
+                    "could not be enabled"
                 )
                 
         
@@ -137,10 +140,17 @@ class MAIN:
 
 
     def get_bmi_data(self):
+
+        if not self.bmi.available:
+            return None
+
         try:
             return self.bmi.read_monitoring_snapshot()
+
         except Exception as e:
-            self.logger.error(f"BMI270 read failed: {e}")
+            self.logger.error(
+                f"BMI270 read failed: {e}"
+            )
             return None
 
     def get_xadc_data(self):
@@ -247,8 +257,14 @@ class MAIN:
 
         events = []
 
+        if not self.bmi.available:
+            return {
+                "events": events,
+            }
+
         try:
             if self.bmi.get_any_motion_status():
+
                 events.append({
                     "event": "motion_detected",
                     "sensor": "bmi270",

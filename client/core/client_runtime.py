@@ -8,7 +8,10 @@ from client.hardware.evproducer.ev_service import EVService
 from client.acquisition.acquisition_service import AcquisitionService
 from client.core.monitor_sample_service import MonitorSampleService
 from client.hardware.feb.feb_service import FEBService
-from common.message_handler import MessageStatus
+from common.message_handler import MessageStatus, Channel
+
+import queue
+import time
 
 
 SHUTDOWN_ZERO_REGISTERS = [19, 15, 1, 0, 39, 16, 18]
@@ -31,9 +34,11 @@ class ClientRunTime:
         self.server_ip = server_ip
         self.hv_port = hv_port
         self.cached_i2c_bus = self.identity.get_i2cbus()
+        
+        self.monitor_event_queue = queue.Queue()
 
         self.hv_service: Optional[HVService] = None
-        self.rc_service: RCService = RCService()
+        self.rc_service: RCService = RCService(configuration_change_callback=self._on_rc_configuration_change)
         self.rc_service.start()
         self.evproducer = EVService()
         self.feb_service = FEBService(self)
@@ -54,6 +59,8 @@ class ClientRunTime:
         self.mac_to_id: int | None = None
         
         self.channel_hv_parameters: dict[int, dict] = {}
+        
+        
         
         self._closed = False
         
@@ -387,7 +394,73 @@ class ClientRunTime:
             f"{self.cached_i2c_bus} -> {detected_i2c_bus}"
         )
 
-        self.cached_i2c_bus = detected_i2c_bus       
+        self.cached_i2c_bus = detected_i2c_bus   
+        
+        
+    def emit_monitoring_event(
+        self,
+        *,
+        channel: Channel,
+        event: str,
+        severity: str = "info",
+        details: dict | None = None,
+        source_request_id: str | None = None,
+        error=None,
+    ) -> None:
+
+        payload = {
+            "event": event,
+            "severity": severity,
+            "event_monotonic_ns": (
+                time.monotonic_ns()
+            ),
+            "source_request_id": (
+                source_request_id
+            ),
+            "details": details or {},
+            "error": error,
+        }
+
+        self.monitor_event_queue.put(
+            {
+                "channel": channel,
+                "payload": payload,
+            }
+        )    
+        
+    def _on_rc_configuration_change(
+        self,
+        *,
+        register: int,
+        old_value,
+        new_value,
+        reason: str,
+        source_request_id: str | None = None,
+    ) -> None:
+
+        if register not in {
+            31,
+            39,
+        }:
+            return
+
+        if old_value == new_value:
+            return
+
+        self.emit_monitoring_event(
+            channel=Channel.RC,
+            event="rc_configuration_changed",
+            severity="info",
+            source_request_id=(
+                source_request_id
+            ),
+            details={
+                "register": register,
+                "old_value": old_value,
+                "new_value": new_value,
+                "reason": reason,
+            },
+        )
             
             
             

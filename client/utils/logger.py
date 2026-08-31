@@ -7,49 +7,44 @@ from typing import Dict
 
 LOGGER_NAMES = {
 
-    #Core
-    'run_time': 'client.core.runtime',
-    'monitor_service': 'client.core.monitor_service',
-    
-    #Communication
-    'control_manager': 'client.comm.control',
-    'acq_manager': 'client.comm.acq',
-    'mon_manager': 'client.comm.mon',
-    'message_handler': 'client.comm.msg',
-    'handshake': 'client.handshake',
-    'identity': 'client.identity',
+    # Core
+    "client_runtime": "client.core.runtime",
+    "monitor_service": "client.core.monitor_service",
 
-    #Commands
-    'generic_commands': 'client.commands.generic',
+    # Communication
+    "control_manager": "client.comm.control",
+    "acq_manager": "client.comm.acq",
+    "mon_manager": "client.comm.mon",
+    "message_handler": "client.comm.msg",
+    "handshake": "client.comm.handshake",
+    "identity": "client.identity",
 
-    #Hardware
-    'run_control': 'client.hardware.rc.rc_interface',
-    'rc_service': 'client.hardware.rc.rc_service',
-    'hvmodbus': 'client.hardware.hv.hvmodbus',
-    'hv': 'client.hardware.hv.hv_interface',
-    'hv_service': 'client.hardware.hv.hv_service',
-    'ev_service': 'client.hardware.evproducer.ev_service',
-    'main': 'client.hardware.main.main_interface',
-    'main_service': 'client.hardware.main.main_service',
+    # Commands
+    "generic_commands": "client.commands.generic",
 
-    #Acquisition
-    'acquisition_service': 'client.acquisition.acquisition_service',
-    
-    #Sensors
-    'bme280': 'client.hardware.main.sensors.bme280',
-    'tla2024': 'client.hardware.main.sensors.tla2024',
-    'bmm150': 'client.hardware.main.sensors.bmm150',
-    'bmi270': 'client.hardware.main.sensors.bmi270',
-    'xadc': 'client.hardware.main.sensors.xadc',
-    
+    # Hardware
+    "run_control": "client.hardware.rc.rc_interface",
+    "rc_service": "client.hardware.rc.rc_service",
+    "hvmodbus": "client.hardware.hv.hvmodbus",
+    "hv": "client.hardware.hv.hv_interface",
+    "hv_service": "client.hardware.hv.hv_service",
+    "ev_service": "client.hardware.evproducer.ev_service",
+    "main": "client.hardware.main.main_interface",
+    "main_service": "client.hardware.main.main_service",
 
-    #Main Application
-    'app': 'client.app'
-    
-    
-    
+    # Acquisition
+    "acquisition_service": "client.acquisition.acquisition_service",
+
+    # Sensors
+    "bme280": "client.hardware.main.sensors.bme280",
+    "tla2024": "client.hardware.main.sensors.tla2024",
+    "bmm150": "client.hardware.main.sensors.bmm150",
+    "bmi270": "client.hardware.main.sensors.bmi270",
+    "xadc": "client.hardware.main.sensors.xadc",
+
+    # Main Application
+    "app": "client.app",
 }
-
 
 LOGGER_LEVELS = {
     "debug": logging.DEBUG,
@@ -102,7 +97,7 @@ class LoggerManager:
             datefmt='%H:%M:%S'
         )
         
-        log_file = cls._log_dir / f"server_{datetime.now().strftime('%Y%m%d')}.log"
+        log_file = (cls._log_dir/ f"client_{datetime.now().strftime('%Y%m%d')}.log")
         file_handler = RotatingFileHandler(log_file, maxBytes=10_000_000, backupCount=5)
         file_handler.setFormatter(detailed_formatter)
         file_handler.setLevel(logging.DEBUG)
@@ -141,8 +136,8 @@ class LoggerManager:
         if not cls._initialised:
             cls.initialize()
         
-        if module_name not in LOGGER_NAMES.keys():
-            logger_name = f"server.unknown.{module_name}"
+        if module_name not in LOGGER_NAMES:
+            logger_name = f"client.unknown.{module_name}"
         else:
             logger_name = LOGGER_NAMES[module_name]
         

@@ -57,6 +57,18 @@ MAIN_COLUMNS = (
 
 MONITORING_METADATA_SCHEMA_VERSION = 1
 
+
+EVENT_COLUMNS = (
+    "timestamp_utc_ns",
+    "channel",
+    "event",
+    "severity",
+    "sender",
+    "source_request_id",
+    "details_json",
+    "error",
+)
+
 @dataclass
 class PersistenceStreamState:
     client_id: bytes
@@ -77,6 +89,26 @@ class PersistenceStreamState:
     
     last_error: str | None = None
     
+
+@dataclass
+class PersistenceEventState:
+    client_id: bytes
+
+    enabled: bool
+    save_format: str
+
+    events_enqueued: int = 0
+    events_written: int = 0
+    events_dropped: int = 0
+
+    queue_pending: int = 0
+
+    rows_written: int = 0
+
+    last_error: str | None = None
+    
+    
+    
 @dataclass
 class PersistenceSession:
     session_id: str
@@ -87,6 +119,12 @@ class PersistenceSession:
 class PersistenceItem:
     client_id: bytes
     section: Channel
+    message: ProtocolMessage
+    
+
+@dataclass(frozen=True)
+class PersistenceEventItem:
+    client_id: bytes
     message: ProtocolMessage
     
     
@@ -126,6 +164,10 @@ class MonitorPersistenceService:
         self._next_flush_check_ns = 0
         
         self._client_metadata: dict[bytes, dict] = {}
+        self._metadata_transaction_locks: dict[bytes,threading.Lock] = {}
+        self._metadata_transaction_locks_lock = threading.Lock()
+        
+        self._event_states: dict[bytes, PersistenceEventState] = {}
         
         self.logger = get_logger("monitor_persistence_service")
         self.logger.debug("Monitoring Persistence Service initialized")
@@ -349,6 +391,7 @@ class MonitorPersistenceService:
             "main": list(MAIN_COLUMNS),
             "rc": list(RC_COLUMNS),
             "hv": list(HV_COLUMNS),
+            "events": list(EVENT_COLUMNS),
             "mon_metadata_version": MONITORING_METADATA_SCHEMA_VERSION
         }
     
@@ -544,6 +587,75 @@ class MonitorPersistenceService:
 
             if state.queue_pending == 0:
                 self._stream_idle_condition.notify_all()       
+     
+     
+    def _mark_events_written(
+        self,
+        client_id: bytes,
+        count: int = 1,
+    ) -> None:
+
+        with self._persistence_lock:
+
+            state = self._event_states.get(
+                client_id
+            )
+
+            if state is None:
+                return
+
+            state.events_written += count
+            state.rows_written += count
+            state.last_error = None
+
+
+    def _mark_events_dropped(
+        self,
+        client_id: bytes,
+        count: int = 1,
+        reason: str | None = None,
+    ) -> None:
+
+        with self._persistence_lock:
+
+            state = self._event_states.get(
+                client_id
+            )
+
+            if state is None:
+                return
+
+            state.events_dropped += count
+
+            if reason is not None:
+                state.last_error = reason
+
+
+    def _mark_event_processed(
+        self,
+        client_id: bytes,
+    ) -> None:
+
+        with self._stream_idle_condition:
+
+            state = self._event_states.get(
+                client_id
+            )
+
+            if state is None:
+                return
+
+            if state.queue_pending > 0:
+                state.queue_pending -= 1
+
+            else:
+                state.queue_pending = 0
+
+            if state.queue_pending == 0:
+                self._stream_idle_condition.notify_all()
+        
+     
+     
                     
     def _set_stream_error(
         self,
@@ -581,9 +693,7 @@ class MonitorPersistenceService:
         }
         
     
-    def get_status(
-        self,
-    ) -> dict:
+    def get_status(self) -> dict:
 
         with self._persistence_lock:
 
@@ -595,10 +705,17 @@ class MonitorPersistenceService:
                 )
             )
 
+            events = copy.deepcopy(
+                list(
+                    self._event_states.values()
+                )
+            )
+
         return {
             "running": running,
             "queue": self.get_queue_status(),
             "streams": streams,
+            "events": events,
         }
         
     def has_active_streams(
@@ -607,10 +724,21 @@ class MonitorPersistenceService:
 
         with self._persistence_lock:
 
-            return any(
+            sample_active = any(
                 state.enabled
                 for state
                 in self._persistence_streams.values()
+            )
+
+            event_active = any(
+                state.enabled
+                for state
+                in self._event_states.values()
+            )
+
+            return (
+                sample_active
+                or event_active
             )
     
     
@@ -731,6 +859,43 @@ class MonitorPersistenceService:
                 self._stream_idle_condition.wait(
                     timeout=remaining_s
                 )
+                
+    def wait_events_idle(
+        self,
+        client_id: bytes,
+        timeout_s: float = 30.0,
+    ) -> bool:
+
+        deadline = (
+            time.monotonic()
+            + timeout_s
+        )
+
+        with self._stream_idle_condition:
+
+            while True:
+
+                state = self._event_states.get(
+                    client_id
+                )
+
+                if state is None:
+                    return False
+
+                if state.queue_pending == 0:
+                    return True
+
+                remaining = (
+                    deadline
+                    - time.monotonic()
+                )
+
+                if remaining <= 0:
+                    return False
+
+                self._stream_idle_condition.wait(
+                    remaining
+                )
             
     def flush_stream(
         self,
@@ -759,7 +924,39 @@ class MonitorPersistenceService:
                 error="stream flush failed",
             )
 
-            return False      
+            return False    
+        
+    def flush_events(
+        self,
+        client_id: bytes,
+    ) -> bool:
+
+        try:
+
+            return self.writer.flush_events(
+                client_id=client_id
+            )
+
+        except Exception as exc:
+
+            self.logger.exception(
+                f"Failed to flush event persistence: "
+                f"client={client_id!r}: "
+                f"{exc}"
+            )
+
+            with self._persistence_lock:
+
+                state = self._event_states.get(
+                    client_id
+                )
+
+                if state is not None:
+                    state.last_error = (
+                        "event flush failed"
+                    )
+
+            return False  
             
     def _worker_loop(self) -> None:
 
@@ -777,45 +974,122 @@ class MonitorPersistenceService:
                 self._maybe_flush_due()
                 continue
 
+            is_event = isinstance(
+                persistence_item,
+                PersistenceEventItem,
+            )
+
             try:
 
-                write_ok = self.writer.process_item(
-                    persistence_item
-                )
+                if is_event:
+
+                    write_ok = (
+                        self.writer
+                        .process_event_item(
+                            persistence_item
+                        )
+                    )
+
+                else:
+
+                    write_ok = (
+                        self.writer
+                        .process_item(
+                            persistence_item
+                        )
+                    )
 
                 if not write_ok:
-                    self.logger.warning(
-                        f"Persistence item processing failed: "
-                        f"client={persistence_item.client_id!r}, "
-                        f"section="
-                        f"{persistence_item.section.value}"
-                    )
+
+                    if is_event:
+
+                        self.logger.warning(
+                            "Persistence EVENT processing "
+                            "failed: "
+                            f"client="
+                            f"{persistence_item.client_id!r}"
+                        )
+
+                    else:
+
+                        self.logger.warning(
+                            "Persistence sample processing "
+                            "failed: "
+                            f"client="
+                            f"{persistence_item.client_id!r}, "
+                            f"section="
+                            f"{persistence_item.section.value}"
+                        )
 
             except Exception as exc:
 
-                self.logger.exception(
-                    f"Unexpected persistence worker error: "
-                    f"client={persistence_item.client_id!r}, "
-                    f"section="
-                    f"{persistence_item.section.value}, "
-                    f"error={exc}"
-                )
+                if is_event:
 
-                self._mark_samples_dropped(
-                    client_id=persistence_item.client_id,
-                    section=persistence_item.section,
-                    count=1,
-                    reason=(
-                        "unexpected persistence worker error"
-                    ),
-                )
+                    self.logger.exception(
+                        "Unexpected persistence worker "
+                        "error while processing EVENT: "
+                        f"client="
+                        f"{persistence_item.client_id!r}, "
+                        f"error={exc}"
+                    )
+
+                    self._mark_events_dropped(
+                        client_id=(
+                            persistence_item.client_id
+                        ),
+                        count=1,
+                        reason=(
+                            "unexpected persistence "
+                            "worker error"
+                        ),
+                    )
+
+                else:
+
+                    self.logger.exception(
+                        "Unexpected persistence worker "
+                        "error while processing sample: "
+                        f"client="
+                        f"{persistence_item.client_id!r}, "
+                        f"section="
+                        f"{persistence_item.section.value}, "
+                        f"error={exc}"
+                    )
+
+                    self._mark_samples_dropped(
+                        client_id=(
+                            persistence_item.client_id
+                        ),
+                        section=(
+                            persistence_item.section
+                        ),
+                        count=1,
+                        reason=(
+                            "unexpected persistence "
+                            "worker error"
+                        ),
+                    )
 
             finally:
 
-                self._mark_item_processed(
-                    client_id=persistence_item.client_id,
-                    section=persistence_item.section,
-                )
+                if is_event:
+
+                    self._mark_event_processed(
+                        client_id=(
+                            persistence_item.client_id
+                        )
+                    )
+
+                else:
+
+                    self._mark_item_processed(
+                        client_id=(
+                            persistence_item.client_id
+                        ),
+                        section=(
+                            persistence_item.section
+                        ),
+                    )
 
                 self.persistence_queue.task_done()
 
@@ -924,17 +1198,14 @@ class MonitorPersistenceService:
 
         date_folder = dt.strftime("%Y_%m_%d")
 
-        session_id = (
-            dt.strftime("%Y%m%dT%H%M%S")
-            + f"_{started_at_utc_ns % 1_000_000_000:09d}"
-        )
+        session_id = dt.strftime("%H-%M-%S" + f"-{started_at_utc_ns // 1_000_000 % 1000:03d}")
 
         base_path = (
             Path("/swgo")
             if Path("/swgo").exists()
             else Path.home()
         )
-
+        
         root_folder = (
             base_path
             / "multiPMT"
@@ -973,39 +1244,53 @@ class MonitorPersistenceService:
         metadata: dict,
     ) -> bool:
 
-        with self._persistence_lock:
-
-            existing = self._client_metadata.get(
+        transaction_lock = (
+            self._get_metadata_transaction_lock(
                 client_id
             )
-
-            if existing is not None:
-                return True
-
-            self._client_metadata[
-                client_id
-            ] = copy.deepcopy(metadata)
-
-            metadata_snapshot = copy.deepcopy(
-                metadata
-            )
-
-        write_ok = self.writer.write_metadata(
-            client_id=client_id,
-            metadata=metadata_snapshot,
         )
 
-        if not write_ok:
+        with transaction_lock:
 
             with self._persistence_lock:
-                self._client_metadata.pop(
-                    client_id,
-                    None,
+
+                existing = (
+                    self._client_metadata.get(
+                        client_id
+                    )
                 )
 
-            return False
+                if existing is not None:
+                    return True
 
-        return True
+                metadata_snapshot = copy.deepcopy(
+                    metadata
+                )
+
+            #
+            # Write first. RAM state becomes authoritative
+            # only if disk commit succeeds.
+            #
+            write_ok = self.writer.write_metadata(
+                client_id=client_id,
+                metadata=metadata_snapshot,
+            )
+
+            if not write_ok:
+                return False
+
+            with self._persistence_lock:
+
+                #
+                # Because the transaction lock is held,
+                # no other metadata mutation for this
+                # client can have happened in between.
+                #
+                self._client_metadata[
+                    client_id
+                ] = metadata_snapshot
+
+            return True
     
     
     def update_stream_metadata(
@@ -1018,64 +1303,180 @@ class MonitorPersistenceService:
         requested_interval_ns: int,
     ) -> bool:
 
-        with self._persistence_lock:
+        transaction_lock = (
+            self._get_metadata_transaction_lock(
+                client_id
+            )
+        )
 
-            current_metadata = (
-                self._client_metadata.get(
-                    client_id
+        with transaction_lock:
+
+            # ============================================================
+            # Read current committed metadata
+            # ============================================================
+
+            with self._persistence_lock:
+
+                current_metadata = (
+                    self._client_metadata.get(
+                        client_id
+                    )
+                )
+
+                if current_metadata is None:
+
+                    self.logger.error(
+                        "Cannot update persistence metadata: "
+                        "metadata not initialized for "
+                        f"client={client_id!r}"
+                    )
+
+                    return False
+
+                updated_metadata = copy.deepcopy(
+                    current_metadata
+                )
+
+            # ============================================================
+            # Mutate private working copy
+            # ============================================================
+
+            persistence = (
+                updated_metadata.setdefault(
+                    "persistence",
+                    {},
                 )
             )
 
-            if current_metadata is None:
+            sections = persistence.setdefault(
+                "sections",
+                {},
+            )
 
-                self.logger.error(
-                    f"Cannot update persistence metadata: "
-                    f"metadata not initialized for "
-                    f"client={client_id!r}"
-                )
+            sections[section.value] = {
+                "enabled": enabled,
+                "format": save_format,
+                "requested_interval_ns": (
+                    requested_interval_ns
+                ),
+                "updated_at_utc_ns": (
+                    time.time_ns()
+                ),
+            }
 
+            # ============================================================
+            # Persist
+            # ============================================================
+
+            write_ok = self.writer.write_metadata(
+                client_id=client_id,
+                metadata=updated_metadata,
+            )
+
+            if not write_ok:
                 return False
 
-            updated_metadata = copy.deepcopy(
-                current_metadata
-            )
+            # ============================================================
+            # Commit RAM state
+            # ============================================================
 
-        persistence = (
-            updated_metadata.setdefault(
-                "persistence",
-                {}
-            )
-        )
+            with self._persistence_lock:
 
-        sections = persistence.setdefault(
-            "sections",
-            {}
-        )
+                self._client_metadata[
+                    client_id
+                ] = updated_metadata
 
-        sections[section.value] = {
-            "enabled": enabled,
-            "format": save_format,
-            "requested_interval_ns": (
-                requested_interval_ns
-            ),
-            "updated_at_utc_ns": (
-                time.time_ns()
-            ),
-        }
+            return True
+    
+    def update_event_metadata(
+        self,
+        client_id: bytes,
+        *,
+        enabled: bool,
+        save_format: str,
+    ) -> bool:
 
-        if not self.writer.write_metadata(
-            client_id=client_id,
-            metadata=updated_metadata,
-        ):
-            return False
-
-        with self._persistence_lock:
-
-            self._client_metadata[
+        transaction_lock = (
+            self._get_metadata_transaction_lock(
                 client_id
-            ] = updated_metadata
+            )
+        )
 
-        return True
+        with transaction_lock:
+
+            # ============================================================
+            # Read
+            # ============================================================
+
+            with self._persistence_lock:
+
+                current_metadata = (
+                    self._client_metadata.get(
+                        client_id
+                    )
+                )
+
+                if current_metadata is None:
+
+                    self.logger.error(
+                        "Cannot update EVENT persistence metadata: "
+                        "metadata not initialized for "
+                        f"client={client_id!r}"
+                    )
+
+                    return False
+
+                updated_metadata = copy.deepcopy(
+                    current_metadata
+                )
+
+            # ============================================================
+            # Modify
+            # ============================================================
+
+            sections = (
+                updated_metadata
+                .setdefault(
+                    "persistence",
+                    {},
+                )
+                .setdefault(
+                    "sections",
+                    {},
+                )
+            )
+
+            sections["events"] = {
+                "enabled": enabled,
+                "format": save_format,
+                "updated_at_utc_ns": (
+                    time.time_ns()
+                ),
+            }
+
+            # ============================================================
+            # Persist
+            # ============================================================
+
+            write_ok = self.writer.write_metadata(
+                client_id=client_id,
+                metadata=updated_metadata,
+            )
+
+            if not write_ok:
+                return False
+
+            # ============================================================
+            # Commit
+            # ============================================================
+
+            with self._persistence_lock:
+
+                self._client_metadata[
+                    client_id
+                ] = updated_metadata
+
+            return True
     
     def record_configuration_change(
         self,
@@ -1086,96 +1487,314 @@ class MonitorPersistenceService:
         timestamp_utc_ns: int | None = None,
     ) -> bool:
 
-        if register not in {31, 39}:
+        if register not in {
+            31,
+            39,
+        }:
             return True
 
         if timestamp_utc_ns is None:
             timestamp_utc_ns = time.time_ns()
 
-        with self._persistence_lock:
+        transaction_lock = (
+            self._get_metadata_transaction_lock(
+                client_id
+            )
+        )
 
-            current_metadata = (
-                self._client_metadata.get(
-                    client_id
+        with transaction_lock:
+
+            # ============================================================
+            # Read current committed metadata
+            # ============================================================
+
+            with self._persistence_lock:
+
+                current_metadata = (
+                    self._client_metadata.get(
+                        client_id
+                    )
+                )
+
+                #
+                # No active persistence metadata for this
+                # client: configuration event is still valid,
+                # but there is nothing to update.
+                #
+                if current_metadata is None:
+                    return True
+
+                updated_metadata = copy.deepcopy(
+                    current_metadata
+                )
+
+            # ============================================================
+            # Modify working copy
+            # ============================================================
+
+            configuration = (
+                updated_metadata.setdefault(
+                    "configuration",
+                    {},
                 )
             )
 
-            if current_metadata is None:
+            current = configuration.setdefault(
+                "current",
+                {},
+            )
+
+            register_key = str(
+                register
+            )
+
+            old_value = current.get(
+                register_key
+            )
+
+            if old_value == new_value:
                 return True
 
-            updated_metadata = copy.deepcopy(
-                current_metadata
+            current[
+                register_key
+            ] = new_value
+
+            history = (
+                updated_metadata.setdefault(
+                    "configuration_history",
+                    [],
+                )
             )
 
-        configuration = (
-            updated_metadata.setdefault(
-                "configuration",
-                {}
-            )
-        )
-
-        current = configuration.setdefault(
-            "current",
-            {}
-        )
-
-        register_key = str(register)
-
-        old_value = current.get(
-            register_key
-        )
-
-        if old_value == new_value:
-            return True
-
-        current[register_key] = new_value
-
-        history = updated_metadata.setdefault(
-            "configuration_history",
-            []
-        )
-
-        history.append(
-            {
+            history.append({
                 "timestamp_utc_ns": (
                     timestamp_utc_ns
                 ),
                 "register": register,
                 "old_value": old_value,
                 "new_value": new_value,
-            }
-        )
+            })
 
-        write_ok = self.writer.write_metadata(
-            client_id=client_id,
-            metadata=updated_metadata,
-        )
+            # ============================================================
+            # Persist
+            # ============================================================
 
-        if not write_ok:
-            self.logger.error(
-                f"Cannot record persistence configuration "
-                f"change: metadata write failed for "
+            write_ok = self.writer.write_metadata(
+                client_id=client_id,
+                metadata=updated_metadata,
+            )
+
+            if not write_ok:
+
+                self.logger.error(
+                    "Cannot record persistence "
+                    "configuration change: "
+                    "metadata write failed for "
+                    f"client={client_id!r}, "
+                    f"register={register}"
+                )
+
+                return False
+
+            # ============================================================
+            # Commit RAM state
+            # ============================================================
+
+            with self._persistence_lock:
+
+                self._client_metadata[
+                    client_id
+                ] = updated_metadata
+
+            self.logger.info(
+                "Persistence configuration change recorded: "
                 f"client={client_id!r}, "
-                f"register={register}"
+                f"register={register}, "
+                f"old_value={old_value}, "
+                f"new_value={new_value}"
+            )
+
+            return True
+
+
+
+    def prepare_events(
+        self,
+        client_id: bytes,
+        save_format: str,
+    ) -> bool:
+
+        if save_format not in {
+            "csv",
+            "parquet",
+        }:
+
+            self.logger.error(
+                "Cannot prepare event persistence: "
+                f"unsupported format={save_format!r}"
             )
 
             return False
 
         with self._persistence_lock:
-            self._client_metadata[
+
+            state = self._event_states.get(
                 client_id
-            ] = updated_metadata
+            )
+
+            if state is not None:
+
+                if state.enabled:
+
+                    self.logger.warning(
+                        "Event persistence already active: "
+                        f"client={client_id!r}"
+                    )
+
+                    return False
+
+                state.save_format = save_format
+                state.last_error = None
+
+                return True
+
+            self._event_states[
+                client_id
+            ] = PersistenceEventState(
+                client_id=client_id,
+                enabled=False,
+                save_format=save_format,
+            )
 
         self.logger.info(
-            f"Persistence configuration change recorded: "
+            "Event persistence prepared: "
             f"client={client_id!r}, "
-            f"register={register}, "
-            f"old_value={old_value}, "
-            f"new_value={new_value}"
+            f"format={save_format}"
         )
 
         return True
 
+    
+    def activate_events(
+        self,
+        client_id: bytes,
+    ) -> bool:
+
+        with self._persistence_lock:
+
+            state = self._event_states.get(
+                client_id
+            )
+
+            if state is None:
+                return False
+
+            state.enabled = True
+            state.last_error = None
+
+        self.logger.info(
+            "Event persistence activated: "
+            f"client={client_id!r}"
+        )
+
+        return True
+
+
+    def deactivate_events(
+        self,
+        client_id: bytes,
+    ) -> bool:
+
+        with self._persistence_lock:
+
+            state = self._event_states.get(
+                client_id
+            )
+
+            if state is None:
+                return False
+
+            state.enabled = False
+
+        self.logger.info(
+            "Event persistence deactivated: "
+            f"client={client_id!r}"
+        )
+
+        return True 
+    
+    
+    
+    def enqueue_event(
+        self,
+        client_id: bytes,
+        message: ProtocolMessage,
+    ) -> bool:
+
+        item = PersistenceEventItem(
+            client_id=client_id,
+            message=message,
+        )
+
+        with self._persistence_lock:
+
+            if not self._running:
+                return False
+
+            state = self._event_states.get(
+                client_id
+            )
+
+            if state is None:
+                return True
+
+            if not state.enabled:
+                return True
+
+            try:
+                self.persistence_queue.put_nowait(
+                    item
+                )
+
+            except queue.Full:
+
+                state.events_dropped += 1
+                state.last_error = (
+                    "persistence queue full"
+                )
+
+                return False
+
+            state.events_enqueued += 1
+            state.queue_pending += 1
+
+        return True 
+    
+    def get_event_state(
+        self,
+        client_id: bytes,
+    ) -> PersistenceEventState | None:
+
+        with self._persistence_lock:
+
+            state = self._event_states.get(
+                client_id
+            )
+
+            if state is None:
+                return None
+
+            return copy.deepcopy(state)
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
 
 
@@ -1198,6 +1817,11 @@ class MonitorPersistenceWriter:
         self._metadata_write_locks: dict[bytes,threading.Lock,] = {}
 
         self._metadata_write_locks_lock = (threading.Lock())
+        
+        self._event_buffers: dict[bytes, list[dict]] = {}
+        self._event_buffer_first_ns: dict[bytes, int] = {}
+        self._event_write_locks: dict[bytes, threading.Lock] = {}
+        self._event_write_locks_lock  = threading.Lock()
         
         self.logger = get_logger("monitor_persistence_writer")
     
@@ -1524,7 +2148,28 @@ class MonitorPersistenceWriter:
                 lock = threading.Lock()
                 self._stream_write_locks[key] = lock
             
-            return lock   
+            return lock  
+        
+    def _get_event_write_lock(
+        self,
+        client_id: bytes,
+    ) -> threading.Lock:
+
+        with self._event_write_locks_lock:
+
+            lock = self._event_write_locks.get(
+                client_id
+            )
+
+            if lock is None:
+
+                lock = threading.Lock()
+
+                self._event_write_locks[
+                    client_id
+                ] = lock
+
+            return lock 
     
     def _get_metadata_write_lock(
         self,
@@ -1543,7 +2188,30 @@ class MonitorPersistenceWriter:
                     client_id
                 ] = lock
 
-            return lock  
+            return lock 
+        
+    def _get_metadata_transaction_lock(
+        self,
+        client_id: bytes,
+    ) -> threading.Lock:
+
+        with self._metadata_transaction_locks_lock:
+
+            lock = (
+                self._metadata_transaction_locks.get(
+                    client_id
+                )
+            )
+
+            if lock is None:
+
+                lock = threading.Lock()
+
+                self._metadata_transaction_locks[
+                    client_id
+                ] = lock
+
+            return lock 
 
     def _write_batch(self, client_id: bytes, section: Channel, samples: list[NormalizedPersistenceSample]) -> bool:
 
@@ -1765,6 +2433,26 @@ class MonitorPersistenceWriter:
             return None
 
         return client_folder / "metadata.json"
+    
+    def _resolve_event_path(
+        self,
+        client_id: bytes,
+        save_format: str,
+    ) -> Path | None:
+
+        client_folder = (
+            self._resolve_client_folder(
+                client_id
+            )
+        )
+
+        if client_folder is None:
+            return None
+
+        return (
+            client_folder
+            / f"events.{save_format}"
+        )
 
 
     def _write_csv_batch(
@@ -1855,7 +2543,181 @@ class MonitorPersistenceWriter:
         )
 
         return True
-                
+    
+    
+    def _write_event_batch(
+        self,
+        client_id: bytes,
+        rows: list[dict],
+    ) -> bool:
+
+        if not rows:
+            return True
+
+        state = (
+            self.persistence_service
+            .get_event_state(
+                client_id
+            )
+        )
+
+        if state is None:
+            return False
+
+        if state.save_format != "csv":
+
+            self.logger.error(
+                "Only CSV event persistence "
+                "is currently implemented"
+            )
+
+            self.persistence_service._mark_events_dropped(
+                client_id,
+                len(rows),
+                "event batch write failed",
+            )
+
+            return False
+
+        filepath = self._resolve_event_path(
+            client_id,
+            "csv",
+        )
+
+        if filepath is None:
+            return False
+
+        lock = self._get_event_write_lock(
+            client_id
+        )
+
+        try:
+
+            with lock:
+
+                file_exists = filepath.exists()
+
+                with filepath.open(
+                    "a",
+                    newline="",
+                    encoding="utf-8",
+                ) as csv_file:
+
+                    writer = csv.DictWriter(
+                        csv_file,
+                        fieldnames=EVENT_COLUMNS,
+                        extrasaction="ignore",
+                    )
+
+                    if (
+                        not file_exists
+                        or filepath.stat().st_size == 0
+                    ):
+                        writer.writeheader()
+
+                    for row in rows:
+
+                        writer.writerow({
+                            column: row.get(column)
+                            for column in EVENT_COLUMNS
+                        })
+
+        except Exception as exc:
+
+            self.logger.exception(
+                "Failed to write monitoring "
+                f"events: client={client_id!r}, "
+                f"error={exc}"
+            )
+
+            self.persistence_service._mark_events_dropped(
+                client_id,
+                len(rows),
+                "event batch write failed",
+            )
+
+            return False
+
+        self.persistence_service._mark_events_written(
+            client_id,
+            len(rows),
+        )
+
+        return True
+    
+    
+    def _normalize_event(
+        self,
+        item: PersistenceEventItem,
+    ) -> dict | None:
+
+        message = item.message
+        payload = message.payload or {}
+
+        timestamp_utc_ns = payload.get(
+            "timestamp_utc_ns"
+        )
+
+        if timestamp_utc_ns is None:
+
+            self.logger.error(
+                "Cannot normalize persistence event: "
+                "missing timestamp_utc_ns for "
+                f"client={item.client_id!r}"
+            )
+
+            return None
+
+        try:
+            channel = message.channel.value
+        except AttributeError:
+            channel = str(message.channel)
+
+        details = payload.get(
+            "details",
+            {},
+        )
+
+        try:
+            details_json = json.dumps(
+                details,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+
+        except Exception:
+
+            details_json = json.dumps(
+                {
+                    "serialization_error": True,
+                    "repr": repr(details),
+                },
+                separators=(",", ":"),
+            )
+
+        return {
+            "timestamp_utc_ns": timestamp_utc_ns,
+            "channel": channel,
+            "event": payload.get(
+                "event",
+                "unknown_event",
+            ),
+            "severity": payload.get(
+                "severity",
+                "info",
+            ),
+            "sender": (
+                message.sender
+                if message.sender is not None
+                else ""
+            ),
+            "source_request_id": payload.get(
+                "source_request_id"
+            ),
+            "details_json": details_json,
+            "error": payload.get("error"),
+        }
+                    
     
     def process_item(self, item: PersistenceItem) -> bool:
         normalized_sample = self._normalize_item(item)
@@ -1870,6 +2732,61 @@ class MonitorPersistenceWriter:
             return False
         
         return self._buffer_sample(normalized_sample)
+    
+    
+    def process_event_item(
+        self,
+        item: PersistenceEventItem,
+    ) -> bool:
+
+        row = self._normalize_event(
+            item
+        )
+
+        if row is None:
+
+            self.persistence_service._mark_events_dropped(
+                client_id=item.client_id,
+                count=1,
+                reason="event normalization failed",
+            )
+
+            return False
+
+        batch = None
+
+        with self._buffer_lock:
+
+            buffer = self._event_buffers.setdefault(
+                item.client_id,
+                [],
+            )
+
+            if not buffer:
+
+                self._event_buffer_first_ns[
+                    item.client_id
+                ] = time.monotonic_ns()
+
+            buffer.append(row)
+
+            if len(buffer) >= PERSISTENCE_BATCH_SAMPLES:
+
+                batch = list(buffer)
+                buffer.clear()
+
+                self._event_buffer_first_ns.pop(
+                    item.client_id,
+                    None,
+                )
+
+        if batch is None:
+            return True
+
+        return self._write_event_batch(
+            client_id=item.client_id,
+            rows=batch,
+        )
     
     
     def flush_stream(
@@ -1919,71 +2836,265 @@ class MonitorPersistenceWriter:
 
         return True
     
-    def flush_due(self,) -> bool:
-        
+    def flush_due(self) -> bool:
+
         now_monotonic_ns = time.monotonic_ns()
-        flush_interval_ns = int(PERSISTENCE_FLUSH_INTERVAL_S * 1e9)
-        due_batches = []
-        
+
+        flush_interval_ns = int(
+            PERSISTENCE_FLUSH_INTERVAL_S
+            * 1_000_000_000
+        )
+
+        due_sample_batches = []
+        due_event_batches = []
+
+       
         with self._buffer_lock:
+
+            
             for key, buffer in self._buffers.items():
+
                 if not buffer.samples:
                     continue
-                
+
                 if buffer.first_sample_monotonic_ns is None:
                     continue
-                
-                elapsed_ns = now_monotonic_ns - buffer.first_sample_monotonic_ns
-                
+
+                elapsed_ns = (
+                    now_monotonic_ns
+                    - buffer.first_sample_monotonic_ns
+                )
+
                 if elapsed_ns < flush_interval_ns:
                     continue
-                
+
                 batch = buffer.samples
-                
+
                 buffer.samples = []
                 buffer.first_sample_monotonic_ns = None
-                
-                due_batches.append((key[0], key[1], batch))
-        
-        success = True
-        
-        
-        for client_id, section, batch in due_batches:
-            write_ok = self._write_batch(client_id=client_id, section=section, samples=batch)
+
+                client_id, section = key
+
+                due_sample_batches.append(
+                    (
+                        client_id,
+                        section,
+                        batch,
+                    )
+                )
+
             
+            for client_id, event_rows in (
+                self._event_buffers.items()
+            ):
+
+                if not event_rows:
+                    continue
+
+                first_event_ns = (
+                    self._event_buffer_first_ns.get(
+                        client_id
+                    )
+                )
+
+                if first_event_ns is None:
+                    continue
+
+                elapsed_ns = (
+                    now_monotonic_ns
+                    - first_event_ns
+                )
+
+                if elapsed_ns < flush_interval_ns:
+                    continue
+
+                batch = list(event_rows)
+
+                event_rows.clear()
+
+                self._event_buffer_first_ns.pop(
+                    client_id,
+                    None,
+                )
+
+                due_event_batches.append(
+                    (
+                        client_id,
+                        batch,
+                    )
+                )
+
+      
+        success = True
+
+        
+        for (
+            client_id,
+            section,
+            batch,
+        ) in due_sample_batches:
+
+            write_ok = self._write_batch(
+                client_id=client_id,
+                section=section,
+                samples=batch,
+            )
+
             if not write_ok:
                 success = False
-                
+
+        
+        for (
+            client_id,
+            batch,
+        ) in due_event_batches:
+
+            write_ok = self._write_event_batch(
+                client_id=client_id,
+                rows=batch,
+            )
+
+            if not write_ok:
+                success = False
+
         return success
     
     
     def flush_all(self) -> bool:
-        
-        batches = []
+
+        sample_batches = []
+        event_batches = []
+
         
         with self._buffer_lock:
+
+            
             for key, buffer in self._buffers.items():
-                
+
                 if not buffer.samples:
+
                     buffer.first_sample_monotonic_ns = None
                     continue
-                
+
                 batch = buffer.samples
-                
+
                 buffer.samples = []
                 buffer.first_sample_monotonic_ns = None
-                
-                batches.append((key[0], key[1], batch))
+
+                client_id, section = key
+
+                sample_batches.append(
+                    (
+                        client_id,
+                        section,
+                        batch,
+                    )
+                )
+
+            
+            for client_id, event_rows in (
+                self._event_buffers.items()
+            ):
+
+                if not event_rows:
+
+                    self._event_buffer_first_ns.pop(
+                        client_id,
+                        None,
+                    )
+
+                    continue
+
+                batch = list(event_rows)
+
+                event_rows.clear()
+
+                self._event_buffer_first_ns.pop(
+                    client_id,
+                    None,
+                )
+
+                event_batches.append(
+                    (
+                        client_id,
+                        batch,
+                    )
+                )
+
         
         success = True
+
         
-        for client_id, section, batch in batches:
-            write_ok = self._write_batch(client_id=client_id, section=section, samples=batch)
-            
+        for (
+            client_id,
+            section,
+            batch,
+        ) in sample_batches:
+
+            write_ok = self._write_batch(
+                client_id=client_id,
+                section=section,
+                samples=batch,
+            )
+
             if not write_ok:
                 success = False
+
         
+        for (
+            client_id,
+            batch,
+        ) in event_batches:
+
+            write_ok = self._write_event_batch(
+                client_id=client_id,
+                rows=batch,
+            )
+
+            if not write_ok:
+                success = False
+
         return success
+    
+    
+    def flush_events(
+        self,
+        client_id: bytes,
+    ) -> bool:
+
+        batch = None
+
+        with self._buffer_lock:
+
+            rows = self._event_buffers.get(
+                client_id
+            )
+
+            if rows:
+
+                batch = list(rows)
+                rows.clear()
+
+            self._event_buffer_first_ns.pop(
+                client_id,
+                None,
+            )
+
+        if batch:
+
+            return self._write_event_batch(
+                client_id,
+                batch,
+            )
+
+        lock = self._get_event_write_lock(
+            client_id
+        )
+
+        with lock:
+            pass
+
+        return True
     
     
     def write_metadata(
@@ -2056,7 +3167,9 @@ class MonitorPersistenceWriter:
         )
 
         return True
-            
-            
+    
+    
+    
+                
         
         

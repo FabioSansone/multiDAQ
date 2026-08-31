@@ -7,53 +7,137 @@ from typing import Dict
 
 LOGGER_NAMES = {
 
-    #Server Core
-    'server_state': 'server.core.state',
-    'mac_identity_register': 'server.mac.register',
-    
-    #Communication
-    'control_manager': 'server.comm.control',
-    'message_handler': 'server.comm.msg',
-    'handshake': 'server.handshake',
+    # ================================================================
+    # Core
+    # ================================================================
 
-    #Acquisition
-    'acquisition_manager': 'server.comm.acq',
-    
-    #Monitoring
-    'monitoring_manager': 'server.comm.mon',
-    
+    "server_state": "server.core.state",
+    "mac_identity_register": "server.core.mac_registry",
 
-    #Receiver
-    'data_receiver': 'server.acquisition.receiver',
-    
-    #Utils
-    'json_parser': 'server.utils.json',
-    'server_client_handling': 'server.utils.client_handling',
+    # ================================================================
+    # Communication
+    # ================================================================
 
-    #Commands
-    'generic_commands': 'server.commands.generic',
-    'acquisition_commands': 'server.commands.acquisition',
-    'monitoring_commands': 'server.commands.monitoring',
-    'hv_commands': 'server.commands.hv',
-    'rc_commands': 'server.commands.rc',
-    'calibration_commands': 'server.commands.calibration',
+    "control_manager": "server.comm.control",
+    "acquisition_manager": "server.comm.acq",
+    "monitoring_manager": "server.comm.mon",
+    "message_handler": "server.comm.message",
+    "handshake": "server.comm.handshake",
 
+    # ================================================================
+    # Acquisition
+    # ================================================================
 
-    #Server Services
-    'client_command_service': 'server.services.client_command',
-    'channel_selection_service': 'server.services.channel_selection',
-    'acquisition_orchestrator': 'server.services.acquisition_orchestrator',
-    'calibration_orchestrator': 'server.services.calibration_orchestrator',
-    'shutdown_service': 'server.services.shutdown',
-    'acquisition_service': 'server.services.acquisition',
-    'monitoring_service': 'server.services.monitoring',
-    'monitoring_orchestrator': 'server.services.monitoring_orchestrator',
+    "data_receiver": "server.acquisition.receiver",
 
-    #Main Application
-    'app': 'server.app'
-    
-    
-    
+    # ================================================================
+    # Services
+    # ================================================================
+
+    "client_command_service": (
+        "server.services.client_command"
+    ),
+
+    "channel_selection_service": (
+        "server.services.channel_selection"
+    ),
+
+    "acquisition_service": (
+        "server.services.acquisition"
+    ),
+
+    "acquisition_orchestrator": (
+        "server.services.acquisition_orchestrator"
+    ),
+
+    "calibration_orchestrator": (
+        "server.services.calibration_orchestrator"
+    ),
+
+    "monitoring_service": (
+        "server.services.monitoring"
+    ),
+
+    "monitoring_orchestrator": (
+        "server.services.monitoring_orchestrator"
+    ),
+
+    "monitor_stream_service": (
+        "server.services.monitoring.stream"
+    ),
+
+    "monitor_sample_dispatcher": (
+        "server.services.monitoring.dispatcher"
+    ),
+
+    "monitor_persistence_service": (
+        "server.services.monitoring.persistence"
+    ),
+
+    "monitor_persistence_writer": (
+        "server.services.monitoring.persistence.writer"
+    ),
+
+    "time_sync_service": (
+        "server.services.monitoring.time_sync"
+    ),
+
+    "startup_service": (
+        "server.services.startup"
+    ),
+
+    "shutdown_service": (
+        "server.services.shutdown"
+    ),
+
+    # ================================================================
+    # Utils
+    # ================================================================
+
+    "json_parser": "server.utils.json",
+    "server_client_handling": (
+        "server.utils.client_handling"
+    ),
+
+    # ================================================================
+    # Commands
+    # ================================================================
+
+    "generic_commands": (
+        "server.commands.generic"
+    ),
+
+    "acquisition_commands": (
+        "server.commands.acquisition"
+    ),
+
+    "monitoring_commands": (
+        "server.commands.monitoring"
+    ),
+
+    "hv_commands": (
+        "server.commands.hv"
+    ),
+
+    "rc_commands": (
+        "server.commands.rc"
+    ),
+
+    "calibration_commands": (
+        "server.commands.calibration"
+    ),
+
+    # ================================================================
+    # Web
+    # ================================================================
+
+    "web": "server.web",
+
+    # ================================================================
+    # Main
+    # ================================================================
+
+    "app": "server.app",
 }
 
 

@@ -106,26 +106,65 @@ class MainService:
             )
 
     
-    def _handle_threshold_result(self, main_request: MainRequest, main_response: MainResponse) -> None:
-        
-        out_of_range = main_response.result.get("out_of_range", [])
-        
-        current_alarms = {item["sensor"] for item in out_of_range}
-        alarm_data = {item["sensor"]: item for item in out_of_range}
-        unavailable = set(main_response.result.get("unavailable", []))
-        
+    def _handle_threshold_result(
+        self,
+        main_request: MainRequest,
+        main_response: MainResponse,
+    ) -> None:
+
+        out_of_range = main_response.result.get(
+            "out_of_range",
+            [],
+        )
+
+        current_alarms = {
+            item["sensor"]
+            for item in out_of_range
+        }
+
+        alarm_data = {
+            item["sensor"]: item
+            for item in out_of_range
+        }
+
+        unavailable = set(
+            main_response.result.get(
+                "unavailable",
+                [],
+            )
+        )
+
         with self.threshold_alarm_lock:
-            previous_alarms = set(self.active_threshold_alarms)
-            new_alarms = (current_alarms - previous_alarms)
-            recovered_alarms = (previous_alarms - current_alarms - unavailable)
-            still_active_unavailable = (previous_alarms & unavailable)
-            
-            
-            self.active_threshold_alarms = (current_alarms | still_active_unavailable)
-            
+
+            previous_alarms = set(
+                self.active_threshold_alarms
+            )
+
+            new_alarms = (
+                current_alarms
+                - previous_alarms
+            )
+
+            recovered_alarms = (
+                previous_alarms
+                - current_alarms
+                - unavailable
+            )
+
+            still_active_unavailable = (
+                previous_alarms
+                & unavailable
+            )
+
+            self.active_threshold_alarms = (
+                current_alarms
+                | still_active_unavailable
+            )
+
         for sensor in sorted(new_alarms):
+
             details = alarm_data[sensor]
-            
+
             self.logger.warning(
                 "MAIN sensor threshold exceeded: "
                 f"sensor={sensor}, "
@@ -137,36 +176,42 @@ class MainService:
             self.warning_queue.put({
                 "event": "sensor_threshold_exceeded",
                 "severity": "warning",
+                "event_monotonic_ns": time.monotonic_ns(),
                 "source_request_id": (
                     main_request.request_id
                 ),
                 "details": details,
                 "error": None,
             })
-            
-            values = main_response.result.get("values", {})
-            
-            for sensor in sorted(recovered_alarms):
-                value = values.get(sensor)
-                
-                self.logger.info(
-                    "MAIN sensor threshold recovered: "
-                    f"sensor={sensor}, "
-                    f"value={value}"
-                )
 
-                self.warning_queue.put({
-                    "event": "sensor_threshold_recovered",
-                    "severity": "info",
-                    "source_request_id": (
-                        main_request.request_id
-                    ),
-                    "details": {
-                        "sensor": sensor,
-                        "value": value,
-                    },
-                    "error": None,
-                })
+        values = main_response.result.get(
+            "values",
+            {},
+        )
+
+        for sensor in sorted(recovered_alarms):
+
+            value = values.get(sensor)
+
+            self.logger.info(
+                "MAIN sensor threshold recovered: "
+                f"sensor={sensor}, "
+                f"value={value}"
+            )
+
+            self.warning_queue.put({
+                "event": "sensor_threshold_recovered",
+                "severity": "info",
+                "event_monotonic_ns": time.monotonic_ns(),
+                "source_request_id": (
+                    main_request.request_id
+                ),
+                "details": {
+                    "sensor": sensor,
+                    "value": value,
+                },
+                "error": None,
+            })
                 
         
         
@@ -204,7 +249,10 @@ class MainService:
                         "main_sensor_event",
                     ),
                     "severity": "warning",
-                    "source_request_id": main_request.request_id,
+                    "event_monotonic_ns": time.monotonic_ns(),
+                    "source_request_id": (
+                        main_request.request_id
+                    ),
                     "details": event,
                     "error": None,
                 })

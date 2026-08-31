@@ -503,6 +503,13 @@ class MonitoringPlaneManager:
 
             if message is not None:
                 if message.msg_type == MessageType.EVENT:
+                    self._timestamp_event(
+                        client_id=client_id,
+                        message=message,
+                        server_receive_utc_ns=(
+                            received_server_utc_ns
+                        ),
+                    )
                     self.mon_event_queue.put((client_id, message))
                 elif message.msg_type == MessageType.SAMPLE:
                     self._timestamp_sample(client_id=client_id, message=message, server_receive_utc_ns=received_server_utc_ns)
@@ -913,6 +920,50 @@ class MonitoringPlaneManager:
         payload["time_sync_status"] = reason
     
     
+    def _timestamp_event(
+        self,
+        *,
+        client_id: bytes,
+        message: ProtocolMessage,
+        server_receive_utc_ns: int,
+    ) -> None:
+
+        payload = message.payload or {}
+
+        event_monotonic_ns = payload.get(
+            "event_monotonic_ns"
+        )
+
+        payload["server_received_utc_ns"] = (
+            server_receive_utc_ns
+        )
+
+        if event_monotonic_ns is None:
+
+            payload["timestamp_utc_ns"] = None
+            payload["time_sync_status"] = (
+                "missing event_monotonic_ns"
+            )
+
+            return
+
+        timestamp_utc_ns, reason = (
+            self.time_sync_service
+            .client_monotonic_to_utc(
+                client_id=client_id,
+                client_monotonic_ns=(
+                    event_monotonic_ns
+                ),
+            )
+        )
+
+        payload["timestamp_utc_ns"] = (
+            timestamp_utc_ns
+        )
+
+        payload["time_sync_status"] = reason
+        
+        
     def queue_time_sync_probe(self, client_id: bytes,) -> str:
         probe = self.message_handler.create_command(
             channel=Channel.MONITORING,

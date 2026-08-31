@@ -27,6 +27,7 @@ from server.services.time_sync_service import TimeSyncService
 from server.services.monitor_stream_service import MonitorStreamService
 from server.services.monitor_sample_dispatcher import MonitorSampleDispatcher
 from server.services.monitor_persistence_service import MonitorPersistenceService
+from server.services.monitor_event_dispatcher import MonitorEventDispatcher
 from server.web.web_app import start_web_server
 
 
@@ -92,6 +93,10 @@ class Server(cmd2.Cmd):
             stream_service=self.monitor_stream_service,
         )
         
+        self.monitor_event_dispatcher = (
+            MonitorEventDispatcher()
+        )
+        
         self.monitor_persistence_service = (
             MonitorPersistenceService()
         )
@@ -109,6 +114,25 @@ class Server(cmd2.Cmd):
             raise RuntimeError(
                 "Failed to register monitoring persistence consumer"
             )
+        
+        registered = (
+            self.monitor_event_dispatcher
+            .register_consumer(
+                consumer_id="persistence",
+                consumer_handler=(
+                    self.monitor_persistence_service
+                    .enqueue_event
+                ),
+            )
+        )
+
+        if not registered:
+            raise RuntimeError(
+                "Failed to register monitoring "
+                "event persistence consumer"
+            )
+            
+        
         
         self.startup_service = StartupService(
             control_manager=self.control_manager,
@@ -182,11 +206,47 @@ class Server(cmd2.Cmd):
         self.control_manager.event_callback = self.handle_event
         
         self.handle_monitoring_event = app_commands.handle_monitoring_event.__get__(self, Server)
-        self.mon_manager.mon_event_callback = self.handle_monitoring_event
+        
+            
+        registered = (
+            self.monitor_event_dispatcher
+            .register_consumer(
+                consumer_id="server",
+                consumer_handler=(
+                    self.handle_monitoring_event
+                ),
+            )
+        )
+
+        if not registered:
+            raise RuntimeError(
+                "Failed to register monitoring "
+                "server event consumer"
+            )
+
+
+        registered = (
+            self.monitor_event_dispatcher
+            .register_consumer(
+                consumer_id="configuration",
+                consumer_handler=(
+                    self.mon_orchestrator
+                    .handle_configuration_event
+                ),
+            )
+        )
+
+        if not registered:
+            raise RuntimeError(
+                "Failed to register monitoring "
+                "configuration event consumer"
+            )
+        
         self.mon_manager.mon_sample_callback = self.monitor_sample_dispatcher.dispatch
         self.mon_manager.mon_client_disconnected_callback = self.monitor_stream_service.invalidate_client_actual_state
         self.mon_manager.mon_client_reconnected_callback = self.monitor_stream_service.invalidate_client_actual_state
-        
+        self.mon_manager.mon_event_callback = (self.monitor_event_dispatcher.dispatch)
+
     
 
     def set_mode(self, new_mode: str) -> bool:

@@ -138,6 +138,11 @@ class BMI270():
         self.configure_normal_operation(acc_range=0x02, gyr_range=0x02, slave_bus=self.i2cbus)
 
 
+    @property
+    def available(self) -> bool:
+        return self.i2cbus is not None
+    
+    
     def _read_reg(self, reg_addr, slave_bus=None):
         i2cbus = slave_bus if slave_bus is not None else self.i2cbus
         return i2cbus.read_byte_data(self.chip_addr, reg_addr)
@@ -399,8 +404,7 @@ class BMI270():
 
 
     def read_raw_acc_gyr(self):
-        if self.i2cbus is None:
-            self.logger.error("Cannot read BMI270: no I2C bus available")
+        if not self.available:
             return None
 
         data = self._read_regs(BMI270_ACC_X_LSB_REG, 12)
@@ -416,8 +420,7 @@ class BMI270():
         return (acc_x, acc_y, acc_z), (gyr_x, gyr_y, gyr_z)
 
     def read_die_temperature_c(self) -> float:
-        if self.i2cbus is None:
-            self.logger.error("Cannot read BMI270 die temperature: no I2C bus available")
+        if not self.available:
             return None
 
         data = self._read_regs(BMI270_TEMPERATURE_0_REG, 2)
@@ -531,8 +534,7 @@ class BMI270():
         :param axes: assi da monitorare, sottoinsieme di ("x", "y", "z")
         :param enable: abilita/disabilita la feature
         """
-        if self.i2cbus is None:
-            self.logger.error("Cannot configure any-motion: no I2C bus available")
+        if not self.available:
             return False
 
         threshold_raw = int(round(threshold_mg / BMI270_ANYMO_THRESHOLD_MG_PER_LSB))
@@ -584,8 +586,7 @@ class BMI270():
         chiamata "consuma" lo stato corrente: due letture ravvicinate senza
         un nuovo evento nel mezzo restituiranno False la seconda volta.
         """
-        if self.i2cbus is None:
-            self.logger.error("Cannot read any-motion status: no I2C bus available")
+        if not self.available:
             return False
 
         status = self._read_reg(BMI270_INT_STATUS_0_REG)
