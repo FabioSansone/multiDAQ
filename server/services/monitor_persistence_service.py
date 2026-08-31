@@ -438,6 +438,29 @@ class MonitorPersistenceService:
         )
 
         return True
+    
+    def _get_metadata_transaction_lock(
+        self,
+        client_id: bytes,
+    ) -> threading.Lock:
+
+        with self._metadata_transaction_locks_lock:
+
+            lock = (
+                self._metadata_transaction_locks.get(
+                    client_id
+                )
+            )
+
+            if lock is None:
+
+                lock = threading.Lock()
+
+                self._metadata_transaction_locks[
+                    client_id
+                ] = lock
+
+            return lock
 
     def get_session(self,) -> PersistenceSession | None:
         with self._persistence_lock:
