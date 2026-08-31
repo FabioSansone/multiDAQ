@@ -57,6 +57,9 @@ class MonitoringPlaneManager:
 
         self.mon_sample_callback = None
         
+        self.mon_client_disconnected_callback = None
+        self.mon_client_reconnected_callback = None
+        
         self.time_sync_service = time_sync_service
         self.time_sync_waiters: dict[tuple[bytes, str], queue.Queue] = {}
         self.time_sync_waiters_lock = threading.Lock()
@@ -83,6 +86,16 @@ class MonitoringPlaneManager:
     def remove_client(self, client_id: bytes) -> None:
         self.server_state.remove_monitoring_client(client_id)
         self.time_sync_service.invalidate_client(client_id, reason="monitoring client disconnected",)
+        if self.mon_client_disconnected_callback is not None:
+            try:
+                self.mon_client_disconnected_callback(client_id)
+
+            except Exception as exc:
+                self.logger.exception(
+                    f"Monitoring client disconnect callback failed: "
+                    f"client={client_id!r}: {exc}"
+                )
+        
         self.logger.info(f"MonitoringPlane client removed: {client_id!r}")
 
     def clear_clients(self) -> None:
@@ -338,6 +351,17 @@ class MonitoringPlaneManager:
 
         self.time_sync_service.invalidate_client(client_id=client_id, reason="monitoring client reconnected")
 
+        if self.mon_client_reconnected_callback is not None:
+            try:
+                self.mon_client_reconnected_callback(client_id)
+
+            except Exception as exc:
+                self.logger.exception(
+                    f"Monitoring client reconnect callback failed: "
+                    f"client={client_id!r}: {exc}"
+                )
+                
+                
         return True
 
     def handshake(self) -> bool:
@@ -718,7 +742,7 @@ class MonitoringPlaneManager:
         except AttributeError:
             channel_name = str(message.channel)
 
-        self.logger.info(
+        self.logger.debug(
             "Monitoring sample received: "
             f"client={client_name}, "
             f"channel={channel_name}, "

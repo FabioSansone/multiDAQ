@@ -124,8 +124,7 @@ def do_quit(self, _) -> bool:
         return False
 
 
-    self.monitoring_service.stop_time_sync_scheduler()
-
+    self.stop_monitoring_runtime()
     self.acquisition_orchestrator.stop()
     completed = self.acquisition_service.wait_for_session_end(timeout=60.0)
     if not completed:
@@ -264,7 +263,15 @@ def do_force(self, args: argparse.Namespace) -> bool:
             logger.error("DISCONNECT_REQUESTED rejected by FSM for force quit")
             return False
 
-        self.monitoring_service.stop_time_sync_scheduler()
+        
+        try:
+            self.stop_monitoring_runtime()
+        except Exception as exc:
+            logger.warning(
+                f"Force quit: monitoring runtime "
+                f"shutdown failed: {exc}"
+            )
+            
         self.acquisition_orchestrator.stop()
         self.acquisition_service.wait_for_session_end(timeout=5.0)
     
@@ -665,8 +672,28 @@ def do_connect(self, args: argparse.Namespace) -> None:
             self.poutput("Failed to start monitoring listener")
         else:
             self.monitoring_service.start_time_sync_scheduler()
+            
+            if not self.monitor_persistence_service.start():
+                logger.error(
+                    "Failed to start monitoring persistence service"
+                )
+                self.poutput(
+                    "Failed to start monitoring persistence service"
+                )
+            
+            monitoring_clients = self.server_state.list_monitoring_clients()
+            
+            for client_id in monitoring_clients:
+                success = self.monitor_stream_service.reconcile_client_streams(client_id=client_id)
 
-
+                if not success:
+                    client_name = client_id.decode(errors="ignore")
+                    logger.warning(
+                        f"Monitoring stream reconciliation "
+                        f"completed with failures for "
+                        f"client={client_name}"
+                    )
+                    
     client_ids = self.server_state.list_common_plane_clients()
     self.startup_service.configure_clients(client_ids=client_ids, mode=self.mode)
 

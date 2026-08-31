@@ -41,7 +41,7 @@ MAX_MONITOR_POLL_DURATION_S = 120
 
 MONITOR_SAVE_FORMATS = (
     "csv",
-    "parquet",
+    #"parquet",
 )
 
 

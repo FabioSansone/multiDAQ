@@ -2,11 +2,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-
+import copy
 import time
 
 from server.utils.logger import get_logger
 from common.message_handler import Channel
+from server.services.client_command_service import CommandPlane
 
 
 class MonitoringOrchestrator:
@@ -14,11 +15,16 @@ class MonitoringOrchestrator:
     def __init__(
         self,
         monitoring_service,
+        monitor_stream_service,
+        monitor_persistence_service,
         server_state,
         output_func=None,
     ) -> None:
 
         self.monitoring_service = monitoring_service
+        self.monitor_stream_service = monitor_stream_service
+        self.monitor_persistence_service  = monitor_persistence_service
+        
         self.server_state = server_state
 
         self.poutput = output_func or (lambda message: None)
@@ -167,6 +173,162 @@ class MonitoringOrchestrator:
             }
 
         return lookup
+    
+    
+    def _build_persistence_metadata(
+        self,
+        client_id: bytes,
+    ) -> dict | None:
+
+        schemas = (
+            self.monitor_persistence_service
+            .get_dataset_schemas()
+        )
+
+        main_columns = schemas.get(
+            "main",
+            []
+        )
+
+        rc_columns = schemas.get(
+            "rc",
+            []
+        )
+
+        hv_columns = schemas.get(
+            "hv",
+            []
+        )
+
+        metadata_schema_version = schemas.get(
+            "mon_metadata_version"
+        )
+
+        session = (
+            self.monitor_persistence_service
+            .get_session()
+        )
+
+        if session is None:
+
+            self.logger.error(
+                f"Cannot build persistence metadata: "
+                f"no active monitoring persistence session "
+                f"for client={client_id!r}"
+            )
+
+            return None
+
+        identity = (
+            self.server_state.get_identity(
+                client_id
+            )
+            or {}
+        )
+
+        command_service = (
+            self.monitoring_service
+            .command_service
+        )
+
+        
+        rc31 = command_service.read_rc_register(
+            client_id=client_id,
+            address=31,
+            plane=CommandPlane.MONITORING,
+        )
+
+        rc39 = command_service.read_rc_register(
+            client_id=client_id,
+            address=39,
+            plane=CommandPlane.MONITORING,
+        )
+
+        
+        pmt_serial_map = (
+            command_service
+            .get_pmt_serial_map_clients(
+                client_id=client_id,
+                requested_channels="all",
+                plane=CommandPlane.MONITORING,
+            )
+        )
+
+        if pmt_serial_map is None:
+            pmt_serial_map = {}
+
+        metadata = {
+            "schema_version": (
+                metadata_schema_version
+            ),
+
+            "session": {
+                "session_id": (
+                    session.session_id
+                ),
+                "started_at_utc_ns": (
+                    session.started_at_utc_ns
+                ),
+            },
+
+            "client": {
+                "client_id": client_id.decode(
+                    errors="ignore"
+                ),
+                "identity": copy.deepcopy(
+                    identity
+                ),
+            },
+
+            "hardware": {
+                "pmt_serial_map": {
+                    str(channel): serial
+                    for channel, serial
+                    in pmt_serial_map.items()
+                },
+            },
+
+            "configuration": {
+                "initial": {
+                    "31": rc31,
+                    "39": rc39,
+                },
+                "current": {
+                    "31": rc31,
+                    "39": rc39,
+                },
+            },
+
+            "persistence": {
+                "sections": {},
+            },
+
+            "datasets": {
+                "main": {
+                    "columns": list(
+                        main_columns
+                    ),
+                },
+                "rc": {
+                    "columns": list(
+                        rc_columns
+                    ),
+                },
+                "hv": {
+                    "columns": list(
+                        hv_columns
+                    ),
+                },
+            },
+
+            "configuration_history": [],
+        }
+
+        return metadata
+        
+    
+    
+    
     
     
     def collect_snapshot(
@@ -934,9 +1096,24 @@ class MonitoringOrchestrator:
             )
             return
 
-        sections = self._resolve_save_sections(args)
+        if not (
+            self.monitor_persistence_service
+            .ensure_session()
+        ):
+            self.poutput(
+                "Failed to create monitoring "
+                "persistence session."
+            )
+            return
+
+        sections = self._resolve_save_sections(
+            args
+        )
 
         interval_s = args.interval
+        requested_interval_ns = int(
+            interval_s * 1_000_000_000
+        )
 
         for client_id in client_ids:
 
@@ -944,36 +1121,147 @@ class MonitoringOrchestrator:
                 errors="ignore"
             )
 
-            for section in sections:
+            existing_metadata = (
+            self.monitor_persistence_service
+            .get_client_metadata(
+                client_id=client_id
+            )
+)
 
-                result = (
-                    self.monitoring_service.start_sample(
-                        client_id=client_id,
-                        section=section,
-                        interval_s=interval_s,
+            if existing_metadata is None:
+
+                metadata = (
+                    self._build_persistence_metadata(
+                        client_id
                     )
                 )
 
-                if result["success"]:
+                if metadata is None:
+                    self.poutput(
+                        f"{client_name}: failed to build "
+                        "monitoring persistence metadata"
+                    )
+                    continue
+
+                metadata_ok = (
+                    self.monitor_persistence_service
+                    .initialize_client_metadata(
+                        client_id=client_id,
+                        metadata=metadata,
+                    )
+                )
+
+                if not metadata_ok:
+                    self.poutput(
+                        f"{client_name}: failed to initialize "
+                        "monitoring persistence metadata"
+                    )
+                    continue
+
+            for section in sections:
+
+                prepared = (
+                    self.monitor_persistence_service
+                    ._prepare_stream(
+                        client_id=client_id,
+                        section=section,
+                        save_format=args.save_format,
+                        requested_interval_ns=(
+                            requested_interval_ns
+                        ),
+                    )
+                )
+
+                if not prepared:
+                    self.poutput(
+                        f"{client_name}: failed to prepare "
+                        f"{section.value.upper()} persistence"
+                    )
+                    continue
+
+                activated = (
+                    self.monitor_persistence_service
+                    .activate_stream(
+                        client_id=client_id,
+                        section=section,
+                    )
+                )
+
+                if not activated:
+                    self.poutput(
+                        f"{client_name}: failed to activate "
+                        f"{section.value.upper()} persistence"
+                    )
+                    continue
+
+                subscribed = (
+                    self.monitor_stream_service.subscribe(
+                        client_id=client_id,
+                        section=section,
+                        consumer="persistence",
+                        requested_interval_ns=(
+                            requested_interval_ns
+                        ),
+                    )
+                )
+
+                if not subscribed:
+
+                    self.monitor_persistence_service.deactivate_stream(
+                        client_id=client_id,
+                        section=section,
+                    )
 
                     self.poutput(
-                        f"{client_name}: "
-                        f"{section.value.upper()} monitoring stream "
-                        f"started (interval={interval_s}s)"
+                        f"{client_name}: failed to enable "
+                        f"{section.value.upper()} "
+                        "monitoring persistence"
+                    )
+                    continue
+
+                metadata_updated = (
+                    self.monitor_persistence_service
+                    .update_stream_metadata(
+                        client_id=client_id,
+                        section=section,
+                        enabled=True,
+                        save_format=args.save_format,
+                        requested_interval_ns=(
+                            requested_interval_ns
+                        ),
+                    )
+                )
+
+                if not metadata_updated:
+
+                    #
+                    # Roll back the complete operation:
+                    # persistence without valid metadata is
+                    # not considered successfully enabled.
+                    #
+                    self.monitor_stream_service.unsubscribe(
+                        client_id=client_id,
+                        section=section,
+                        consumer="persistence",
                     )
 
-                else:
-
-                    error = result.get(
-                        "error",
-                        "unknown error",
+                    self.monitor_persistence_service.deactivate_stream(
+                        client_id=client_id,
+                        section=section,
                     )
 
                     self.poutput(
-                        f"{client_name}: failed to start "
-                        f"{section.value.upper()} monitoring stream: "
-                        f"{error}"
+                        f"{client_name}: failed to update "
+                        f"{section.value.upper()} metadata"
                     )
+                    continue
+
+                self.poutput(
+                    f"{client_name}: "
+                    f"{section.value.upper()} monitoring "
+                    f"persistence enabled "
+                    f"(interval={interval_s}s)"
+                )
 
 
     def save_stop(self, args) -> None:
@@ -987,7 +1275,9 @@ class MonitoringOrchestrator:
             )
             return
 
-        sections = self._resolve_save_sections(args)
+        sections = self._resolve_save_sections(
+            args
+        )
 
         for client_id in client_ids:
 
@@ -997,30 +1287,190 @@ class MonitoringOrchestrator:
 
             for section in sections:
 
-                result = (
-                    self.monitoring_service.stop_sample(
+                stream_state = (
+                    self.monitor_persistence_service
+                    .get_stream(
                         client_id=client_id,
                         section=section,
                     )
                 )
 
-                if result["success"]:
-
+                if stream_state is None:
                     self.poutput(
                         f"{client_name}: "
-                        f"{section.value.upper()} monitoring stream "
-                        "stopped"
+                        f"{section.value.upper()} persistence "
+                        "is not configured"
                     )
+                    continue
 
-                else:
-
-                    error = result.get(
-                        "error",
-                        "unknown error",
+                unsubscribed = (
+                    self.monitor_stream_service.unsubscribe(
+                        client_id=client_id,
+                        section=section,
+                        consumer="persistence",
                     )
+                )
 
+                if not unsubscribed:
                     self.poutput(
-                        f"{client_name}: failed to stop "
-                        f"{section.value.upper()} monitoring stream: "
-                        f"{error}"
+                        f"{client_name}: failed to disable "
+                        f"{section.value.upper()} monitoring "
+                        "subscription"
                     )
+                    continue
+
+                deactivated = (
+                    self.monitor_persistence_service
+                    .deactivate_stream(
+                        client_id=client_id,
+                        section=section,
+                    )
+                )
+
+                if not deactivated:
+                    self.poutput(
+                        f"{client_name}: failed to deactivate "
+                        f"{section.value.upper()} persistence"
+                    )
+                    continue
+
+                idle = (
+                    self.monitor_persistence_service
+                    .wait_stream_idle(
+                        client_id=client_id,
+                        section=section,
+                        timeout_s=30.0,
+                    )
+                )
+
+                if not idle:
+                    self.poutput(
+                        f"{client_name}: timeout waiting for "
+                        f"{section.value.upper()} persistence "
+                        "queue to drain"
+                    )
+                    continue
+
+                flushed = (
+                    self.monitor_persistence_service
+                    .flush_stream(
+                        client_id=client_id,
+                        section=section,
+                    )
+                )
+
+                if not flushed:
+                    self.poutput(
+                        f"{client_name}: failed to flush "
+                        f"{section.value.upper()} persistence"
+                    )
+                    continue
+
+                metadata_ok = (
+                    self.monitor_persistence_service
+                    .update_stream_metadata(
+                        client_id=client_id,
+                        section=section,
+                        enabled=False,
+                        save_format=(
+                            stream_state.save_format
+                        ),
+                        requested_interval_ns=(
+                            stream_state
+                            .requested_interval_ns
+                        ),
+                    )
+                )
+
+                if not metadata_ok:
+                    self.poutput(
+                        f"{client_name}: "
+                        f"{section.value.upper()} stopped, "
+                        "but metadata update failed"
+                    )
+                    continue
+
+                self.poutput(
+                    f"{client_name}: "
+                    f"{section.value.upper()} monitoring "
+                    "persistence disabled"
+                )
+    
+    def save_status(self, args) -> None:
+
+        client_ids = self._resolve_targets(
+            args
+        )
+
+        if not client_ids:
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+            return
+
+        session = (
+            self.monitor_persistence_service
+            .get_session()
+        )
+
+        queue_status = (
+            self.monitor_persistence_service
+            .get_queue_status()
+        )
+
+        if session is None:
+            self.poutput(
+                "Monitoring persistence session: none"
+            )
+        else:
+            self.poutput(
+                f"Monitoring persistence session: "
+                f"{session.session_id}\n"
+                f"Folder: {session.root_folder}"
+            )
+
+        self.poutput(
+            f"Persistence queue: "
+            f"{queue_status['size']}/"
+            f"{queue_status['maxsize']}"
+        )
+
+        for client_id in client_ids:
+
+            client_name = client_id.decode(
+                errors="ignore"
+            )
+
+            streams = (
+                self.monitor_persistence_service
+                .list_client_streams(
+                    client_id
+                )
+            )
+
+            self.poutput(
+                f"\n{client_name}:"
+            )
+
+            if not streams:
+                self.poutput(
+                    "  no persistence streams configured"
+                )
+                continue
+
+            for stream in streams:
+
+                self.poutput(
+                    f"  {stream.section.value.upper()}: "
+                    f"{'ACTIVE' if stream.enabled else 'inactive'}, "
+                    f"format={stream.save_format}, "
+                    f"interval="
+                    f"{stream.requested_interval_ns / 1e9:.3f}s, "
+                    f"enqueued={stream.samples_enqueued}, "
+                    f"written={stream.samples_written}, "
+                    f"dropped={stream.samples_dropped}, "
+                    f"pending={stream.queue_pending}, "
+                    f"rows={stream.rows_written}, "
+                    f"error={stream.last_error or '-'}"
+                )

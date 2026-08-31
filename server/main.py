@@ -24,6 +24,9 @@ from server.services.shutdown_service import ShutdownService
 from server.services.startup_service import StartupService
 from server.core.mac_id_registry import MacIdentityRegistry
 from server.services.time_sync_service import TimeSyncService
+from server.services.monitor_stream_service import MonitorStreamService
+from server.services.monitor_sample_dispatcher import MonitorSampleDispatcher
+from server.services.monitor_persistence_service import MonitorPersistenceService
 from server.web.web_app import start_web_server
 
 
@@ -81,6 +84,32 @@ class Server(cmd2.Cmd):
             output_func=self.poutput,
         )
         
+        self.monitor_stream_service = MonitorStreamService(
+            monitor_service=self.monitoring_service,
+        )
+        
+        self.monitor_sample_dispatcher = MonitorSampleDispatcher(
+            stream_service=self.monitor_stream_service,
+        )
+        
+        self.monitor_persistence_service = (
+            MonitorPersistenceService()
+        )
+        
+        registered = (
+            self.monitor_sample_dispatcher.register_consumer(
+                consumer_id="persistence",
+                consumer_handler=(
+                    self.monitor_persistence_service.enqueue_sample
+                ),
+            )
+        )
+
+        if not registered:
+            raise RuntimeError(
+                "Failed to register monitoring persistence consumer"
+            )
+        
         self.startup_service = StartupService(
             control_manager=self.control_manager,
             server_state=self.server_state,
@@ -107,6 +136,8 @@ class Server(cmd2.Cmd):
         
         self.mon_orchestrator = MonitoringOrchestrator(
             monitoring_service=self.monitoring_service,
+            monitor_stream_service=self.monitor_stream_service,
+            monitor_persistence_service=self.monitor_persistence_service,
             server_state=self.server_state,
             output_func=self.poutput,
         )
@@ -152,6 +183,9 @@ class Server(cmd2.Cmd):
         
         self.handle_monitoring_event = app_commands.handle_monitoring_event.__get__(self, Server)
         self.mon_manager.mon_event_callback = self.handle_monitoring_event
+        self.mon_manager.mon_sample_callback = self.monitor_sample_dispatcher.dispatch
+        self.mon_manager.mon_client_disconnected_callback = self.monitor_stream_service.invalidate_client_actual_state
+        self.mon_manager.mon_client_reconnected_callback = self.monitor_stream_service.invalidate_client_actual_state
         
     
 
@@ -183,6 +217,42 @@ class Server(cmd2.Cmd):
             )
             self.poutput(f"Internal error: {e}. Server moved to ERROR state.")
             return False
+    
+    
+    def stop_monitoring_runtime(self) -> bool:
+
+        success = True
+
+        try:
+            self.monitoring_service.stop_time_sync_scheduler()
+
+        except Exception as exc:
+            self.logger.exception(
+                f"Failed to stop monitoring "
+                f"time-sync scheduler: {exc}"
+            )
+            success = False
+
+        try:
+            persistence_ok = (
+                self.monitor_persistence_service.stop()
+            )
+
+            if not persistence_ok:
+                self.logger.warning(
+                    "Monitoring persistence stopped "
+                    "with errors"
+                )
+                success = False
+
+        except Exception as exc:
+            self.logger.exception(
+                f"Failed to stop monitoring "
+                f"persistence service: {exc}"
+            )
+            success = False
+
+        return success
 
 def main() -> int:
 
@@ -265,7 +335,7 @@ def main() -> int:
     except KeyboardInterrupt:
         app.poutput("\nShutting down...")
     finally:
-        app.monitoring_service.stop_time_sync_scheduler()
+        app.stop_monitoring_runtime()
         
         if monitoring_manager.socket is not None:
             monitoring_manager.clear_queues()
