@@ -104,22 +104,55 @@ class BMI270():
                 continue
 
             try:
+                chip_id = self._read_reg(BMI270_CHIP_ID_REG, slave_bus=bus)
+                if chip_id != BMI270_CHIP_ID:
+                    self.logger.debug(
+                        f"Device found at 0x{self.chip_addr:02X} "
+                        f"on I2C bus {bus_idx}, "
+                        f"but CHIP_ID=0x{chip_id:02X} "
+                        f"(expected 0x{BMI270_CHIP_ID:02X})"
+                    )
+
+                    bus.close()
+                    continue
+                
+                if not self._perform_soft_reset(bus):
+                    self.logger.error(
+                        f"BMI270 soft reset failed "
+                        f"on I2C bus {bus_idx}"
+                    )
+
+                    bus.close()
+                    continue
+                
+                
                 if not self._initialize_device(bus):
+                    self.logger.error(
+                        f"BMI270 initialization failed "
+                        f"on I2C bus {bus_idx}"
+                    )
                     bus.close()
                     continue
 
-                chip_id = self._read_reg(BMI270_CHIP_ID_REG, slave_bus=bus)
-            except OSError:
+            except OSError as e:
+                self.logger.debug(
+                    f"No usable BMI270 on "
+                    f"I2C bus {bus_idx}: {e}"
+                )
                 bus.close()
                 continue
+            
+            self.iic_bus = bus_idx
+            self.i2cbus = bus
 
-            if chip_id == BMI270_CHIP_ID:
-                self.iic_bus = bus_idx
-                self.i2cbus = bus
-                self.logger.debug(f"BMI270 found on I2C bus {bus_idx} (chip_id=0x{chip_id:02X})")
-                break
+            self.logger.info(
+                f"BMI270 found on I2C bus "
+                f"{bus_idx} "
+                f"(chip_id=0x{chip_id:02X})"
+            )
 
-            bus.close()
+            break
+
 
         if self.i2cbus is None:
             self.logger.error(
