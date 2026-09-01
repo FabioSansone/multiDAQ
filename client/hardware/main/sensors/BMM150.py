@@ -87,6 +87,10 @@ class BMM150():
         self._perform_normal_self_test()
         self.trim_data = self._read_trim_registers()
         self.logger.debug(f"BMM150 found on I2C bus {bus_idx}")
+    
+    @property
+    def available(self) -> bool:
+        return self.i2cbus is not None
 
 
     def _read_reg(self, reg_addr):

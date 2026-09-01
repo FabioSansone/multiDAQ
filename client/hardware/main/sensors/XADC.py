@@ -36,6 +36,10 @@ class XADC:
                 return device
 
         return None
+    
+    @property
+    def available(self) -> bool:
+        return self.device_path is not None
 
 
     @staticmethod

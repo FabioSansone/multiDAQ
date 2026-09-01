@@ -1,7 +1,7 @@
 from common.message_handler import Channel, MessageStatus
 
 
-def _send_sample_reply(
+def _send_monitoring_reply(
         manager,
         message,
         *,
@@ -33,7 +33,7 @@ def handle_sample_start(manager, message) -> None:
     interval_s = payload.get("interval_s")
 
     if section_raw is None:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -44,7 +44,7 @@ def handle_sample_start(manager, message) -> None:
     try:
         channel = Channel(str(section_raw).lower())
     except ValueError:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -55,7 +55,7 @@ def handle_sample_start(manager, message) -> None:
     sample_service = manager.runtime.monitor_sample_service
 
     if channel not in sample_service.SUPPORTED_CHANNELS:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -67,7 +67,7 @@ def handle_sample_start(manager, message) -> None:
         return
 
     if interval_s is None:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -77,7 +77,7 @@ def handle_sample_start(manager, message) -> None:
 
     if channel == Channel.HV:
         if not manager.runtime.ensure_hv_service():
-            _send_sample_reply(
+            _send_monitoring_reply(
                 manager,
                 message,
                 status=MessageStatus.ERROR,
@@ -91,7 +91,7 @@ def handle_sample_start(manager, message) -> None:
     )
 
     if not success:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -102,7 +102,7 @@ def handle_sample_start(manager, message) -> None:
         )
         return
 
-    _send_sample_reply(
+    _send_monitoring_reply(
         manager,
         message,
         status=MessageStatus.OK,
@@ -121,7 +121,7 @@ def handle_sample_stop(manager, message) -> None:
     section_raw = payload.get("section")
 
     if section_raw is None:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -132,7 +132,7 @@ def handle_sample_stop(manager, message) -> None:
     try:
         channel = Channel(str(section_raw).lower())
     except ValueError:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -143,7 +143,7 @@ def handle_sample_stop(manager, message) -> None:
     sample_service = manager.runtime.monitor_sample_service
 
     if channel not in sample_service.SUPPORTED_CHANNELS:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -157,7 +157,7 @@ def handle_sample_stop(manager, message) -> None:
     success = sample_service.stop_section(channel=channel)
 
     if not success:
-        _send_sample_reply(
+        _send_monitoring_reply(
             manager,
             message,
             status=MessageStatus.ERROR,
@@ -168,7 +168,7 @@ def handle_sample_stop(manager, message) -> None:
         )
         return
 
-    _send_sample_reply(
+    _send_monitoring_reply(
         manager,
         message,
         status=MessageStatus.OK,
@@ -177,4 +177,57 @@ def handle_sample_stop(manager, message) -> None:
             "enabled": False,
             "interval_s": None,
         },
+    )
+    
+
+def handle_main_sensor_status(
+    manager,
+    message,
+) -> None:
+
+    main_service = (
+        manager.runtime.main_service
+    )
+
+    if main_service is None:
+
+        _send_monitoring_reply(
+            manager,
+            message,
+            status=MessageStatus.ERROR,
+            error="MainService unavailable",
+        )
+
+        return
+
+    response = (
+        main_service._submit_command(
+            command="main_sensor_status",
+            payload={},
+            sender="monitoring_main_sensor_status",
+        )
+    )
+
+    if response.status != MessageStatus.OK:
+
+        _send_monitoring_reply(
+            manager,
+            message,
+            status=MessageStatus.ERROR,
+            error=(
+                response.error
+                or "Failed to read MAIN sensor status"
+            ),
+        )
+
+        return
+
+    _send_monitoring_reply(
+        manager,
+        message,
+        status=MessageStatus.OK,
+        result=(
+            response.result
+            or {}
+        ),
     )

@@ -62,6 +62,10 @@ class BME280():
             )
             
         self.logger.debug(f"BME280 found on I2C bus {bus_idx}")
+        
+    @property
+    def available(self) -> bool:
+        return self.i2cbus is not None
 
     def readId(self):
         REG_ID = 0xD0

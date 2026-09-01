@@ -54,4 +54,6 @@ COMMAND_MAP = {
     # Monitoring Handlers
     "sample_start": handle_sample_start,
     "sample_stop": handle_sample_stop,
+    
+    "main_sensor_status": handle_main_sensor_status,
 }

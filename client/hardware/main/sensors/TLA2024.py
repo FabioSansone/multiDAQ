@@ -87,6 +87,10 @@ class TLA2024():
                 f"TLA2024 not found on any candidate I2C bus {list(candidate_buses)} "
                 f"(address 0x{chip_addr:02X})"
             )
+    
+    @property
+    def available(self) -> bool:
+        return self.i2cbus is not None
 
     def read_conf_reg(self):
         conf = self.i2cbus.read_i2c_block_data(self.chip_addr, self.CONFIGURATION_REGISTER, 2)

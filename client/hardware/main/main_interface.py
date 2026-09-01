@@ -36,7 +36,7 @@ MAIN_SENSOR_THRESHOLDS = {
     },
 
     "fpga.temperature_c": {
-        "max": 50,
+        "max": 80,
     },
 }
 
@@ -288,4 +288,120 @@ class MAIN:
                 sensor.close()
             except Exception as e:
                 self.logger.error(f"Error while closing {sensor_name}: {e}")
+    
+    
+    def get_sensor_status(self) -> dict:
+        
+        threshold_check  = self.check_sensor_thresholds()
+        sensor_values = threshold_check.get("values", {}) or {}
+        unavailable  = set(threshold_check.get("unavailable", []) or [])
+        out_of_range = {
+            item.get("sensor"): item
+            for item in (
+                threshold_check.get(
+                    "out_of_range",
+                    [],
+                )
+                or []
+            )
+            if item.get("sensor") is not None
+        }
+        
+        sensors = {}
+        
+        for sensor_name, limits in MAIN_SENSOR_THRESHOLDS.items():
+            value = sensor_values.get(sensor_name)
+            alarm_info = out_of_range.get(sensor_name)
+            
+            sensors[sensor_name] = {
+                "value": value,
 
+                "available": (
+                    sensor_name
+                    not in unavailable
+                ),
+
+                "alarm": (
+                    alarm_info is not None
+                ),
+
+                "min": limits.get(
+                    "min"
+                ),
+
+                "max": limits.get(
+                    "max"
+                ),
+
+                "direction": (
+                    alarm_info.get(
+                        "direction"
+                    )
+                    if alarm_info is not None
+                    else None
+                ),
+            }
+        
+        
+        devices = {
+            "bme280": {
+                "available": self.bme.available,
+                "bus": self.bme.iic_bus,
+            },
+
+            "tla2024": {
+                "available": self.tla.available,
+                "bus": self.tla.iic_bus,
+            },
+
+            "bmm150": {
+                "available": self.bmm.available,
+                "bus": self.bmm.iic_bus,
+            },
+
+            "bmi270": {
+                "available": self.bmi.available,
+                "bus": self.bmi.iic_bus,
+            },
+
+            "xadc": {
+                "available": self.xadc.available,
+                "bus": None,
+            },
+        }   
+        
+        
+        has_alarm = any(
+            sensor["alarm"]
+            for sensor in sensors.values()
+        )
+
+        has_unavailable_quantity = any(
+            not sensor["available"]
+            for sensor in sensors.values()
+        )
+
+        has_unavailable_device = any(
+            not device["available"]
+            for device in devices.values()
+        )
+
+        return {
+            "sensors": sensors,
+            "devices": devices,
+
+            "summary": {
+                "alarm": has_alarm,
+                "unavailable_quantity": (
+                    has_unavailable_quantity
+                ),
+                "unavailable_device": (
+                    has_unavailable_device
+                ),
+            },
+        }
+        
+        
+            
+
+            

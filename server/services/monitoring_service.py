@@ -78,13 +78,20 @@ class MonitoringService:
 
         payload = reply.payload or {}
 
-        status = payload.get("status")
+        status = reply.status
         result = payload.get("result", {})
         error = payload.get("error")
 
         return {
-            "success": status == "ok",
-            "status": status,
+            "success": (
+                status == MessageStatus.OK
+                and not error
+            ),
+            "status": (
+                status.value
+                if hasattr(status, "value")
+                else str(status)
+            ),
             "result": result,
             "error": error,
         }
@@ -157,6 +164,27 @@ class MonitoringService:
         return self._extract_reply(
             client_id=client_id,
             section="hv",
+            reply=reply,
+            reason=reason,
+        )
+        
+    def read_sensor_status(
+        self,
+        client_id: bytes,
+        timeout_s: float = 35.0,
+    ) -> dict:
+
+        reply, reason = self.command_service.send_main_command(
+            client_id=client_id,
+            command="main_sensor_status",
+            payload={},
+            plane=CommandPlane.MONITORING,
+            timeout_s=timeout_s,
+        )
+
+        return self._extract_reply(
+            client_id=client_id,
+            section="main",
             reply=reply,
             reason=reason,
         )

@@ -988,7 +988,365 @@ class MonitoringOrchestrator:
 
             self.console.print()
 
-            
+    
+    def _print_sensor_status(
+        self,
+        client_id: bytes,
+        status: dict,
+    ) -> None:
+
+        identity = (
+            self.server_state.get_identity(
+                client_id
+            )
+            or {}
+        )
+
+        self._print_client_header(
+            client_id=client_id,
+            identity=identity,
+        )
+
+        if not status.get(
+            "success",
+            False,
+        ):
+
+            self.console.print(
+                "[bold red]"
+                "MAIN sensor status error:"
+                "[/bold red] "
+                f"{status.get('error') or 'unknown error'}"
+            )
+
+            self.console.print()
+            return
+
+        result = (
+            status.get(
+                "result",
+                {},
+            )
+            or {}
+        )
+
+        sensors = (
+            result.get(
+                "sensors",
+                {},
+            )
+            or {}
+        )
+
+        devices = (
+            result.get(
+                "devices",
+                {},
+            )
+            or {}
+        )
+
+        summary = (
+            result.get(
+                "summary",
+                {},
+            )
+            or {}
+        )
+
+        # ================================================================
+        # Monitored quantities
+        # ================================================================
+
+        sensor_table = Table(
+            title="MAIN — Sensor Threshold Status",
+            show_header=True,
+            header_style="bold",
+        )
+
+        sensor_table.add_column(
+            "Quantity"
+        )
+
+        sensor_table.add_column(
+            "Value",
+            justify="right",
+        )
+
+        sensor_table.add_column(
+            "Min",
+            justify="right",
+        )
+
+        sensor_table.add_column(
+            "Max",
+            justify="right",
+        )
+
+        sensor_table.add_column(
+            "Status"
+        )
+
+        for sensor_name, data in (
+            sensors.items()
+        ):
+
+            available = bool(
+                data.get(
+                    "available"
+                )
+            )
+
+            alarm = bool(
+                data.get(
+                    "alarm"
+                )
+            )
+
+            direction = data.get(
+                "direction"
+            )
+
+            value = data.get(
+                "value"
+            )
+
+            min_value = data.get(
+                "min"
+            )
+
+            max_value = data.get(
+                "max"
+            )
+
+            if not available:
+
+                status_text = Text(
+                    "UNAVAILABLE",
+                    style="bold yellow",
+                )
+
+            elif alarm:
+
+                if direction == "low":
+                    alarm_label = "ALARM LOW"
+
+                elif direction == "high":
+                    alarm_label = "ALARM HIGH"
+
+                else:
+                    alarm_label = "ALARM"
+
+                status_text = Text(
+                    alarm_label,
+                    style="bold red",
+                )
+
+            else:
+
+                status_text = Text(
+                    "OK",
+                    style="green",
+                )
+
+            sensor_table.add_row(
+                sensor_name,
+                self._fmt(
+                    value,
+                    3,
+                ),
+                self._fmt(
+                    min_value,
+                    3,
+                ),
+                self._fmt(
+                    max_value,
+                    3,
+                ),
+                status_text,
+            )
+
+        self.console.print(
+            sensor_table
+        )
+
+        # ================================================================
+        # Physical devices
+        # ================================================================
+
+        device_table = Table(
+            title="MAIN — Sensor Devices",
+            show_header=True,
+            header_style="bold",
+        )
+
+        device_table.add_column(
+            "Device"
+        )
+
+        device_table.add_column(
+            "Availability"
+        )
+
+        device_table.add_column(
+            "I2C bus",
+            justify="right",
+        )
+
+        for device_name, data in (
+            devices.items()
+        ):
+
+            available = bool(
+                data.get(
+                    "available"
+                )
+            )
+
+            if available:
+
+                availability_text = Text(
+                    "AVAILABLE",
+                    style="green",
+                )
+
+            else:
+
+                availability_text = Text(
+                    "UNAVAILABLE",
+                    style="bold yellow",
+                )
+
+            bus = data.get(
+                "bus"
+            )
+
+            device_table.add_row(
+                device_name.upper(),
+                availability_text,
+                (
+                    str(bus)
+                    if bus is not None
+                    else "—"
+                ),
+            )
+
+        self.console.print(
+            device_table
+        )
+
+        # ================================================================
+        # Summary
+        # ================================================================
+
+        has_alarm = bool(
+            summary.get(
+                "alarm"
+            )
+        )
+
+        unavailable_quantity = bool(
+            summary.get(
+                "unavailable_quantity"
+            )
+        )
+
+        unavailable_device = bool(
+            summary.get(
+                "unavailable_device"
+            )
+        )
+
+        if has_alarm:
+
+            overall_text = Text(
+                "ALARM",
+                style="bold red",
+            )
+
+        elif (
+            unavailable_quantity
+            or unavailable_device
+        ):
+
+            overall_text = Text(
+                "DEGRADED",
+                style="bold yellow",
+            )
+
+        else:
+
+            overall_text = Text(
+                "OK",
+                style="bold green",
+            )
+
+        summary_text = Text()
+
+        summary_text.append(
+            "Overall sensor status: "
+        )
+
+        summary_text.append_text(
+            overall_text
+        )
+
+        summary_text.append(
+            "\nThreshold alarm: "
+        )
+
+        summary_text.append(
+            "YES" if has_alarm else "NO",
+            style=(
+                "bold red"
+                if has_alarm
+                else "green"
+            ),
+        )
+
+        summary_text.append(
+            "\nUnavailable quantities: "
+        )
+
+        summary_text.append(
+            (
+                "YES"
+                if unavailable_quantity
+                else "NO"
+            ),
+            style=(
+                "bold yellow"
+                if unavailable_quantity
+                else "green"
+            ),
+        )
+
+        summary_text.append(
+            "\nUnavailable devices: "
+        )
+
+        summary_text.append(
+            (
+                "YES"
+                if unavailable_device
+                else "NO"
+            ),
+            style=(
+                "bold yellow"
+                if unavailable_device
+                else "green"
+            ),
+        )
+
+        self.console.print(
+            Panel(
+                summary_text,
+                title="MAIN — Sensor Summary",
+                expand=False,
+            )
+        )
+
+        self.console.print()   
     
     
     def snapshot(self, args) -> None:
@@ -1862,3 +2220,54 @@ class MonitoringOrchestrator:
                     f"rows={event_state.rows_written}, "
                     f"error={event_state.last_error or '-'}"
                 )
+    
+    def sensors_status(
+        self,
+        args,
+    ) -> None:
+
+        client_ids = (
+            self._resolve_targets(
+                args
+            )
+        )
+
+        if not client_ids:
+
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+
+            return
+
+        for client_id in client_ids:
+
+            try:
+
+                status = (
+                    self.monitoring_service
+                    .read_sensor_status(
+                        client_id=client_id,
+                    )
+                )
+
+            except Exception as exc:
+
+                self.logger.exception(
+                    "Failed to retrieve MAIN "
+                    "sensor status: "
+                    f"client={client_id!r}, "
+                    f"error={exc}"
+                )
+
+                status = {
+                    "success": False,
+                    "result": {},
+                    "error": str(exc),
+                }
+
+            self._print_sensor_status(
+                client_id=client_id,
+                status=status,
+            )
