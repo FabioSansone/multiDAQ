@@ -99,6 +99,39 @@ class MonitoringOrchestrator:
             events_selected,
         )
         
+    @classmethod
+    def _resolve_stream_sections(
+        cls,
+        args,
+    ) -> list[Channel]:
+
+        (
+            include_main,
+            include_rc,
+            include_hv,
+        ) = cls._resolve_sections(
+            args
+        )
+
+        sections = []
+
+        if include_main:
+            sections.append(
+                Channel.MAIN
+            )
+
+        if include_rc:
+            sections.append(
+                Channel.RC
+            )
+
+        if include_hv:
+            sections.append(
+                Channel.HV
+            )
+
+        return sections
+        
     @staticmethod
     def _fmt(value, digits: int = 2) -> str:
         if value is None:
@@ -2271,3 +2304,265 @@ class MonitoringOrchestrator:
                 client_id=client_id,
                 status=status,
             )
+    
+    
+    def show_start(
+        self,
+        args,
+    ) -> None:
+
+        client_ids = (
+            self._resolve_targets(
+                args
+            )
+        )
+
+        if not client_ids:
+
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+
+            return
+
+        sections = (
+            self._resolve_stream_sections(
+                args
+            )
+        )
+
+        requested_interval_ns = int(
+            args.interval
+            * 1_000_000_000
+        )
+
+        for client_id in client_ids:
+
+            client_name = client_id.decode(
+                errors="ignore"
+            )
+
+            for section in sections:
+
+                subscribed = (
+                    self.monitor_stream_service
+                    .subscribe(
+                        client_id=client_id,
+                        section=section,
+                        consumer="prometheus",
+                        requested_interval_ns=(
+                            requested_interval_ns
+                        ),
+                    )
+                )
+
+                if not subscribed:
+
+                    self.poutput(
+                        f"{client_name}: failed to enable "
+                        f"{section.value.upper()} "
+                        "visualization"
+                    )
+
+                    continue
+
+                self.poutput(
+                    f"{client_name}: "
+                    f"{section.value.upper()} "
+                    "visualization enabled "
+                    f"(requested interval="
+                    f"{args.interval:.3f}s)"
+                )
+    
+    
+    def show_stop(
+        self,
+        args,
+    ) -> None:
+
+        client_ids = (
+            self._resolve_targets(
+                args
+            )
+        )
+
+        if not client_ids:
+
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+
+            return
+
+        sections = (
+            self._resolve_stream_sections(
+                args
+            )
+        )
+
+        for client_id in client_ids:
+
+            client_name = client_id.decode(
+                errors="ignore"
+            )
+
+            for section in sections:
+
+                stream_state = (
+                    self.monitor_stream_service
+                    .get_stream(
+                        client_id=client_id,
+                        section=section,
+                    )
+                )
+
+                if stream_state is None:
+
+                    self.poutput(
+                        f"{client_name}: "
+                        f"{section.value.upper()} "
+                        "visualization is not active"
+                    )
+
+                    continue
+
+                subscription = (
+                    stream_state.consumers.get(
+                        "prometheus"
+                    )
+                )
+
+                if subscription is None:
+
+                    self.poutput(
+                        f"{client_name}: "
+                        f"{section.value.upper()} "
+                        "visualization is not active"
+                    )
+
+                    continue
+
+                unsubscribed = (
+                    self.monitor_stream_service
+                    .unsubscribe(
+                        client_id=client_id,
+                        section=section,
+                        consumer="prometheus",
+                    )
+                )
+
+                if not unsubscribed:
+
+                    self.poutput(
+                        f"{client_name}: failed to disable "
+                        f"{section.value.upper()} "
+                        "visualization"
+                    )
+
+                    continue
+
+                self.poutput(
+                    f"{client_name}: "
+                    f"{section.value.upper()} "
+                    "visualization disabled"
+                )
+    
+    def show_status(
+        self,
+        args,
+    ) -> None:
+
+        client_ids = (
+            self._resolve_targets(
+                args
+            )
+        )
+
+        if not client_ids:
+
+            self.poutput(
+                "No Monitoring Plane clients match "
+                "the requested target."
+            )
+
+            return
+
+        sections = (
+            Channel.MAIN,
+            Channel.RC,
+            Channel.HV,
+        )
+
+        for client_id in client_ids:
+
+            client_name = client_id.decode(
+                errors="ignore"
+            )
+
+            self.poutput(
+                f"\n{client_name}:"
+            )
+
+            for section in sections:
+
+                stream_state = (
+                    self.monitor_stream_service
+                    .get_stream(
+                        client_id=client_id,
+                        section=section,
+                    )
+                )
+
+                if stream_state is None:
+
+                    self.poutput(
+                        f"  {section.value.upper()}: inactive"
+                    )
+
+                    continue
+
+                subscription = (
+                    stream_state.consumers.get(
+                        "prometheus"
+                    )
+                )
+
+                if subscription is None:
+
+                    self.poutput(
+                        f"  {section.value.upper()}: inactive"
+                    )
+
+                    continue
+
+                requested_interval_s = (
+                    subscription.requested_interval_ns
+                    / 1_000_000_000
+                )
+
+                producer_interval_ns = (
+                    stream_state.active_producer_interval_ns
+                )
+
+                if producer_interval_ns is None:
+
+                    producer_interval_text = (
+                        "inactive"
+                    )
+
+                else:
+
+                    producer_interval_text = (
+                        f"{producer_interval_ns / 1e9:.3f}s"
+                    )
+
+                self.poutput(
+                    f"  {section.value.upper()}: "
+                    "ACTIVE, "
+                    f"requested_interval="
+                    f"{requested_interval_s:.3f}s, "
+                    f"producer_interval="
+                    f"{producer_interval_text}"
+                )

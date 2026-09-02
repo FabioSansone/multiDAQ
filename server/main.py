@@ -28,6 +28,7 @@ from server.services.monitor_stream_service import MonitorStreamService
 from server.services.monitor_sample_dispatcher import MonitorSampleDispatcher
 from server.services.monitor_persistence_service import MonitorPersistenceService
 from server.services.monitor_event_dispatcher import MonitorEventDispatcher
+from server.services.prometheus_metrics_service import PrometheusMetricsService
 from server.web.web_app import start_web_server
 
 
@@ -130,6 +131,29 @@ class Server(cmd2.Cmd):
             raise RuntimeError(
                 "Failed to register monitoring "
                 "event persistence consumer"
+            )
+            
+        self.prometheus_metrics_service = (
+            PrometheusMetricsService(
+                server_state=self.server_state,
+            )
+        )
+        
+        registered = (
+            self.monitor_sample_dispatcher
+            .register_consumer(
+                consumer_id="prometheus",
+                consumer_handler=(
+                    self.prometheus_metrics_service
+                    .handle_sample
+                ),
+            )
+        )
+
+        if not registered:
+            raise RuntimeError(
+                "Failed to register Prometheus "
+                "monitoring sample consumer"
             )
             
         
@@ -311,6 +335,31 @@ class Server(cmd2.Cmd):
                 f"persistence service: {exc}"
             )
             success = False
+            
+        try:
+
+            prometheus_ok = (
+                self.prometheus_metrics_service
+                .stop_exporter()
+            )
+
+            if not prometheus_ok:
+
+                self.logger.warning(
+                    "Prometheus exporter stopped "
+                    "with errors"
+                )
+
+                success = False
+
+        except Exception as exc:
+
+            self.logger.exception(
+                "Failed to stop Prometheus "
+                f"exporter: {exc}"
+            )
+
+            success = False
 
         return success
 
@@ -349,6 +398,31 @@ def main() -> int:
         default=None,
         help="Grafana URL to embed in the web control panel",
     )
+    server_parser.add_argument(
+        "--prometheus-host",
+        type=str,
+        default="0.0.0.0",
+        help=(
+            "Prometheus metrics exporter host."
+        ),
+    )
+
+    server_parser.add_argument(
+        "--prometheus-port",
+        type=int,
+        default=8000,
+        help=(
+            "Prometheus metrics exporter port."
+        ),
+    )
+    
+    server_parser.add_argument(
+        "--no-prometheus",
+        action="store_true",
+        help=(
+            "Disable the Prometheus metrics exporter."
+        ),
+    )
     args = server_parser.parse_args()
 
     mode_selected = args.start_mode.lower()
@@ -383,6 +457,22 @@ def main() -> int:
 
     app = Server(server_state=server_state, mac_identity_registry=mac_identity_registry, control_manager=control_manager, acquisition_manager=acquisition_manager, monitoring_manager=monitoring_manager, time_sync_service=time_sync_service, data_receiver_service=data_receiver_service)
 
+    if not args.no_prometheus:
+        prometheus_started = app.prometheus_metrics_service.start_exporter(host=args.prometheus_host, port=args.prometheus_port)
+        
+        if prometheus_started:
+            app.poutput(
+                "Prometheus metrics available at "
+                f"http://{args.prometheus_host}:"
+                f"{args.prometheus_port}/metrics"
+            )
+        else:
+            app.poutput(
+                "WARNING: Prometheus metrics exporter "
+                "failed to start."
+            )
+    
+    
     if not args.no_web:
         start_web_server(server=app, host=args.web_host, port=args.web_port, grafana_url=args.grafana_url)
         app.poutput(f"Web control panel available at http://{args.web_host}:{args.web_port}")

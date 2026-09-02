@@ -34,7 +34,7 @@ MONITOR_INTERVALS_S = (
     60,
 )
 
-DEFAULT_MONITOR_INTERVAL_S = 5
+DEFAULT_MONITOR_INTERVAL_S = 60
 
 DEFAULT_MONITOR_POLL_DURATION_S = 30
 MAX_MONITOR_POLL_DURATION_S = 120
@@ -43,6 +43,8 @@ MONITOR_SAVE_FORMATS = (
     "csv",
     #"parquet",
 )
+
+DEFAULT_MONITOR_SHOW_INTERVAL_S = 60
 
 
 # =====================================================================
@@ -393,13 +395,15 @@ add_monitor_target_arguments(
 # =====================================================================
 # monitor show
 #
-# M5 placeholder. Kept here because the same monitoring infrastructure
-# will later feed live visualization.
+# Control live monitoring streams consumed by Prometheus/Grafana.
 # =====================================================================
 
 show_parser = monitor_subparsers.add_parser(
     "show",
-    help="Start or stop monitoring visualization (M5).",
+    help=(
+        "Control monitoring streams used for "
+        "live visualization."
+    ),
 )
 
 show_subparsers = show_parser.add_subparsers(
@@ -407,22 +411,76 @@ show_subparsers = show_parser.add_subparsers(
     required=True,
 )
 
+
+# ---------------------------------------------------------------------
+# monitor show start
+# ---------------------------------------------------------------------
+
 show_start_parser = show_subparsers.add_parser(
     "start",
-    help="Start monitoring visualization.",
+    help=(
+        "Start one or more monitoring streams "
+        "for live visualization."
+    ),
 )
 
 add_monitor_target_arguments(
     show_start_parser
 )
 
+add_monitor_data_section_arguments(
+    show_start_parser,
+    include_channels=False,
+)
+
+show_start_parser.add_argument(
+    "--interval",
+    type=float,
+    default=DEFAULT_MONITOR_SHOW_INTERVAL_S,
+    help=(
+        "Requested visualization sampling interval "
+        "in seconds for MAIN/RC/HV streams. "
+        f"Default: {DEFAULT_MONITOR_SHOW_INTERVAL_S}s."
+    ),
+)
+
+
+# ---------------------------------------------------------------------
+# monitor show stop
+# ---------------------------------------------------------------------
+
 show_stop_parser = show_subparsers.add_parser(
     "stop",
-    help="Stop monitoring visualization.",
+    help=(
+        "Stop one or more monitoring streams "
+        "used for live visualization."
+    ),
 )
 
 add_monitor_target_arguments(
     show_stop_parser
+)
+
+add_monitor_data_section_arguments(
+    show_stop_parser,
+    include_channels=False,
+)
+
+
+# ---------------------------------------------------------------------
+# monitor show status
+# ---------------------------------------------------------------------
+
+show_status_parser = show_subparsers.add_parser(
+    "status",
+    help=(
+        "Show live visualization monitoring "
+        "subscription status."
+    ),
+)
+
+add_monitor_target_arguments(
+    show_status_parser
 )
 
 
@@ -548,19 +606,44 @@ def do_monitor(
 
 
     # -----------------------------------------------------------------
-    # show 
+    # show
     # -----------------------------------------------------------------
 
     if args.monitor_command == "show":
 
         if args.show_action == "start":
-            self.poutput(
-                "monitor show start is not implemented yet (M5)."
+
+            if args.interval <= 0:
+
+                self.perror(
+                    "--interval must be greater than 0."
+                )
+
+                logger.error(
+                    "Invalid monitoring visualization "
+                    f"interval: {args.interval}"
+                )
+
+                return
+
+            self.mon_orchestrator.show_start(
+                args
             )
+
             return
 
         if args.show_action == "stop":
-            self.poutput(
-                "monitor show stop is not implemented yet (M5)."
+
+            self.mon_orchestrator.show_stop(
+                args
             )
+
+            return
+
+        if args.show_action == "status":
+
+            self.mon_orchestrator.show_status(
+                args
+            )
+
             return
