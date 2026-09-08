@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <errno.h>
 #include "dispatch/worker_dispatcher.h"
 
 
@@ -50,9 +51,16 @@
 #define CLOSE_GRACE_TIME_S 2
 #define MAX_DELAYED_CLOSES 4096
 
+#define ACQUISITION_METRICS_ENDPOINT "tcp://127.0.0.1:5557"
+#define ACQUISITION_METRICS_PERIOD_S 10
+#define ACQUISITION_METRICS_IDLE_WAKEUP_S 15
+#define ACQUISITION_METRICS_SNDHWM 1000
+
 static volatile sig_atomic_t keep_running = 1;
 
 typedef enum {ITEM_DATA, ITEM_OPEN, ITEM_CLOSE} item_type_t;
+
+static void *metrics_context = NULL;
 
 //Struttura che trasporta il singolo payload dal DMA
 
@@ -201,6 +209,23 @@ static struct timespec timespec_add_seconds(struct timespec t, time_t seconds){
     t.tv_sec += seconds;
     return t;
 }
+
+static double monotonic_elapsed_seconds(const struct timespec *start, const struct timespec *end){
+
+    time_t sec = end->tv_sec - start->tv_sec;
+    long nsec = end->tv_nsec - start->tv_nsec;
+
+    return (double) sec + (double) nsec / 1e9;
+}
+
+
+static uint64_t monotonic_now_ns(void){
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+}
+
+
 
 static int schedule_delayed_close(const char *source_id, int worker_idx){
     pthread_mutex_lock(&delayed_close_lock);
@@ -692,6 +717,100 @@ void *run_control(void *args){
 
 */
 
+static int send_acquisition_metric(void *socket, const char *message){
+    if (socket == NULL || message == NULL){
+        return 0;
+    }
+
+    int result = zmq_send(socket, message, strlen(message), ZMQ_DONTWAIT);
+
+    if (result < 0){
+        return 0;
+    }
+
+    return 1;
+
+}
+
+static void publish_worker_metrics(void *metrics_socket, worker_node_t *wn, int worker_idx){
+
+    if (metrics_socket == NULL || wn == NULL){
+        return;
+    }
+
+    int queue_size;
+
+    pthread_mutex_lock(&wn->lock);
+
+    queue_size = wn->count;
+    pthread_mutex_unlock(&wn->lock);
+
+    char message[128];
+
+    int written = snprintf(message, sizeof(message), "WORKER|%d|%d|%d", worker_idx, queue_size, QUEUE_SIZE);
+
+    if(written > 0 && (size_t) written < sizeof(message)){
+        send_acquisition_metric(metrics_socket, message);
+    }
+    
+}
+
+static int publish_source_metrics(void *metrics_socket, const tank_node *node){
+    if (metrics_socket == NULL || node == NULL || node->source_id == NULL){
+        return 0;
+    }
+
+    char message[256];
+
+    int written = snprintf(message, sizeof(message), "SOURCE|%s|%llu|%llu|%llu|%llu", node->source_id, (unsigned long long)node->events_received, (unsigned long long)node->events_written, (unsigned long long)node->bytes_received, (unsigned long long)monotonic_now_ns());
+
+    if (written <= 0 || (size_t)written >= sizeof(message)){
+        return 0;
+    }
+
+    return send_acquisition_metric(metrics_socket, message);
+}
+
+
+
+static void maybe_publish_worker_metrics(void *metrics_socket, worker_node_t *wn, int worker_idx, struct timespec *last_publish){
+    if (metrics_socket == NULL || wn == NULL || last_publish == NULL){
+        return;
+    }
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double elapsed_s = monotonic_elapsed_seconds(last_publish, &now);
+
+    if (elapsed_s < ACQUISITION_METRICS_PERIOD_S){
+        return;
+    }
+
+    publish_worker_metrics(metrics_socket, wn, worker_idx);
+
+    *last_publish = now;
+}
+
+static void maybe_publish_source_metrics(void *metrics_socket, tank_node *node){
+    if (metrics_socket == NULL || node == NULL){
+        return;
+    }
+
+    uint64_t now_ns = monotonic_now_ns();
+
+    uint64_t period_ns = (uint64_t)ACQUISITION_METRICS_PERIOD_S * UINT64_C(1000000000);
+
+    if(node->last_metrics_publish_monotonic_ns != 0 && now_ns - node->last_metrics_publish_monotonic_ns < period_ns){
+        return;
+    }
+
+    if (publish_source_metrics(metrics_socket, node)){
+        node->last_metrics_publish_monotonic_ns = now_ns;
+    }
+}
+
+
+
 void *control_listener(void *args){
 
     pthread_setname_np(pthread_self(), "control_listener");
@@ -1037,6 +1156,7 @@ void *receive_data(void *args) {
     void *context = zmq_ctx_new();
     void *server_socket = zmq_socket(context, ZMQ_ROUTER);
 
+
     if (zmq_bind(server_socket, "tcp://*:5555") != 0) {
         printf("ERROR binding: %s\n", zmq_strerror(zmq_errno()));
         zmq_close(server_socket);
@@ -1168,21 +1288,60 @@ void *process_data(void *args_void) {
     FILE *file = NULL;
 
     //FILE *file = (FILE *)file_ptr_void;
-    long events_processed = 0;
+    //long events_processed = 0;
     //char write_buffer[1024 * 128]; // 128KB buffer
     //size_t buffer_used = 0;
+
+    void *metrics_socket = NULL;
+
+    if (metrics_context != NULL){
+        metrics_socket = zmq_socket(metrics_context, ZMQ_PUSH);
+
+        if (metrics_socket != NULL){
+            int linger = 0;
+            zmq_setsockopt(metrics_socket, ZMQ_LINGER, &linger, sizeof(linger));
+            int sndhwm = ACQUISITION_METRICS_SNDHWM;
+            zmq_setsockopt(metrics_socket, ZMQ_SNDHWM, &sndhwm, sizeof(sndhwm));
+
+            if(zmq_connect(metrics_socket, ACQUISITION_METRICS_ENDPOINT) != 0){
+                printf(
+                    "WARNING: worker %d cannot connect "
+                    "acquisition metrics socket: %s\n",
+                    args->worked_idx,
+                    zmq_strerror(zmq_errno())
+                );
+                zmq_close(metrics_socket);
+                metrics_socket = NULL;
+            }
+
+        }
+    }
+
+    struct  timespec last_metrics_published;
+    clock_gettime(CLOCK_MONOTONIC, &last_metrics_published);
+    
 
 
 
     while (keep_running) {
         pthread_mutex_lock(&wn->lock);
-        while (wn->count == 0 && keep_running) {
-            pthread_cond_wait(&(wn->data_available), &(wn->lock));
+        if (wn->count == 0 && keep_running) {
+            struct timespec wakeup_time;
+            clock_gettime(CLOCK_REALTIME, &wakeup_time);
+            wakeup_time.tv_sec += ACQUISITION_METRICS_IDLE_WAKEUP_S;
+            
+            pthread_cond_timedwait(&(wn->data_available), &(wn->lock), &wakeup_time);
         }
 
         if (!keep_running) {
             pthread_mutex_unlock(&(wn->lock));
             break;
+        }
+
+        if (wn->count == 0){
+            pthread_mutex_unlock(&wn->lock);
+            maybe_publish_worker_metrics(metrics_socket, wn, args->worked_idx, &last_metrics_published);
+            continue;
         }
 
         // Prendi un batch di eventi
@@ -1222,6 +1381,8 @@ void *process_data(void *args_void) {
                 }
 
                 size_t num_events = data_batch.payload_size / EVENT_SIZE_BYTES;
+                event_node->events_received += num_events;
+                event_node->bytes_received += data_batch.payload_size;
 
                 for (size_t e = 0; e < num_events; e++) {
                     size_t off = e * EVENT_SIZE_BYTES;
@@ -1297,6 +1458,7 @@ void *process_data(void *args_void) {
                     }
                 }
 
+                maybe_publish_source_metrics(metrics_socket, event_node);
                 free(data_batch.payload);   
             } else{
                 if (current_event.item == ITEM_OPEN){
@@ -1335,7 +1497,14 @@ void *process_data(void *args_void) {
                         if (node->buffer_used > 0) {
                             fwrite(node->write_buffer, 1, node->buffer_used, node->output_file);
                             fflush(node->output_file);
+                            node->bytes_written += node->buffer_used;
                             node->buffer_used = 0;
+                        }
+                        publish_source_metrics(metrics_socket, node);
+                        char message_source [128];
+                        int written_source = snprintf(message_source, sizeof(message_source), "SOURCE_STOP|%s", node->source_id);
+                        if (written_source > 0 && (size_t)written_source < sizeof(message_source)){
+                            send_acquisition_metric(metrics_socket, message_source);
                         }
                         fclose(node->output_file);
                         node->output_file = NULL;
@@ -1350,6 +1519,8 @@ void *process_data(void *args_void) {
        
     }
 
+    publish_worker_metrics(metrics_socket, wn, args->worked_idx);
+
     
     for (size_t b = 0; b < wn->worker_table->num_buckets; b++) {
         for (tank_node *node = wn->worker_table->buckets[b]; node != NULL; node = node->next) {
@@ -1359,6 +1530,11 @@ void *process_data(void *args_void) {
                 node->buffer_used = 0;
             }
         }
+    }
+
+    if (metrics_socket != NULL){
+        zmq_close(metrics_socket);
+        metrics_socket = NULL;
     }
 
    
@@ -1453,6 +1629,17 @@ int run(void) {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
+    metrics_context = zmq_ctx_new();
+
+    if (metrics_context == NULL){
+        printf(
+            "WARNING: cannot create acquisition "
+            "metrics ZMQ context. "
+            "DAQ will continue without "
+            "receiver metrics.\n"
+        );
+    }
+
     pthread_t receiver, cl_thread, close_thread;
     pthread_t workers[N_WORKERS];
 
@@ -1491,6 +1678,11 @@ int run(void) {
     }
 
     pthread_join(cl_thread, NULL);
+
+    if (metrics_context != NULL){
+        zmq_ctx_destroy(metrics_context);
+        metrics_context = NULL;
+    }
 
     return 0;
 }

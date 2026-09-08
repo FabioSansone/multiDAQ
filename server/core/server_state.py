@@ -333,6 +333,8 @@ class ServerState:
         self.last_event_context: dict | None = None
         self.error_context: dict | None = None
 
+        self.client_id_by_mac: dict[str, bytes] = {}
+
         self.logger.debug("Server State initialized")
 
     def set_mode(self, mode: str) -> None:
@@ -1033,6 +1035,12 @@ class ServerState:
 
             if identity is not None:
                 record.identity = dict(identity)
+                mac = identity.get("mac_address")
+
+                if mac:
+                    self.client_id_by_mac[
+                        str(mac)
+                    ] = client_id
 
     def add_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
         self.add_control_client(client_id, identity)
@@ -1081,7 +1089,16 @@ class ServerState:
                 )
 
     def _forget_client_locked(self, client_id: bytes) -> None:
-        self.clients.pop(client_id, None)
+        record = self.clients.pop(client_id, None)
+        if record is None or record.identity is None:
+            return
+        mac = record.identity.get("mac_address")
+        if mac is None:
+            return
+        mac = str(mac)
+
+        if self.client_id_by_mac.get(mac) == client_id:
+            self.client_id_by_mac.pop(mac, None)
 
     def remove_client(self, client_id: bytes) -> None:
         """Forget a client completely from every server registry."""
@@ -1335,3 +1352,30 @@ class ServerState:
             return self.get_client_id_by_multipmt_id(multipmt_id)
 
         return self.get_client_id_by_batch_id(batch_id)
+    
+    def is_client_operational(
+        self,
+        client_id: bytes,
+    ) -> bool:
+
+        with self._lock:
+
+            record = self.clients.get(
+                client_id
+            )
+
+            return bool(
+                record
+                and record.operational
+            )
+
+
+    def get_client_id_by_mac(
+        self,
+        mac: str,
+    ) -> bytes | None:
+
+        with self._lock:
+            return self.client_id_by_mac.get(
+                mac
+            )

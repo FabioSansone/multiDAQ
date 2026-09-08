@@ -4,6 +4,8 @@ import subprocess
 import zmq
 from typing import Optional
 import time
+import threading
+
 from server.utils.logger import get_logger
 
 
@@ -25,6 +27,9 @@ ACQUISITION_FOLDERS = {
 CONTROL_LISTENER_PORT = "5556"
 CONTROL_COMMAND_TIMEOUT_MS = 10000
 
+METRICS_LISTENER_PORT = "5557"
+METRICS_POLL_TIMEOUT_MS = 500
+
 
 class DataReceiverService:
 
@@ -41,6 +46,14 @@ class DataReceiverService:
         self.evr_src = self.receiver_dir / "evreceiver.c"
 
         self.receiver_ready = self.compile_evreceiver(force_compile=True) #mettere a False se non vogliamo ricompilare ad ogni avvio del server
+
+        self.metrics_callback = None
+
+        self._metrics_stop_event = threading.Event()
+        self._metrics_ready_event = threading.Event()
+
+        self._metrics_thread = None
+
 
         if self.receiver_ready:
             self.logger.info("DataReceiverService initialized")
@@ -229,6 +242,14 @@ class DataReceiverService:
 
         self.logger.info("Starting persistent evreceiver process...")
 
+        if not self.start_metrics_listener():
+            self.logger.warning(
+                "Acquisition metrics listener "
+                "could not be started. "
+                "evreceiver will run without "
+                "runtime metrics."
+            )
+
         try:
             self.process = subprocess.Popen([str(self.evr_exe)], start_new_session=True,)
         except Exception as e:
@@ -249,6 +270,7 @@ class DataReceiverService:
         if not self.is_running():
             self.logger.warning("evreceiver is not running")
             self.process = None
+            self.stop_metrics_listener()
             return True
 
         self.logger.info(f"Stopping evreceiver PID {self.process.pid}")
@@ -256,6 +278,7 @@ class DataReceiverService:
         try:
             self.process.terminate()
             self.process.wait(timeout=5.0)
+            self.stop_metrics_listener()
         except subprocess.TimeoutExpired:
             self.logger.warning(f"evreceiver PID {self.process.pid} did not stop, killing it")
             self.process.kill()
@@ -345,3 +368,250 @@ class DataReceiverService:
             "running": self.is_running(),
             "pid": self.process.pid if self.is_running() else None,
         }
+
+    def _metrics_listener_loop(self, ) -> None:
+
+        metrics_socket = None
+        try:
+            metrics_socket = self.context.socket(zmq.PULL)
+            metrics_socket.setsockopt(zmq.LINGER, 0)
+            metrics_socket.bind(f"tcp://127.0.0.1:{METRICS_LISTENER_PORT}")
+
+            poller = zmq.Poller()
+            poller.register(metrics_socket, zmq.POLLIN)
+
+            self._metrics_ready_event.set()
+
+            self.logger.info(
+                "Acquisition metrics listener "
+                f"started on port "
+                f"{METRICS_LISTENER_PORT}"
+            )
+
+            while not self._metrics_stop_event.is_set():
+
+                events = dict(poller.poll(METRICS_POLL_TIMEOUT_MS))
+
+                if metrics_socket not in events:
+                    continue
+
+                try:
+                    raw_message = metrics_socket.recv_string()
+                except zmq.ZMQError as e:
+                    if not self._metrics_stop_event.is_set():
+                        self.logger.error(
+                            "Acquisition metrics receive "
+                            f"error: {e}"
+                        )
+                    continue
+
+                metric = self._parse_metrics_message(raw_message)
+                if metric is None:
+                    continue
+
+                callback = self.metrics_callback
+
+                try:
+                    callback(metric)
+                except Exception as e:
+                    self.logger.exception(
+                        "Acquisition metrics callback "
+                        f"failed: {e}"
+                    )
+
+        except Exception as e:
+            self.logger.exception(
+                "Acquisition metrics listener "
+                f"failed: {e}"
+            )
+
+            self._metrics_ready_event.set()
+
+        finally:
+            if metrics_socket is None:
+                try:
+                    metrics_socket.close(linger=0)
+                except Exception:
+                    pass
+            self.logger.info(
+                "Acquisition metrics listener stopped"
+            )
+
+
+    def _parse_metrics_message(
+        self,
+        raw_message: str,
+    ) -> dict | None:
+
+        if not raw_message:
+
+            return None
+
+
+        fields = (
+            raw_message.split("|")
+        )
+
+        kind = (
+            fields[0]
+        )
+
+
+        if kind == "SOURCE":
+
+            if len(fields) != 6:
+
+                self.logger.warning(
+                    "Invalid SOURCE acquisition "
+                    f"metric: {raw_message!r}"
+                )
+
+                return None
+
+            try:
+
+                return {
+                    "type": "source",
+                    "source_id": fields[1],
+                    "events_received": int(
+                        fields[2]
+                    ),
+                    "events_written": int(
+                        fields[3]
+                    ),
+                    "bytes_received": int(
+                        fields[4]
+                    ),
+                    "timestamp_monotonic_ns": int(fields[5])
+                }
+
+            except ValueError:
+
+                self.logger.warning(
+                    "Invalid numeric SOURCE "
+                    "acquisition metric: "
+                    f"{raw_message!r}"
+                )
+
+                return None
+
+
+        if kind == "WORKER":
+
+            if len(fields) != 4:
+
+                self.logger.warning(
+                    "Invalid WORKER acquisition "
+                    f"metric: {raw_message!r}"
+                )
+
+                return None
+
+            try:
+
+                return {
+                    "type": "worker",
+                    "worker": int(
+                        fields[1]
+                    ),
+                    "queue_size": int(
+                        fields[2]
+                    ),
+                    "queue_capacity": int(
+                        fields[3]
+                    ),
+                }
+
+            except ValueError:
+
+                self.logger.warning(
+                    "Invalid numeric WORKER "
+                    "acquisition metric: "
+                    f"{raw_message!r}"
+                )
+
+                return None
+            
+        if kind == "SOURCE_STOP":
+            if len(fields) != 2:
+                return None
+            return {
+                "type": "source_stop",
+                "source_id": fields[1]
+            }
+
+
+        self.logger.warning(
+            "Unknown acquisition metric "
+            f"type: {raw_message!r}"
+        )
+
+        return None
+
+
+    def start_metrics_listener(
+        self,
+        timeout_s: float = 2.0,
+    ) -> bool:
+
+        if (
+            self._metrics_thread is not None
+            and self._metrics_thread.is_alive()
+        ):
+            return True
+
+
+        self._metrics_stop_event.clear()
+        self._metrics_ready_event.clear()
+
+
+        self._metrics_thread = (
+            threading.Thread(
+                target=(
+                    self._metrics_listener_loop
+                ),
+                daemon=True,
+                name="acquisition-metrics",
+            )
+        )
+
+        self._metrics_thread.start()
+
+
+        if not self._metrics_ready_event.wait(
+            timeout=timeout_s
+        ):
+
+            self.logger.error(
+                "Timeout starting acquisition "
+                "metrics listener"
+            )
+
+            return False
+
+
+        return (
+            self._metrics_thread.is_alive()
+        )
+
+
+    def stop_metrics_listener(
+        self,
+    ) -> None:
+
+        self._metrics_stop_event.set()
+
+        thread = (
+            self._metrics_thread
+        )
+
+        if (
+            thread is not None
+            and thread.is_alive()
+        ):
+
+            thread.join(
+                timeout=2.0
+            )
+
+        self._metrics_thread = None

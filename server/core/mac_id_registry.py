@@ -18,6 +18,8 @@ class MacIdentityRegistry:
         
         self.path_mac_file: str | None = None
         self.present_client_mac_id: dict | None = None
+
+        self.mac_by_numeric_id: dict[int, str] = {}
         
         
     def _load_from_file(self):
@@ -42,9 +44,15 @@ class MacIdentityRegistry:
         try:
             with open(path) as f:
                 self.present_client_mac_id = json.load(f)
-                self.path_mac_file = path
-                self.logger.info(f"Loaded mac identity registry from {path}")
-                return True
+            self.mac_by_numeric_id = {
+                int(numeric_id): mac
+                for mac, numeric_id
+                in self.present_client_mac_id.items()
+                if mac != "index"
+            }
+            self.path_mac_file = path
+            self.logger.info(f"Loaded mac identity registry from {path}")
+            return True
         except Exception as e:
             self.logger.error(f"Error loading {path}: {e}")
             return False
@@ -58,17 +66,20 @@ class MacIdentityRegistry:
             self.present_client_mac_id = {}
 
         if client_mac in self.present_client_mac_id:
+            numeric_id = int(self.present_client_mac_id[client_mac])
+            self.mac_by_numeric_id[numeric_id] = client_mac
             self.logger.debug(
                 f"Client MAC {client_mac} already registered with id "
                 f"{self.present_client_mac_id[client_mac]}"
             )
-            return self.present_client_mac_id[client_mac]
+            return numeric_id
 
         actual_idx = self.present_client_mac_id.get("index", -1)
         new_idx = actual_idx + 1
 
         self.present_client_mac_id[client_mac] = new_idx
         self.present_client_mac_id["index"] = new_idx
+        self.mac_by_numeric_id[new_idx] = client_mac
 
         path = self.path_mac_file or self.CONFIG_FILES_POSSIBLE_PATHS[0]
 
@@ -94,3 +105,25 @@ class MacIdentityRegistry:
             return self.present_client_mac_id[client_mac]
 
         return self.add_client_mac(client_mac=client_mac)
+
+    def get_mac_from_id(
+        self,
+        client_numeric_id: int | str,
+    ) -> str | None:
+
+        if self.present_client_mac_id is None:
+            self._load_from_file()
+
+        try:
+            numeric_id = int(
+                client_numeric_id
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        return self.mac_by_numeric_id.get(
+            numeric_id
+        )

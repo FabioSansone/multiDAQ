@@ -51,6 +51,9 @@ typedef struct node
     struct node *next;          // per gestire le collisioni nel bucket
     char write_buffer[1024 * 128]; // 128KB buffer on diske to store fixed amount of data before flushing on file
     size_t buffer_used;             //index of the buffer
+    uint64_t events_received;
+    uint64_t bytes_received;
+    uint64_t last_metrics_publish_monotonic_ns;
 
 } tank_node;
 

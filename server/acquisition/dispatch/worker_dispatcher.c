@@ -58,6 +58,9 @@ tank_node *create_node(const char *source_id, FILE *output_file, meta_data_t met
     new_node->file_path[sizeof(new_node->file_path) - 1] = '\0';
     strncpy(new_node->base_file_path, file_path, sizeof(new_node->base_file_path) - 1);
     new_node->base_file_path[sizeof(new_node->base_file_path) - 1] = '\0';
+    new_node->events_received = 0;
+    new_node->bytes_received = 0;
+    new_node->last_metrics_publish_monotonic_ns = 0;
     new_node->next = NULL;
 
     return new_node;

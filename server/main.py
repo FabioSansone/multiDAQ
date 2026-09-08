@@ -136,6 +136,17 @@ class Server(cmd2.Cmd):
         self.prometheus_metrics_service = (
             PrometheusMetricsService(
                 server_state=self.server_state,
+                time_sync_service=self.time_service,
+                monitor_stream_service=(
+                    self.monitor_stream_service
+                ),
+                monitor_persistence_service=(
+                    self.monitor_persistence_service
+                ),
+                data_receiver_service=(
+                    self.data_receiver_service
+                ),
+                mac_identity_registry=self.mac_identity_registry
             )
         )
         
@@ -155,6 +166,11 @@ class Server(cmd2.Cmd):
                 "Failed to register Prometheus "
                 "monitoring sample consumer"
             )
+
+        self.data_receiver_service.metrics_callback = (
+            self.prometheus_metrics_service
+            .handle_acquisition_metrics
+        )
             
         
         

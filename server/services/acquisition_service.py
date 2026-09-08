@@ -1308,9 +1308,26 @@ class AcquisitionService:
 
         return None
 
-    def get_connected_clients(self, plane: CommandPlane = CommandPlane.ACQUISITION) -> list[bytes]:
-        return self.command_service.list_clients_on_plane(plane)
-    
+    def get_connected_clients(
+        self,
+        plane: CommandPlane = CommandPlane.ACQUISITION,
+    ) -> list[bytes]:
+
+        if plane == CommandPlane.CONTROL:
+            return self.server_state.list_connected_clients()
+
+        if plane == CommandPlane.ACQUISITION:
+            return self.server_state.list_acquisition_clients()
+
+        if plane == CommandPlane.MONITORING:
+            return self.server_state.list_monitoring_clients()
+
+        self.logger.error(
+            f"Unsupported command plane: {plane!r}"
+        )
+
+        return []
+        
     
     def get_client_run_folder(self, client_ids: List[bytes], acq_type: str, run_id: str | int | None):
         client_run_folder: dict[bytes, "Path"] = {}
