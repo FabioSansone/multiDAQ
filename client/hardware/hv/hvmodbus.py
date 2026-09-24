@@ -89,6 +89,29 @@ class HVModBus:
             self.logger.error(f"Exception during write of {desc}: {e}")
             raise
 
+    def _safe_write_coil(self, addr, value, slave, desc="unknown"):
+            
+        if not self._ensure_connected():
+            raise ModbusException("Modbus client is not connected")
+        
+        try:
+            rr = self.client.write_coil(
+                address=addr,
+                value=value,
+                device_id=slave,
+            )
+
+            if rr is None or rr.isError():
+                raise ModbusException(
+                    f"Invalid response when writing for {desc} at {hex(addr)}"
+                )
+
+            return rr
+
+        except ModbusException as e:
+            self.logger.error(f"Exception during write of {desc}: {e}")
+            raise
+
     def _safe_write_multiple(self, addr, values, slave, desc="unknown"):
         
         if not self._ensure_connected():
@@ -305,7 +328,7 @@ class HVModBus:
     def powerOn(self, slave=None):
         slave = self.ch_addr if slave==None else slave
         try:
-            self.client.write_coil(address=1, value=True, device_id=slave)
+            self._safe_write_coil(addr=1, value=True, slave=slave, desc="power on")
         except ModbusException as e:
             self.logger.error(f"Error occured powering on channel {self.ch_addr}:{e}")
             raise e
@@ -313,7 +336,7 @@ class HVModBus:
     def powerOff(self, slave=None):
         slave = self.ch_addr if slave==None else slave
         try:
-            self.client.write_coil(address=1, value=False, device_id=slave)
+            self._safe_write_coil(addr=1, value=False, slave=slave, desc="power off")
         except ModbusException as e:
             self.logger.error(f"Error occured powering off channel {self.ch_addr}:{e}")
             raise e
@@ -321,7 +344,7 @@ class HVModBus:
     def reset(self, slave=None):
         slave = self.ch_addr if slave==None else slave
         try:
-            self.client.write_coil(address=2, value=True, device_id=slave)
+            self._safe_write_coil(addr=2, value=True, slave=slave, desc="reset")
         except ModbusException as e:
             self.logger.error(f"Error occured resetting channel {self.ch_addr}:{e}")
             raise e
@@ -349,7 +372,7 @@ class HVModBus:
             raise e
     
     def readMonRegisters(self, slave=None):
-        slave = self.addr if slave==None else slave
+        slave = self.ch_addr if slave==None else slave
         rr = None
         monData = {}
         try:
@@ -393,19 +416,22 @@ class HVModBus:
     def readCalibRegisters(self, slave=None):
         slave = self.ch_addr if slave is None else slave
         rr = self._safe_read(addr=0x30, count=5, slave=slave, desc="read calib reg")
-        mlsb = rr.registers[0]
-        mmsb = rr.registers[1]
-        qlsb = rr.registers[2]
-        qmsb = rr.registers[3]
-        calibt = rr.registers[4]
+        mlsb = rr[0]
+        mmsb = rr[1]
+        qlsb = rr[2]
+        qmsb = rr[3]
+        calibt = rr[4]
 
-        calibm = ((mmsb << 16) + mlsb)
-        calibm = struct.unpack('l', struct.pack('L', calibm & 0xffffffff))[0]
-        calibm = calibm / 10000
+        calibm = (mmsb << 16) | mlsb
+        if calibm & 0x80000000:
+            calibm -= 1 << 32
+        calibm /= 10000
 
-        calibq = ((qmsb << 16) + qlsb)
-        calibq = struct.unpack('l', struct.pack('L', calibq & 0xffffffff))[0]
-        calibq = calibq / 10000
+        calibq = (qmsb << 16) | qlsb
+        if calibq & 0x80000000:
+            calibq -= 1 << 32
+        calibq /= 10000
+
 
         calibt = calibt / 1.6890722
 
@@ -455,16 +481,16 @@ class HVModBus:
     def setPMTSerialNumber(self, sn, slave=None):
         slave = self.ch_addr if slave is None else slave
         data = self._pack_sn_to_registers(sn)
-        self._safe_write_multiple(address=0x08, values=data, slave=slave, desc="write pmt serial")
+        self._safe_write_multiple(addr=0x08, values=data, slave=slave, desc="write pmt serial")
 
     def setHVSerialNumber(self, sn, slave=None):
         slave = self.ch_addr if slave is None else slave
         data = self._pack_sn_to_registers(sn)
-        self._safe_write_multiple(address=0x0E, values=data, slave=slave, desc = "write hv serial")
+        self._safe_write_multiple(addr=0x0E, values=data, slave=slave, desc = "write hv serial")
 
     def setFEBSerialNumber(self, sn, slave=None):
         slave = self.ch_addr if slave is None else slave
         data = self._pack_sn_to_registers(sn)
-        self._safe_write_multiple(address=0x14, values=data, slave=slave, desc = "write feb serial")
+        self._safe_write_multiple(addr=0x14, values=data, slave=slave, desc = "write feb serial")
     
 

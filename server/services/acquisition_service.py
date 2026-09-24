@@ -37,6 +37,45 @@ class TriggerConfiguration:
     save_external: bool = False
     save_auto: bool = False
 
+
+@dataclass
+class AcquisitionClientResult:
+    opened: bool = False
+    finalized: bool = False
+    success: bool = False
+    error: str | None = None
+
+
+@dataclass
+class AcquisitionSessionResult:
+    clients: dict[bytes, AcquisitionClientResult]
+
+    @property
+    def successful_clients(self) -> list[bytes]:
+        return [
+            client_id
+            for client_id, result in self.clients.items()
+            if result.success
+        ]
+
+    @property
+    def failed_clients(self) -> list[bytes]:
+        return [
+            client_id
+            for client_id, result in self.clients.items()
+            if not result.success
+        ]
+
+    @property
+    def success(self) -> bool:
+        return (
+            bool(self.clients)
+            and all(
+                result.success
+                for result in self.clients.values()
+            )
+        )
+
     
 
 
@@ -226,6 +265,12 @@ class AcquisitionService:
                 ch_config = acq_configuration.get(external_ch) or acq_configuration.get(str(external_ch))
                 if ch_config:
                     update[external_ch] = ch_config
+
+        elif command == "hv_on":
+            update = {ch - 1: {"power_state": "on"} for ch in successful}
+
+        elif command == "hv_off":
+            update = {ch - 1: {"power_state": "off"} for ch in successful}
 
         else:
             return
@@ -1052,6 +1097,183 @@ class AcquisitionService:
         return success
 
 
+    def run_acquisition_session_detailed(
+        self,
+        client_ids: List[bytes],
+        acq_type: str,
+        file_format: str = "csv",
+        acq_type_param=None,
+        suffix: str = "",
+        run_id=None,
+        run_folder_clients: dict[bytes, Path] | None = None,
+        duration: float | None = None,
+        reason: str = "acquisition session completed",
+        reset_trigger_config: bool = False,
+        extra_metadata_by_client: dict[bytes, dict] | None = None
+    ) -> AcquisitionSessionResult:
+
+        client_results = {
+            client_id: AcquisitionClientResult()
+            for client_id in client_ids
+        }
+
+        if not client_ids:
+            self.logger.warning(
+                "Detailed acquisition requested without clients"
+            )
+
+            return AcquisitionSessionResult(
+                clients=client_results
+            )
+
+        
+        metadata_by_client = self.build_run_metadata(
+            client_ids=client_ids,
+            acq_mode=self.server_state.get_mode(),
+            acq_type=acq_type,
+            acq_type_param=acq_type_param,
+            extra_metadata_by_client=extra_metadata_by_client,
+        )
+
+        
+        open_results = self.open_acq_all_clients(
+            client_ids=client_ids,
+            acq_type=acq_type,
+            metadata_by_client=metadata_by_client,
+            file_format=file_format,
+            suffix=suffix,
+            run_id=run_id,
+            run_folder=run_folder_clients,
+        )
+
+        opened_clients: list[bytes] = []
+
+        for client_id in client_ids:
+
+            open_result = open_results.get(
+                client_id
+            )
+
+            if open_result is None:
+
+                client_results[client_id].error = (
+                    "failed to open acquisition file"
+                )
+
+                self.logger.error(
+                    "Detailed acquisition OPEN failed: "
+                    f"client={client_id!r}"
+                )
+
+                continue
+
+            client_results[client_id].opened = True
+            opened_clients.append(client_id)
+
+        
+        if not opened_clients:
+
+            self.poutput(
+                "No clients ready for acquisition "
+                "(all OPEN failed)."
+            )
+
+            self.logger.error(
+                "Detailed acquisition aborted: "
+                "all clients failed during OPEN"
+            )
+
+            return AcquisitionSessionResult(
+                clients=client_results
+            )
+
+        
+        if duration is not None and duration > 0:
+
+            stopped_early = self._stop_requested.wait(
+                timeout=duration
+            )
+
+            if stopped_early:
+
+                self.logger.info(
+                    "Detailed acquisition stopped early "
+                    "by request"
+                )
+
+            else:
+
+                self.logger.info(
+                    f"Detailed acquisition duration "
+                    f"({duration}s) elapsed naturally"
+                )
+
+        else:
+
+            self._stop_requested.wait()
+
+            self.logger.info(
+                "Detailed acquisition stopped by request"
+            )
+
+        
+        finalize_results = (
+            self.run_hardware_stop_and_flush_detailed(
+                client_ids=opened_clients,
+                reason=reason,
+                reset_trigger_config=(
+                    reset_trigger_config
+                ),
+            )
+        )
+
+        
+        for client_id in opened_clients:
+
+            finalized = bool(
+                finalize_results.get(
+                    client_id,
+                    False,
+                )
+            )
+
+            client_results[
+                client_id
+            ].finalized = finalized
+
+            client_results[
+                client_id
+            ].success = finalized
+
+            if not finalized:
+
+                client_results[
+                    client_id
+                ].error = (
+                    "acquisition finalization failed"
+                )
+
+                self.logger.error(
+                    "Detailed acquisition finalization "
+                    f"failed: client={client_id!r}"
+                )
+
+        result = AcquisitionSessionResult(
+            clients=client_results
+        )
+
+        self.logger.info(
+            "Detailed acquisition completed: "
+            f"requested={len(client_ids)}, "
+            f"opened={len(opened_clients)}, "
+            f"successful={len(result.successful_clients)}, "
+            f"failed={len(result.failed_clients)}"
+        )
+
+        return result
+
+
+
     def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str, reset_trigger_config: bool = True) -> bool:
         self.poutput(f"Finalizing: {reason}")
         self.logger.info(f"Finalizing: {reason}")
@@ -1096,6 +1318,138 @@ class AcquisitionService:
 
         return overall_success
 
+    def run_hardware_stop_and_flush_detailed(
+        self,
+        client_ids: List[bytes],
+        reason: str,
+        reset_trigger_config: bool = True,
+    ) -> dict[bytes, bool]:
+
+        self.poutput(f"Finalizing: {reason}")
+        self.logger.info(f"Finalizing: {reason}")
+
+        if not client_ids:
+            self.poutput("No active clients. Nothing to close.")
+            return {}
+
+        client_results: dict[bytes, bool] = {
+            client_id: True
+            for client_id in client_ids
+        }
+
+        
+        for client_id in client_ids:
+
+            client_name = client_id.decode(errors="ignore")
+
+            ok = self.command_service.write_rc_register(
+                client_id=client_id,
+                address=19,
+                value=0,
+                plane=CommandPlane.ACQUISITION,
+            )
+
+            if not ok:
+                client_results[client_id] = False
+
+                self.logger.warning(
+                    f"Failed to disable RC acquisition channels "
+                    f"for client {client_name}"
+                )
+
+                self.poutput(
+                    f"Client {client_name}: failed to disable "
+                    "RC acquisition channels."
+                )
+
+        
+        self.poutput("Pushing FIFO flush via register 15...")
+        time.sleep(10.0)
+
+        
+        for client_id in client_ids:
+
+            if not self.flush_client(
+                client_id=client_id
+            ):
+                client_results[client_id] = False
+
+        
+        if reset_trigger_config:
+
+            for client_id in client_ids:
+
+                if not self.configure_acquisition_end_client(
+                    client_id=client_id
+                ):
+                    client_results[client_id] = False
+
+        else:
+
+            self.poutput(
+                "Trigger configuration preserved "
+                "(multi-step acquisition, not the final point)."
+            )
+
+        
+        for client_id in client_ids:
+
+            client_name = client_id.decode(
+                errors="ignore"
+            )
+
+            if not self.close_file_for_client(
+                client_id=client_id
+            ):
+                client_results[client_id] = False
+
+                self.logger.warning(
+                    f"Failed to close file for client "
+                    f"{client_name}"
+                )
+
+        
+        successful_clients = [
+            client_id
+            for client_id, success in client_results.items()
+            if success
+        ]
+
+        failed_clients = [
+            client_id
+            for client_id, success in client_results.items()
+            if not success
+        ]
+
+        if failed_clients:
+
+            self.poutput(
+                "Finalization completed with errors "
+                f"for {len(failed_clients)} client(s)."
+            )
+
+            self.logger.error(
+                "Detailed acquisition finalization completed "
+                f"with errors: failed_clients={failed_clients!r}"
+            )
+
+        else:
+
+            self.poutput(
+                "Finalization completed successfully."
+            )
+
+            self.logger.info(
+                "Detailed acquisition finalization completed "
+                f"successfully for {len(successful_clients)} client(s)"
+            )
+
+        return client_results
+
+
+
+
+
     def check_acquisition_busy(self) -> bool:
         state = self.server_state.get_server_state()
         return state in (ServerFSM.ACQUIRING, ServerFSM.FINALIZING)
@@ -1128,6 +1482,7 @@ class AcquisitionService:
         acq_mode: str,
         acq_type: str,
         acq_type_param=None,
+        extra_metadata_by_client: dict[bytes, dict] | None = None,
     ) -> dict[bytes, dict]:
 
         start_timestamp = int(time.time())
@@ -1155,7 +1510,7 @@ class AcquisitionService:
             )
 
             metadata = {
-                "version": 1,
+                "version": 2,
                 "timestamp_raw": start_timestamp,
                 "timestamp_utc": start_timestamp_utc,
                 "acquisition_mode": acq_mode,
@@ -1180,6 +1535,32 @@ class AcquisitionService:
                     serial_map_client.get(ch, "")
                 )
 
+            hv_parameters = self.server_state.get_client_hv_parameters(client_id)
+
+            for ch in range(7):
+                hv = hv_parameters.get(ch, {})
+                metadata[f"voltage_ch{ch}"] = (
+                    hv.get("voltage", -1)
+                )
+
+                metadata[f"threshold_mv_ch{ch}"] = (
+                    hv.get("threshold", -1)
+                )
+
+                metadata[f"threshold_pe_ch{ch}"] = (
+                    hv.get("threshold_pe", -1)
+                )
+
+                metadata[f"hv_channel_state_ch{ch}"] = (
+                    hv.get("channel_state", "unknown")
+                )
+
+                metadata[f"hv_power_state_ch{ch}"] = (
+                    hv.get("power_state", "unknown")
+                )
+
+            client_extra = extra_metadata_by_client.get(client_id, {}) if extra_metadata_by_client else {}
+            metadata.update(client_extra)
             metadata_by_client[client_id] = metadata
 
         return metadata_by_client

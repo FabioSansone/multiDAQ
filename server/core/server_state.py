@@ -16,6 +16,8 @@ class ServerFSM(str, Enum):
     CONNECTED = "connected"
     CONFIGURING = "configuring"
     READY = "ready"
+    CALIBRATING = "calibrating"
+    CALIBRATION_FINALIZING = "calibration_finalizing"
     ACQUIRING = "acquiring"
     FINALIZING = "finalizing"
     ERROR = "error"
@@ -29,6 +31,14 @@ class ServerFSMEvent(str, Enum):
     CONTROL_CONNECTION_SUCCEEDED = "control_connection_succeeded"
     CONTROL_CONNECTION_FAILED = "control_connection_failed"
     CONTROL_CONNECTION_LOST = "control_connection_lost"
+
+    CALIBRATION_STARTED = "calibration_started"
+    CALIBRATION_COMPLETED = "calibration_completed"
+    CALIBRATION_FAILED = "calibration_failed"
+    CALIBRATION_STOP_REQUESTED = "calibration_stop_requested"
+
+    CALIBRATION_FINALIZATION_SUCCEEDED = "calibration_finalization_succeeded"
+    CALIBRATION_FINALIZATION_FAILED = "calibration_finalization_failed"
 
     ACQUISITION_CONNECTION_SUCCEEDED = "acquisition_connection_succeeded"
     ACQUISITION_CONNECTION_FAILED = "acquisition_connection_failed"
@@ -121,6 +131,7 @@ TRANSITION_TABLE: dict[tuple[ServerFSM, ServerFSMEvent], ServerFSM] = {
     (ServerFSM.READY, ServerFSMEvent.ACQUISITION_CONNECTION_LOST): ServerFSM.CONTROL_CONNECTED,
     (ServerFSM.READY, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.DISCONNECTED,
     (ServerFSM.READY, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
+    (ServerFSM.READY, ServerFSMEvent.CALIBRATION_STARTED): ServerFSM.CALIBRATING,
 
     # Data taking is active.
     (ServerFSM.ACQUIRING, ServerFSMEvent.STOP_REQUESTED): ServerFSM.FINALIZING,
@@ -140,6 +151,20 @@ TRANSITION_TABLE: dict[tuple[ServerFSM, ServerFSMEvent], ServerFSM] = {
     (ServerFSM.ERROR, ServerFSMEvent.RECOVERY_STARTED): ServerFSM.CONFIGURING,
     (ServerFSM.ERROR, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.DISCONNECTED,
     (ServerFSM.ERROR, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
+
+    #Calibration is active
+    (ServerFSM.CALIBRATING, ServerFSMEvent.CALIBRATION_COMPLETED): ServerFSM.CALIBRATION_FINALIZING,
+    (ServerFSM.CALIBRATING, ServerFSMEvent.CALIBRATION_FAILED): ServerFSM.CALIBRATION_FINALIZING,
+    (ServerFSM.CALIBRATING, ServerFSMEvent.CALIBRATION_STOP_REQUESTED): ServerFSM.CALIBRATION_FINALIZING,
+    (ServerFSM.CALIBRATING, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.CALIBRATION_FINALIZING,
+    (ServerFSM.CALIBRATING, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
+
+    #Calibration Finalization
+    (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.CALIBRATION_FINALIZATION_SUCCEEDED): ServerFSM.READY,
+    (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.CALIBRATION_FINALIZATION_FAILED): ServerFSM.READY,
+    (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.CALIBRATION_FINALIZING,
+    (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
+
 }
 
 
@@ -178,7 +203,9 @@ CONTROL_PLANE_AVAILABLE_STATES = {
     ServerFSM.CONFIGURING,
     ServerFSM.READY,
     ServerFSM.ACQUIRING,
+    ServerFSM.CALIBRATING,
     ServerFSM.FINALIZING,
+    ServerFSM.CALIBRATION_FINALIZING,
     ServerFSM.ERROR,
 }
 ACQUISITION_PLANE_AVAILABLE_STATES = {
@@ -186,7 +213,9 @@ ACQUISITION_PLANE_AVAILABLE_STATES = {
     ServerFSM.CONFIGURING,
     ServerFSM.READY,
     ServerFSM.ACQUIRING,
+    ServerFSM.CALIBRATING,
     ServerFSM.FINALIZING,
+    ServerFSM.CALIBRATION_FINALIZING,
     ServerFSM.ERROR,
 }
 
@@ -533,15 +562,16 @@ class ServerState:
                 )
                 return False
 
-            if next_state == ServerFSM.FINALIZING:
+            entering_finalization = next_state in {ServerFSM.FINALIZING, ServerFSM.CALIBRATION_FINALIZING}
+            if entering_finalization:
                 if event == ServerFSMEvent.DISCONNECT_REQUESTED:
                     terminal_state = ServerFSM.DISCONNECTED
-                elif event == ServerFSMEvent.CONTROL_CONNECTION_LOST:
+                elif next_state == ServerFSM.FINALIZING and event == ServerFSMEvent.CONTROL_CONNECTION_LOST:
                     terminal_state = ServerFSM.DISCONNECTED
-                elif event == ServerFSMEvent.ACQUISITION_CONNECTION_LOST:
+                elif next_state == ServerFSM.FINALIZING and event == ServerFSMEvent.ACQUISITION_CONNECTION_LOST:
                     terminal_state = ServerFSM.CONTROL_CONNECTED
                 else:
-                    terminal_state = requested_terminal_state or ServerFSM.READY
+                    terminal_state = requested_terminal_state or ServerFSM.READY or self.pending_terminal_state
 
                 self.pending_event = event
                 self.pending_terminal_state = terminal_state
@@ -870,6 +900,86 @@ class ServerState:
 
                 self._clear_operational_locked()
 
+            elif event == ServerFSMEvent.CALIBRATION_STARTED:
+                try:
+                    target_clients = self._normalize_client_ids(metadata_payload.get("target_clients", self._operational_client_ids_locked()))
+                except ValueError as e:
+                    self.logger.error(str(e))
+                    return False
+
+                if not target_clients:
+                    self.logger.error(
+                        "CALIBRATION_STARTED requires at least one target client"
+                    )
+                    return False
+
+                operational = set(self._operational_client_ids_locked())
+
+                invalid_clients = [client_id for client_id in target_clients if client_id not in operational]
+
+                if invalid_clients:
+                    self.logger.error(
+                        "Calibration targets are not operational: "
+                        f"{invalid_clients!r}"
+                    )
+                    return False
+
+
+            elif (present_state == ServerFSM.CALIBRATION_FINALIZING and event in {ServerFSMEvent.CALIBRATION_FINALIZATION_SUCCEEDED, ServerFSMEvent.CALIBRATION_FINALIZATION_FAILED}):
+                try:
+                    restored_clients = self._normalize_client_ids(metadata_payload.get("restored_clients", []))
+                    failed_restore_clients = self._normalize_client_ids(metadata_payload.get("failed_restore_clients", []))
+                except ValueError as exc:
+                    self.logger.error(str(exc))
+                    return False
+
+                if set(restored_clients) & set(failed_restore_clients):
+                    self.logger.error(
+                        "A client cannot be both restored and failed during "
+                        "calibration finalization"
+                    )
+                    return False
+
+                known_operational = set(self._operational_client_ids_locked())
+                provided_clients = set(restored_clients) | set(failed_restore_clients)
+
+                invalid_clients = provided_clients - known_operational
+                if invalid_clients:
+                    self.logger.error(
+                        "Calibration finalization references clients that were not "
+                        f"operational: {invalid_clients!r}"
+                    )
+                    return False
+
+                for client_id in restored_clients:
+                    record = self.clients.get(client_id)
+                    if record is None:
+                        continue
+
+                    if record.operational:
+                        self._set_client_state_locked(client_id, ClientFSM.READY, event_context)
+
+                for client_id in failed_restore_clients:
+                    record = self.clients.get(client_id)
+
+                    if record is None:
+                        continue
+
+                    record.operational = False
+
+                    self._set_client_state_locked(client_id, ClientFSM.ERROR, event_context)
+
+                terminal_state = self.pending_terminal_state if self.pending_terminal_state is not None else ServerFSM.READY
+
+                if terminal_state == ServerFSM.DISCONNECTED:
+                    next_state = ServerFSM.DISCONNECTED
+                elif terminal_state == ServerFSM.ERROR:
+                    next_state = ServerFSM.ERROR
+                elif self._operational_client_ids_locked():
+                    next_state = ServerFSM.READY
+                else:
+                    next_state = ServerFSM.ERROR
+
             self.previous_state = present_state
             self.run_state = next_state
             self.last_event_context = event_context
@@ -884,6 +994,15 @@ class ServerState:
                 ServerFSMEvent.FINALIZATION_SUCCEEDED,
                 ServerFSMEvent.FINALIZATION_FAILED,
                 ServerFSMEvent.FATAL_ERROR,
+            }:
+                self.pending_event = None
+                self.pending_terminal_state = None
+                self.pending_context = None
+
+            if present_state == ServerFSM.CALIBRATION_FINALIZING and event in {
+                    ServerFSMEvent.CALIBRATION_FINALIZATION_SUCCEEDED,
+                    ServerFSMEvent.CALIBRATION_FINALIZATION_FAILED,
+                    ServerFSMEvent.FATAL_ERROR,
             }:
                 self.pending_event = None
                 self.pending_terminal_state = None
@@ -1222,6 +1341,12 @@ class ServerState:
                     entry["voltage"] = params["voltage"]
                 if "threshold" in params:
                     entry["threshold"] = params["threshold"]
+                if "threshold_pe" in params:
+                    entry["threshold_pe"] = params["threshold_pe"]
+                if "power_state" in params:
+                    entry["power_state"] = params["power_state"]
+                if "channel_state" in params:
+                    entry["channel_state"] = params["channel_state"]
 
     def get_client_hv_parameters(self, client_id: bytes) -> dict[int, dict]:
         with self._lock:
@@ -1322,7 +1447,55 @@ class ServerState:
                 f"{plane!r}"
             )
             return False
-    
+
+    def resolve_client_ids(
+        self,
+        *,
+        client_id: bytes | None = None,
+        multipmt_id: str | None = None,
+        batch_id: str | None = None,
+        all_clients: bool = False,
+    ) -> list[bytes]:
+
+        selectors_provided = sum(
+            (
+                client_id is not None,
+                multipmt_id is not None,
+                batch_id is not None,
+                bool(all_clients),
+            )
+        )
+
+        if selectors_provided != 1:
+            self.logger.error(
+                "Client target resolution requires exactly one selector among "
+                "client_id, multipmt_id, batch_id or all_clients"
+            )
+            return []
+
+        if all_clients:
+            return self.list_connected_clients()
+
+        if client_id is not None:
+            with self._lock:
+                return (
+                    [client_id]
+                    if client_id in self.clients
+                    else []
+                )
+
+        if multipmt_id is not None:
+            resolved = self.get_client_id_by_multipmt_id(
+                multipmt_id
+            )
+
+            return [resolved] if resolved is not None else []
+
+        resolved = self.get_client_id_by_batch_id(
+            batch_id
+        )
+
+        return [resolved] if resolved is not None else []
     
     def resolve_client_id(
         self,
@@ -1332,26 +1505,16 @@ class ServerState:
         batch_id: str | None = None,
     ) -> bytes | None:
 
-        provided = [
-            value is not None
-            for value in (
-                client_id,
-                multipmt_id,
-                batch_id,
-            )
-        ]
+        resolved = self.resolve_client_ids(
+            client_id=client_id,
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+        )
 
-        if sum(provided) != 1:
+        if len(resolved) != 1:
             return None
 
-        if client_id is not None:
-            with self._lock:
-                return client_id if client_id in self.clients else None
-
-        if multipmt_id is not None:
-            return self.get_client_id_by_multipmt_id(multipmt_id)
-
-        return self.get_client_id_by_batch_id(batch_id)
+        return resolved[0]
     
     def is_client_operational(
         self,
@@ -1379,3 +1542,65 @@ class ServerState:
             return self.client_id_by_mac.get(
                 mac
             )
+
+    def update_client_hv_state_from_sync(self, client_id: bytes, result: dict) -> None:
+
+        ok_channels = set(
+            result.get("ok_channels", [])
+        )
+
+        bad_channels = set(
+            result.get("bad_channels", [])
+        )
+
+        fixed_bad_channels = set(
+            result.get("fixed_bad_channels", [])
+        )
+
+        missing_serial_channels = set(
+            result.get("missing_serial_channels", [])
+        )
+
+        on_channels = set(
+            result.get("on_channels", [])
+        )
+
+        off_channels = set(
+            result.get("off_channels", [])
+        )
+
+        update = {}
+
+        for hv_channel in range(1, 8):
+            channel = hv_channel - 1
+
+            if hv_channel in fixed_bad_channels:
+                channel_state = "fixed_bad"
+
+            elif hv_channel in missing_serial_channels:
+                channel_state = "missing_serial"
+
+            elif hv_channel in bad_channels:
+                channel_state = "bad"
+
+            elif hv_channel in ok_channels:
+                channel_state = "ok"
+
+            else:
+                channel_state = "unknown"
+
+            if hv_channel in on_channels:
+                power_state = "on"
+
+            elif hv_channel in off_channels:
+                power_state = "off"
+
+            else:
+                power_state = "unknown"
+
+            update[channel] = {
+                "channel_state": channel_state,
+                "power_state": power_state,
+            }
+
+        self.set_client_hv_parameters(client_id=client_id, acq_info=update)

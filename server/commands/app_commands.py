@@ -355,6 +355,8 @@ def do_force(self, args: argparse.Namespace) -> bool:
             result = payload.get("result", {})
             error = payload.get("error")
 
+            self.server_state.update_client_hv_state_from_sync(client_id, result)
+
             if error:
                 failed_client_ids.append(client_id)
                 logger.error(f"HV sync error from client {client_name}: {error}")

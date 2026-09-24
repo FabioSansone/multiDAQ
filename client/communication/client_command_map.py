@@ -28,10 +28,18 @@ COMMAND_MAP = {
     "unmark_bad": handle_hv_unset_user_bad,
     
     "set_pmt_serials": handle_hv_set_pmt_serials,
-    
+
+    "get_voltage_channels": handle_hv_get_voltage_channels,
+    "get_threshold_channels": handle_hv_get_threshold_channels,
+    "get_volt_thr_channels": handle_hv_get_volt_thr_channels,
+
+    "get_power_state_channels": handle_hv_get_power_state_channels,
+
     "get_serial_map": handle_get_serial_map,
     
     "hv_monitor_snapshot": handle_hv_monitor_snapshot,
+
+    "restore_hv_configuration": handle_hv_restore_configuration,
     
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,

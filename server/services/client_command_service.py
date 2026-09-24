@@ -387,3 +387,249 @@ class ClientCommandService:
             plane=plane,
             timeout_s=timeout_s,
         )
+
+
+    def get_hv_voltage_configuration(
+        self,
+        client_id: bytes,
+        requested_channels: str | int | list[int] = "all",
+        plane: CommandPlane | str = CommandPlane.CONTROL,
+        timeout_s: float = 35.0,
+    ) -> dict[int, int] | None:
+
+        client_name = client_id.decode(errors="ignore")
+
+        reply, reason = self.send_hv_command(
+            client_id=client_id,
+            command="get_voltage_channels",
+            payload={
+                "channels": requested_channels,
+            },
+            plane=plane,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"HV voltage configuration read failed for "
+                f"client {client_name}: {reason}"
+            )
+            return None
+
+        payload = reply.payload or {}
+        status = payload.get("status")
+        result = payload.get("result", {})
+        error = payload.get("error")
+
+        if status != "ok":
+            self.logger.error(
+                f"HV voltage configuration read failed for "
+                f"client {client_name}: {error}"
+            )
+            return None
+
+        configuration = result.get(
+            "voltage_configuration",
+            {},
+        )
+
+        return {
+            int(channel): value
+            for channel, value in configuration.items()
+        }
+
+
+    def get_hv_threshold_configuration(
+        self,
+        client_id: bytes,
+        requested_channels: str | int | list[int] = "all",
+        plane: CommandPlane | str = CommandPlane.CONTROL,
+        timeout_s: float = 35.0,
+    ) -> dict[int, int] | None:
+
+        client_name = client_id.decode(errors="ignore")
+
+        reply, reason = self.send_hv_command(
+            client_id=client_id,
+            command="get_threshold_channels",
+            payload={
+                "channels": requested_channels,
+            },
+            plane=plane,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"HV threshold configuration read failed for "
+                f"client {client_name}: {reason}"
+            )
+            return None
+
+        payload = reply.payload or {}
+        status = payload.get("status")
+        result = payload.get("result", {})
+        error = payload.get("error")
+
+        if status != "ok":
+            self.logger.error(
+                f"HV threshold configuration read failed for "
+                f"client {client_name}: {error}"
+            )
+            return None
+
+        configuration = result.get(
+            "threshold_configuration",
+            {},
+        )
+
+        return {
+            int(channel): value
+            for channel, value in configuration.items()
+        }
+
+
+    def get_hv_volt_thr_configuration(
+        self,
+        client_id: bytes,
+        requested_channels: str | int | list[int] = "all",
+        plane: CommandPlane | str = CommandPlane.CONTROL,
+        timeout_s: float = 40.0,
+    ) -> dict[int, dict[str, int]] | None:
+
+        client_name = client_id.decode(errors="ignore")
+
+        reply, reason = self.send_hv_command(
+            client_id=client_id,
+            command="get_volt_thr_channels",
+            payload={
+                "channels": requested_channels,
+            },
+            plane=plane,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"HV voltage/threshold configuration read failed for "
+                f"client {client_name}: {reason}"
+            )
+            return None
+
+        payload = reply.payload or {}
+        status = payload.get("status")
+        result = payload.get("result", {})
+        error = payload.get("error")
+
+        if status != "ok":
+            self.logger.error(
+                f"HV voltage/threshold configuration read failed for "
+                f"client {client_name}: {error}"
+            )
+            return None
+
+        configuration = result.get(
+            "volt_thr_configuration",
+            {},
+        )
+
+        return {
+            int(channel): {
+                "voltage": values.get("voltage"),
+                "threshold": values.get("threshold"),
+            }
+            for channel, values in configuration.items()
+        }
+
+
+    def get_hv_power_state(
+        self,
+        client_id: bytes,
+        requested_channels: str | int | list[int] = "all",
+        plane: CommandPlane | str = CommandPlane.CONTROL,
+        timeout_s: float = 35.0,
+    ) -> dict[int, str] | None:
+
+        client_name = client_id.decode(errors="ignore")
+
+        reply, reason = self.send_hv_command(
+            client_id=client_id,
+            command="get_power_state_channels",
+            payload={
+                "channels": requested_channels,
+            },
+            plane=plane,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"HV power-state read failed for "
+                f"client {client_name}: {reason}"
+            )
+            return None
+
+        payload = reply.payload or {}
+        status = payload.get("status")
+        result = payload.get("result", {})
+        error = payload.get("error")
+
+        if status != "ok":
+            self.logger.error(
+                f"HV power-state read failed for "
+                f"client {client_name}: {error}"
+            )
+            return None
+
+        raw_power_state = result.get(
+            "power_state",
+            {},
+        )
+
+        return {
+            int(hv_channel) - 1: state
+            for hv_channel, state in raw_power_state.items()
+        }
+
+
+    def restore_hv_configuration(
+        self,
+        client_id: bytes,
+        configuration: dict[int, dict],
+        plane: CommandPlane | str = CommandPlane.CONTROL,
+        timeout_s: float = 300.0,
+    ) -> bool:
+
+        client_name = client_id.decode(errors="ignore")
+
+        reply, reason = self.send_hv_command(
+            client_id=client_id,
+            command="restore_hv_configuration",
+            payload={
+                "configuration": configuration,
+            },
+            plane=plane,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"HV configuration restore failed for "
+                f"client {client_name}: {reason}"
+            )
+            return False
+
+        payload = reply.payload or {}
+        status = payload.get("status")
+        result = payload.get("result", {})
+        error = payload.get("error")
+
+        if status != "ok":
+            self.logger.error(
+                f"HV configuration restore failed for "
+                f"client {client_name}: {error}; "
+                f"failed_channels={result.get('failed_channels', [])}"
+            )
+            return False
+
+        return True

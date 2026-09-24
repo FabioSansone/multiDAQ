@@ -673,10 +673,89 @@ def command_hv_monitor_snapshot(
     )
 
 
+def command_get_voltage(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.get_voltage(
+        channels=hv_request.payload["channels"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
+def command_get_threshold(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.get_threshold(
+        channels=hv_request.payload["channels"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
+def command_get_volt_thr_configuration(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.get_volt_thr_configuration(
+        channels=hv_request.payload["channels"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
+def command_get_power_state(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.get_power_state(
+        channels=hv_request.payload["channels"],
+    )
+
+    return _wrap_hv_action(
+        protocol_version,
+        hv_request,
+        result,
+    )
+
+
+def command_restore_hv_configuration(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.restore_configuration(
+        configuration=hv_request.payload["configuration"],
+    )
+
+    return _wrap_hv_action(
+        protocol_version,
+        hv_request,
+        result,
+    )
+
+
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
     "set_common_threshold": command_common_threshold,
     "set_acquisition_configuration": command_acquisition_configuration,
+
+    "get_voltage_channels": command_get_voltage,
+    "get_threshold_channels": command_get_threshold,
+    "get_volt_thr_channels": command_get_volt_thr_configuration,
+
+    "get_power_state_channels": command_get_power_state,
 
     "hv_set_user_bad": command_hv_set_user_bad,
     "hv_unset_user_bad": command_hv_unset_user_bad,
@@ -704,4 +783,6 @@ COMMAND_HANDLERS = {
     "hv_status_alarm_monitoring": command_hv_status_alarm_monitoring,
     "hv_channel_lists": command_hv_channel_lists,
     "hv_monitor_snapshot": command_hv_monitor_snapshot,
+
+    "restore_hv_configuration": command_restore_hv_configuration,
 }

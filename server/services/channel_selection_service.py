@@ -1,8 +1,24 @@
 from typing import List
+from dataclasses import dataclass, field
 
 from server.utils.logger import get_logger
 from server.utils.channels import *
 from server.services.client_command_service import CommandPlane
+
+
+
+
+@dataclass
+class CalibrationTargetResolution:
+    targets: dict[bytes, list[int]] = field(
+        default_factory=dict
+    )
+
+    rejected_clients: dict[bytes, str] = field(
+        default_factory=dict
+    )
+
+    unresolved_target: str | None = None
 
 
 
@@ -139,6 +155,8 @@ class ChannelSelectionService:
         sync_result = sync_payload.get("result", {})
         sync_error = sync_payload.get("error")
 
+        self.server_state.update_client_hv_state_from_sync(client_id, sync_result)
+
         if sync_error:
             if plane==CommandPlane.CONTROL:
                 self.logger.warning(
@@ -169,13 +187,26 @@ class ChannelSelectionService:
             set(sync_result.get("bad_channels", []))
         )
 
+        fixed_bad_hv_channels = sorted(
+            set(sync_result.get("fixed_bad_channels", []))
+        )
+
         available_rc_channels = hv_to_user_channels(ok_hv_channels)
         bad_rc_channels = hv_to_user_channels(bad_hv_channels)
+        fixed_bad_rc_channels = hv_to_user_channels(fixed_bad_hv_channels)
+
+        available_rc_channels = sorted(set(available_rc_channels) - set(fixed_bad_rc_channels))
 
         if bad_rc_channels:
             self.poutput(
                 f"Client {client_name}: BAD HV/FEB channels excluded: "
                 f"{bad_rc_channels}"
+            )
+
+        if fixed_bad_rc_channels:
+            self.poutput(
+                f"Client {client_name}: FIXED BAD HV/FEB channels excluded: "
+                f"{fixed_bad_rc_channels}"
             )
 
         final_rc_channels = sorted(
@@ -267,6 +298,8 @@ class ChannelSelectionService:
             sync_payload = sync_reply.payload or {}
             sync_result = sync_payload.get("result", {})
             sync_error = sync_payload.get("error")
+
+            self.server_state.update_client_hv_state_from_sync(client_id, sync_result)
 
             if sync_error:
                 self.logger.error(f"HV sync error from client {client_name}: {sync_error}")
@@ -379,3 +412,153 @@ class ChannelSelectionService:
             )
 
         return enabled_channels_by_client
+
+
+    def resolve_calibration_clients(
+        self,
+        *,
+        client_id: bytes | None = None,
+        multipmt_id: str | None = None,
+        batch_id: str | None = None,
+        all_clients: bool = False,
+        require_acquisition_plane: bool = True,
+    ) -> tuple[list[bytes], dict[bytes, str]]:
+
+        resolved_clients = (
+            self.server_state.resolve_client_ids(
+                client_id=client_id,
+                multipmt_id=multipmt_id,
+                batch_id=batch_id,
+                all_clients=all_clients,
+            )
+        )
+
+        if not resolved_clients:
+            return [], {}
+
+        accepted: list[bytes] = []
+        rejected: dict[bytes, str] = {}
+
+        for resolved_client in resolved_clients:
+
+            if not self.server_state.is_client_operational(
+                resolved_client
+            ):
+                rejected[resolved_client] = (
+                    "client is not operational"
+                )
+                continue
+
+            if not self.server_state.is_client_on_plane(
+                resolved_client,
+                "control",
+            ):
+                rejected[resolved_client] = (
+                    "client is unavailable on Control Plane"
+                )
+                continue
+
+            if (
+                require_acquisition_plane
+                and not self.server_state.is_client_on_plane(
+                    resolved_client,
+                    "acquisition",
+                )
+            ):
+                rejected[resolved_client] = (
+                    "client is unavailable on Acquisition Plane"
+                )
+                continue
+
+            accepted.append(
+                resolved_client
+            )
+
+        return accepted, rejected
+
+
+    def resolve_calibration_channels(
+        self,
+        channels: str | int | list[int],
+    ) -> list[int]:
+
+        return self.parse_user_channels(
+            channels=channels,
+            n_channels=7,
+    )
+
+
+    def resolve_calibration_targets(
+        self,
+        *,
+        channels: str | int | list[int] = "all",
+        client_id: bytes | None = None,
+        multipmt_id: str | None = None,
+        batch_id: str | None = None,
+        all_clients: bool = False,
+        require_acquisition_plane: bool = True,
+    ) -> CalibrationTargetResolution:
+
+        result = CalibrationTargetResolution()
+
+        
+        try:
+            requested_channels = (
+                self.resolve_calibration_channels(
+                    channels
+                )
+            )
+
+        except (TypeError, ValueError) as exc:
+
+            self.logger.error(
+                f"Invalid calibration channel selection: {exc}"
+            )
+
+            result.unresolved_target = (
+                f"invalid channel selection: {exc}"
+            )
+
+            return result
+
+        if not requested_channels:
+
+            result.unresolved_target = (
+                "no calibration channels requested"
+            )
+
+            return result
+
+        
+        accepted_clients, rejected_clients = (
+            self.resolve_calibration_clients(
+                client_id=client_id,
+                multipmt_id=multipmt_id,
+                batch_id=batch_id,
+                all_clients=all_clients,
+                require_acquisition_plane=(
+                    require_acquisition_plane
+                ),
+            )
+        )
+
+        result.rejected_clients.update(
+            rejected_clients
+        )
+
+        if not accepted_clients:
+
+            if not rejected_clients:
+                result.unresolved_target = (
+                    "no client matches the requested target"
+                )
+
+            return result
+
+        
+        for resolved_client in accepted_clients:
+            result.targets[resolved_client] = list(
+                requested_channels
+            )
+
+        return result
