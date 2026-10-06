@@ -229,15 +229,25 @@ class CalibrationOrchestrator:
     # HV CALIBRATION PROCEDURE   #
     ##############################
 
-    def _run_hv_calibration(self, targets: dict[bytes, list[int]]) -> None:
+    def _run_hv_calibration(
+        self,
+        targets: dict[bytes, list[int]],
+    ) -> None:
 
         run_clients = list(targets.keys())
 
         started_clients = []
         results = {}
+        not_started_clients = set()
 
         try:
             for client_id in run_clients:
+                if self._calibration_stop_requested.is_set():
+                    self.calibration_service.mark_client_aborted(client_id=client_id)
+                    not_started_clients.add(client_id)
+                    continue
+
+
                 reply, reason = (
                     self.command_service.send_hv_command(
                         client_id=client_id,
@@ -249,6 +259,7 @@ class CalibrationOrchestrator:
                         timeout_s=35.0,
                     )
                 )
+
 
                 if reply is None:
 
@@ -262,7 +273,9 @@ class CalibrationOrchestrator:
 
                     continue
 
+
                 payload = reply.payload or {}
+
 
                 if payload.get("status") != "ok":
 
@@ -274,28 +287,35 @@ class CalibrationOrchestrator:
                         ),
                     )
 
+                    not_started_clients.add(client_id)
+
                     continue
 
+
                 started_clients.append(client_id)
+
 
 
             running_clients = set(started_clients)
             stop_sent = False
 
             while running_clients:
-                if self._calibration_stop_requested.is_set() and not stop_sent:
-                    for client_id in running_clients:  
+                if (self._calibration_stop_requested.is_set() and not stop_sent):
+
+                    for client_id in running_clients:
                         self.command_service.send_hv_command(
                             client_id=client_id,
                             command="hv_calibration_stop",
                             payload={},
                             plane=CommandPlane.CONTROL,
                             timeout_s=10.0,
-                        )  
+                        )
 
                     stop_sent = True
 
+
                 for client_id in list(running_clients):
+
                     reply, reason = (
                         self.command_service.send_hv_command(
                             client_id=client_id,
@@ -306,52 +326,131 @@ class CalibrationOrchestrator:
                         )
                     )
 
+
                     if reply is None:
                         continue
 
-                    result = reply.payload.get("result", {})
 
-                    if result.get("running", False):
+                    payload = reply.payload or {}
+                    if payload.get("status") != "ok":
                         continue
 
-                    if not result.get("finished", False):
+                    result = payload.get("result",{},)
+                    if result.get("running",False,):
                         continue
 
-                    results[client_id] = result.get("calibration_result",{})
+
+                    if not result.get("finished",False,):
+                        continue
+
+
+                    results[client_id] = (
+                        result.get(
+                            "calibration_result",
+                            {},
+                        )
+                        or {}
+                    )
+
 
                     running_clients.remove(
                         client_id
                     )
+
 
                 if running_clients:
                     time.sleep(1)
 
 
             for client_id in started_clients:
-                result = result.get(client_id, {})
+
+                result = results.get(
+                    client_id,
+                    {},
+                )
+
 
                 if self._calibration_stop_requested.is_set():
-                    self.calibration_service.mark_client_aborted(client_id=client_id)
 
-                elif result.get("success", False):
-                    self.calibration_service.mark_client_completed(client_id=client_id)
+                    self.calibration_service.mark_client_aborted(
+                        client_id=client_id
+                    )
+
+
+                elif result.get(
+                    "success",
+                    False,
+                ):
+
+                    self.calibration_service.mark_client_completed(
+                        client_id=client_id
+                    )
+
 
                 else:
-                    self.calibration_service.mark_client_failed(client_id=client_id, error="HV calibration failed")    
+
+                    self.calibration_service.mark_client_failed(
+                        client_id=client_id,
+                        error="HV calibration failed",
+                    )
+
+
+        except Exception as exc:
+            self.logger.exception(
+                "Unexpected error during HV calibration"
+            )
+
+            for client_id in (
+                self.calibration_service
+                .get_active_clients()
+            ):
+
+                self.calibration_service.mark_client_failed(
+                    client_id=client_id,
+                    error=(
+                        "Unexpected HV calibration error: "
+                        f"{exc}"
+                    ),
+                )
+
 
         finally:
+
             with self._calibration_lifecycle_lock:
-                state = self.server_state.get_server_state()
+
+                state = (
+                    self.server_state
+                    .get_server_state()
+                )
 
                 if state == ServerFSM.CALIBRATING:
-                    if self._calibration_stop_requested.is_set():
-                        event = ServerFSMEvent.CALIBRATION_STARTED
 
-                    elif self.calibration_service.get_completed_clients():
-                        event = ServerFSMEvent.CALIBRATION_COMPLETED
+                    if self._calibration_stop_requested.is_set():
+
+                        event = (
+                            ServerFSMEvent
+                            .CALIBRATION_STOP_REQUESTED
+                        )
+
+
+                    elif (
+                        self.calibration_service
+                        .get_completed_clients()
+                    ):
+
+                        event = (
+                            ServerFSMEvent
+                            .CALIBRATION_COMPLETED
+                        )
+
 
                     else:
-                        event = ServerFSMEvent.CALIBRATION_FAILED
+
+                        event = (
+                            ServerFSMEvent
+                            .CALIBRATION_FAILED
+                        )
+
 
                     self.server_state.process_event(
                         event=event,
@@ -359,23 +458,65 @@ class CalibrationOrchestrator:
                         source="calibration_orchestrator",
                     )
 
-                self.calibration_service.begin_finalization()
+            finalization_started = (
+                self.calibration_service
+                .begin_finalization()
+            )
+
+
+            if finalization_started:
 
                 for client_id in run_clients:
-                    result = results.get(client_id)
-                    if results is None:
+
+                    if client_id in not_started_clients:
+
+                        self.calibration_service.mark_restore_not_required(
+                            client_id=client_id
+                        )
+
+                        continue
+
+
+                    result = results.get(
+                        client_id
+                    )
+
+
+                    if result is None:
                         restore_ok = False
+
                     else:
-                        restore_ok = not bool(result.get("failed_restore_channels", []))
+
+                        restore_ok = not bool(
+                            result.get(
+                                "failed_restore_channels",
+                                [],
+                            )
+                        )
+
 
                     self.calibration_service.mark_restore_result(
                         client_id=client_id,
                         succeeded=restore_ok,
                     )
 
-                outcome = self.calibration_service.finish_run()
-                restored_clients = self.calibration_service.get_restored_clients()
-                failed_restore_clients = self.calibration_service.get_failed_restore_clients()
+
+                outcome = (
+                    self.calibration_service
+                    .finish_run()
+                )
+
+
+                restored_clients = (
+                    self.calibration_service
+                    .get_restored_clients()
+                )
+
+                failed_restore_clients = (
+                    self.calibration_service
+                    .get_failed_restore_clients()
+                )
+
 
                 restore_success = (
                     outcome is not None
@@ -386,26 +527,87 @@ class CalibrationOrchestrator:
                     ServerFSMEvent
                     .CALIBRATION_FINALIZATION_SUCCEEDED
                     if restore_success
-                    else
-                    ServerFSMEvent
+                    else ServerFSMEvent
                     .CALIBRATION_FINALIZATION_FAILED
                 )
 
-                self.server_state.process_event(
-                    event=final_event,
-                    reason="HV calibration finalization completed",
-                    source="calibration_orchestrator",
-                    metadata={
-                        "restored_clients": restored_clients,
-                        "failed_restore_clients": (
-                            failed_restore_clients
-                        ),
-                    },
+
+                accepted = False
+
+                with self._calibration_lifecycle_lock:
+
+                    if (
+                        self.server_state.get_server_state()
+                        == ServerFSM.CALIBRATION_FINALIZING
+                    ):
+
+                        accepted = (
+                            self.server_state.process_event(
+                                event=final_event,
+                                reason=(
+                                    "HV calibration finalization completed"
+                                    if restore_success
+                                    else
+                                    "HV calibration finalization failed"
+                                ),
+                                source="calibration_orchestrator",
+                                metadata={
+                                    "restored_clients": (
+                                        restored_clients
+                                    ),
+                                    "failed_restore_clients": (
+                                        failed_restore_clients
+                                    ),
+                                },
+                            )
+                        )
+
+                if outcome is not None and accepted:
+
+                    if not self.calibration_service.clear_run():
+
+                        self.logger.error(
+                            "Cannot clear completed "
+                            "HV calibration run"
+                        )
+
+
+            else:
+                self.logger.error(
+                    "CalibrationService failed to enter "
+                    "HV calibration finalization"
                 )
 
-                self.calibration_service.clear_run()
+                if (
+                    self.server_state.get_server_state()
+                    == ServerFSM.CALIBRATION_FINALIZING
+                ):
 
-                self._calibration_stop_requested.clear()
+                    restored_clients = []
+                    failed_restore_clients = list(
+                        run_clients
+                    )
+
+
+                    self.server_state.process_event(
+                        event=(
+                            ServerFSMEvent
+                            .CALIBRATION_FINALIZATION_FAILED
+                        ),
+                        reason=(
+                            "HV calibration finalization "
+                            "could not start"
+                        ),
+                        source="calibration_orchestrator",
+                        metadata={
+                            "restored_clients": restored_clients,
+                            "failed_restore_clients": (
+                                failed_restore_clients
+                            ),
+                        },
+                    )
+
+            self._calibration_stop_requested.clear()
 
 
     def calibrate_hv(self, args) -> bool:
@@ -480,7 +682,86 @@ class CalibrationOrchestrator:
             self.logger.exception(
                 "Failed to start HV calibration worker"
             )
+
+            for client_id in target_clients:
+                self.calibration_service.mark_client_failed(client_id=client_id, error="Failed to start HV calibration worker")
+
+            self.server_state.process_event(
+                event=ServerFSMEvent.CALIBRATION_FAILED,
+                reason=(
+                    "Failed to start "
+                    "HV calibration worker"
+                ),
+                source="calibration_orchestrator",
+            )
+
+            finalization_started = self.calibration_service.begin_finalization()
+            if finalization_started:
+                for client_id in target_clients:
+                    self.calibration_service.mark_restore_not_required(client_id=client_id)
+
+                outcome = self.calibration_service.finish_run()
+                restored_clients = self.calibration_service.get_restored_clients()
+
+                accepted = (
+                    self.server_state.process_event(
+                        event=(
+                            ServerFSMEvent
+                            .CALIBRATION_FINALIZATION_SUCCEEDED
+                        ),
+                        reason=(
+                            "HV calibration worker did not start; "
+                            "hardware was not modified"
+                        ),
+                        source="calibration_orchestrator",
+                        metadata={
+                            "restored_clients": (
+                                restored_clients
+                            ),
+                            "failed_restore_clients": [],
+                        },
+                    )
+                )
+
+                if outcome is not None and accepted:
+                    if not self.calibration_service.clear_run():
+                        self.logger.error(
+                            "Cannot clear failed "
+                            "HV calibration startup run"
+                        )
+
+            else:
+                self.logger.error(
+                    "Cannot finalize failed "
+                    "HV calibration startup"
+                )
+
+                if self.server_state.get_server_state() == ServerFSM.CALIBRATION_FINALIZING:
+                    self.server_state.process_event(
+                        event=(
+                            ServerFSMEvent
+                            .CALIBRATION_FINALIZATION_FAILED
+                        ),
+                        reason=(
+                            "HV calibration worker startup "
+                            "cleanup failed"
+                        ),
+                        source="calibration_orchestrator",
+                        metadata={
+                            "restored_clients": [],
+                            "failed_restore_clients": (
+                                target_clients
+                            ),
+                        },
+                    )
+
+
             return False
+
+        self.poutput(
+            f"HV calibration started on "
+            f"{len(target_clients)} client(s)."
+        )
 
         return True
 
@@ -1701,12 +1982,8 @@ class CalibrationOrchestrator:
             #
             if self._calibration_stop_requested.is_set():
 
-                for client_id in (
-                    self.calibration_service.get_active_clients()
-                ):
-                    self.calibration_service.mark_client_aborted(
-                        client_id
-                    )
+                for client_id in (self.calibration_service.get_active_clients()):
+                    self.calibration_service.mark_client_aborted(client_id)
 
             else:
 
@@ -1736,10 +2013,7 @@ class CalibrationOrchestrator:
                     if self._calibration_stop_requested.is_set():
                         break
 
-                    active_clients = (
-                        self.calibration_service
-                        .get_active_clients()
-                    )
+                    active_clients = (self.calibration_service.get_active_clients())
 
                     if not active_clients:
                         break
@@ -2385,7 +2659,8 @@ class CalibrationOrchestrator:
 
         self.poutput(
             "Calibration stop requested. "
-            "Current acquisition point is being finalized."
+            "The active calibration is stopping "
+            "and hardware finalization is in progress."
         )
 
         return True

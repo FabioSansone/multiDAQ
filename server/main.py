@@ -85,7 +85,24 @@ class Server(cmd2.Cmd):
             command_service=self.client_command_service
         )
 
-        self.optical_service = OpticalInstrumentService()
+        self.optical_instrument_service = OpticalInstrumentService()
+
+        if self.optical_instrument_service.initialize():
+            self.poutput(
+                "Optical instruments initialized successfully."
+            )
+
+        else:
+
+            self.poutput(
+                "WARNING: optical instruments are unavailable. "
+                "Optical calibration commands will not be available "
+                "until the devices can be initialized."
+            )
+
+            self.logger.warning(
+                "Optical instruments unavailable at server startup"
+            )
         
         self.monitoring_service = MonitoringService(
             command_service=self.client_command_service,
@@ -527,6 +544,11 @@ def main() -> int:
         data_receiver_service.stop_persistent_receiver()
 
         context.term()
+
+        if not app.optical_instrument_service.close():
+            app.logger.warning(
+                "Optical instruments closed with errors"
+            )
 
     return 0
 

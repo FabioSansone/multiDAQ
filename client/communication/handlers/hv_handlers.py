@@ -404,3 +404,107 @@ def handle_hv_restore_configuration(manager, message):
     )
 
     manager.queue_message(reply)
+
+
+def handle_hv_calibration_start(manager, message):
+
+    if manager.runtime.hv_service is None:
+        result = {
+            "accepted": False,
+            "error": "HVService unavailable",
+        }
+        status = MessageStatus.ERROR
+
+    else:
+        try:
+            channels = channels_definition(
+                message.payload.get("channels", "all"),
+                hv_channels=True,
+            )
+
+            result = manager.runtime.hv_service.start_calibration(
+                channels=channels,
+            )
+
+            status = (
+                MessageStatus.OK
+                if result.get("accepted")
+                else MessageStatus.ERROR
+            )
+
+        except Exception as e:
+            result = {
+                "accepted": False,
+                "error": str(e),
+            }
+            status = MessageStatus.ERROR
+
+    reply = manager.message_handler.create_reply(
+        channel=Channel.HV,
+        in_reply_to=message.request_id,
+        payload={
+            "status": status.value,
+            "result": result,
+            "error": result.get("error"),
+        },
+        sender="client",
+        status=status,
+    )
+
+    manager.queue_message(reply)
+
+
+def handle_hv_calibration_status(manager, message):
+
+    if manager.runtime.hv_service is None:
+        result = {}
+        error = "HVService unavailable"
+        status = MessageStatus.ERROR
+    else:
+        result = manager.runtime.hv_service.get_calibration_status()
+        error = None
+        status = MessageStatus.OK
+
+    reply = manager.message_handler.create_reply(
+        channel=Channel.HV,
+        in_reply_to=message.request_id,
+        payload={
+            "status": status.value,
+            "result": result,
+            "error": error,
+        },
+        sender="client",
+        status=status,
+    )
+
+    manager.queue_message(reply)
+
+
+def handle_hv_calibration_stop(manager, message):
+
+    if manager.runtime.hv_service is None:
+        result = {}
+        error = "HVService unavailable"
+        status = MessageStatus.ERROR
+    else:
+        result = manager.runtime.hv_service.request_calibration_stop()
+        error = result.get("error")
+        status = (
+            MessageStatus.OK
+            if result.get("accepted")
+            else MessageStatus.ERROR
+        )
+
+    reply = manager.message_handler.create_reply(
+        channel=Channel.HV,
+        in_reply_to=message.request_id,
+        payload={
+            "status": status.value,
+            "result": result,
+            "error": error,
+        },
+        sender="client",
+        status=status,
+    )
+
+    manager.queue_message(reply)

@@ -37,6 +37,14 @@ MONITOR_ONLY_ALLOWED_COMMANDS = {
     "hv_channel_lists",
 }
 
+CALIBRATION_ALLOWED_COMMANDS = {
+    "check_channel_safety",
+    "hv_monitor_snapshot",
+    "hv_electrical_monitoring",
+    "hv_status_alarm_monitoring",
+    "hv_channel_lists",
+}
+
 
 
 class HVService:
@@ -75,6 +83,15 @@ class HVService:
         self.check_channels_acquisition_thread: Optional[threading.Thread] = None
         self.check_acquisition_channels_pending = False
         self.acquisition_pending = threading.Lock()
+
+        self.calibration_lock = threading.Lock()
+        self.calibration_thread: Optional[threading.Thread] = None
+        self.calibration_stop_event = threading.Event()
+
+        self.calibration_running: bool = False
+        self.calibration_channels: list[int] = []
+        self.calibration_result: dict | None = None
+
 
         self.state_change_callback = state_change_callback
         self.hv_parameters_callback  = hv_parameters_callback 
@@ -262,7 +279,27 @@ class HVService:
 
                     continue
 
-                response = self._execute_response(hv_request)
+                with self.calibration_lock:
+                    calibration_running = self.calibration_running
+
+                if calibration_running and hv_request.command not in CALIBRATION_ALLOWED_COMMANDS:
+                    response = HVResponse(
+                        protocol_version=PROTOCOL_VERSION,
+                        request_id=hv_request.request_id,
+                        in_reply_to=hv_request.request_id,
+                        status=MessageStatus.ERROR,
+                        error=(
+                            f"HV command '{hv_request.command}' "
+                            "not allowed during HV calibration"
+                        ),
+                        result={
+                            "calibration_running": True,
+                            "command": hv_request.command,
+                        },
+                    )
+                else:
+                    response = self._execute_response(hv_request)
+                    
                 self._hv_warnings(hv_request, response)
 
                 if hv_request.command in {
@@ -313,6 +350,25 @@ class HVService:
         timeout_s: float = 5.0,
     ) -> HVResponse:
 
+        with self.calibration_lock:
+            calibration_running = self.calibration_running
+
+        if calibration_running and hv_request.command not in CALIBRATION_ALLOWED_COMMANDS:
+            return HVResponse(
+                protocol_version=PROTOCOL_VERSION,
+                request_id=hv_request.request_id,
+                in_reply_to=hv_request.request_id,
+                status=MessageStatus.ERROR,
+                error=(
+                    f"HV command '{hv_request.command}' "
+                    "not allowed during HV calibration"
+                ),
+                result={
+                    "calibration_running": True,
+                    "command": hv_request.command,
+                },
+            )
+
         response_queue: queue.Queue = queue.Queue()
         hv_request.response_queue = response_queue
         
@@ -362,6 +418,10 @@ class HVService:
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=2.0)
 
+        self.calibration_stop_event.set()
+        if self.calibration_thread and self.calibration_thread.is_alive():
+            self.calibration_thread.join()
+
         try:
             self.hv.close()
         except Exception as e:
@@ -377,9 +437,18 @@ class HVService:
         while not self.stop_check_channels.is_set():
             now = time.time()
 
-            channels_to_check = self.hv.getOnChannels()
-            channels_to_check_power = self.hv.getOkChannels()
-            bad_channels = self.hv.getBadChannels()
+            with self.calibration_lock:
+                calibration_running = self.calibration_running
+                calibration_channels = list(self.calibration_channels)
+
+            if calibration_running:
+                channels_to_check = [ch for ch in calibration_channels if ch not in self.hv.getBadChannels()]
+                channels_to_check_power = []
+                bad_channels = []
+            else:
+                channels_to_check = self.hv.getOnChannels()
+                channels_to_check_power = self.hv.getOkChannels()
+                bad_channels = self.hv.getBadChannels()
 
             if channels_to_check:
                 with self.pending_lock:
@@ -530,5 +599,103 @@ class HVService:
             self.check_channels_acquisition_thread.join(timeout=2.0)
 
         self.logger.info("Acquisition recovery worker stopped")
-                            
+
+    def _calibration_loop(self) -> None:
+        result = None
+
+        try:
+            result = self.hv.calibrate(channels=self.calibration_channels, stop_event = self.calibration_stop_event)
+        except Exception as e:
+            self.logger.exception("Unexpected HV calibration thread failure")
+
+            result = {
+                "success": False,
+                "aborted": self.calibration_stop_event.is_set(),
+                "requested_channels": list(self.calibration_channels),
+                "successful_channels": [],
+                "failed_channels": list(self.calibration_channels),
+                "restored_channels": [],
+                "failed_restore_channels": list(self.calibration_channels),
+                "error": str(e),
+            }
+
+        finally:
+            with self.calibration_lock:
+                self.calibration_result = result
+                self.calibration_running = False
+
+
+
+
+    def start_calibration(self, channels: list[int]) -> dict:
+        with self.calibration_lock:
+            if self.calibration_running:
+                return {
+                    "accepted": False,
+                    "running": True,
+                    "error": "HV calibration already running",
+                }
+
+            self.calibration_running = True
+            self.calibration_channels = list(channels)
+            self.calibration_result = None
+            self.calibration_stop_event.clear()
+
+        self.calibration_thread = threading.Thread(target=self._calibration_loop, daemon=True)
+
+        try:
+            self.calibration_thread.start()
+
+        except Exception as e:
+            self.logger.exception("Failed to start HV calibration thread")
+
+            with self.calibration_lock:
+                self.calibration_running = False
+                self.calibration_channels = []
+                self.calibration_result = None
+
+            return {
+                "accepted": False,
+                "running": False,
+                "error": str(e),
+            }
+
+        return {
+            "accepted": True,
+            "running": True,
+            "channels": list(channels),
+        }
+
+
+    def get_calibration_status(self) -> dict:
+        with self.calibration_lock:
+            running = self.calibration_running
+            result = self.calibration_result
+            channels = list(self.calibration_channels)
+
+        return {
+            "running": running,
+            "finished": not running and result is not None,
+            "channels": channels,
+            "calibration_result": result,
+        } 
+
+
+    def request_calibration_stop(self) -> dict:
+        with self.calibration_lock:
+            if not self.calibration_running:
+              return {
+                    "accepted": False,
+                    "running": False,
+                    "error": "No HV calibration is currently running",
+                }  
+
+            self.calibration_stop_event.set()    
+
+
+        return {
+            "accepted": True,
+            "running": True,
+            "stop_requested": True,
+        }
             

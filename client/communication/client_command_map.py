@@ -40,6 +40,10 @@ COMMAND_MAP = {
     "hv_monitor_snapshot": handle_hv_monitor_snapshot,
 
     "restore_hv_configuration": handle_hv_restore_configuration,
+
+    "hv_calibration_start": handle_hv_calibration_start,
+    "hv_calibration_stop": handle_hv_calibration_stop,
+    "hv_calibration_status": handle_hv_calibration_status,
     
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,

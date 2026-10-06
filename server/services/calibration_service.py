@@ -332,7 +332,7 @@ class CalibrationService:
         calibration_type: str,
         execution_mode: CalibrationMode,
         targets: dict[bytes, list[int]],
-        requested_points: dict[bytes, list[ScanPoint]],
+        requested_points: dict[bytes, list[ScanPoint]] | None = None,
     ) -> CalibrationRun | None:
 
         if not targets:
@@ -340,6 +340,8 @@ class CalibrationService:
                 "Cannot start calibration run: no calibration targets provided"
             )
             return None
+
+        requested_points = dict(requested_points or {})
 
         with self._lock:
 
@@ -380,14 +382,21 @@ class CalibrationService:
                     )
                     return None
 
-                points = self._normalize_scan_points(requested_points.get(client_id, []))
-
-                if points is None:
-                    self.logger.error(
-                        f"Cannot create calibration session "
-                        f"for {client_id!r}: invalid scan points"
-                    )
-                    return None
+                raw_points = requested_points.get(client_id, [])
+                if raw_points:
+                    points = self._normalize_scan_points(raw_points)
+                    if points is None:
+                        self.logger.error(
+                            f"Cannot create calibration session "
+                            f"for {client_id!r}: invalid scan points"
+                        )
+                        return None
+                else:
+                    #
+                    # Autonomous calibrations such as HV calibration
+                    # do not have scan points.
+                    #
+                    points = []
 
                 sessions[client_id] = ClientCalibrationSession(
                     client_id=client_id,

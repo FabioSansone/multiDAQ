@@ -6,6 +6,8 @@ import time
 import numpy as np
 
 
+class CalibrationAborted(Exception):
+    pass
 
 class HV:
     
@@ -747,7 +749,7 @@ class HV:
             failed.extend(
                 on_result.get("failed_channels", [])
             )
-            failed.extend(off_result.get("skipped_channels", []))
+            failed.extend(on_result.get("skipped_channels", []))
 
         failed = sorted(set(failed))
 
@@ -1732,7 +1734,14 @@ class HV:
             self.logger.exception(f"It was not possible to apply calibration configuration")
             return False
 
-    def calibrate(self, channels: list[int]) -> dict:
+
+    def check_stop(self, stop_event: threading.Event | None = None,):
+        if stop_event is not None and stop_event.is_set():
+            raise CalibrationAborted
+
+    
+    def calibrate(self, channels: list[int], stop_event: threading.Event | None = None,) -> dict:
+        aborted = False
 
         try:
             list_channels_selected = self.hv_channels_definition(channels=channels)
@@ -1742,11 +1751,11 @@ class HV:
                 "requested_channels": [], "used_channels": [], "skipped_channels": [],
                 "successful_channels": [], "failed_channels": [],
                 "restored_channels": [], "failed_restore_channels": [],
-                "channel_results": {}, "success": False,
+                "channel_results": {}, "success": False, "aborted": False,
                 "bad_channels": self.getBadChannels(), "ok_channels": self.getOkChannels(),
                 "on_channels": self.getOnChannels(), "off_channels": self.getOffChannels(),
             }
-        
+
         ok_ch_set = set(self.getOkChannels())
         channels_good_selected = [ch for ch in list_channels_selected if ch in ok_ch_set]
         channels_skipped = [ch for ch in list_channels_selected if ch not in ok_ch_set]
@@ -1755,13 +1764,16 @@ class HV:
         failed = []
         restored = []
         failed_restore = []
+
         channel_results = {ch: {"calibration_success": False, "restore_success": None,
                                 "error": None, "slope": None, "offset": None}
-                           for ch in list_channels_selected}
+                        for ch in list_channels_selected}
+
         old_configuration = {}
         channels_to_be_done = []
         modified_channels = []
         new_calibration = {}
+
         Vexpect = [25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400]
 
         self.logger.warning("HV voltage calibration started; operating configuration will be restored")
@@ -1773,30 +1785,51 @@ class HV:
                 voltage = self.hv.getVoltageSet(slave=ch)
                 threshold = self.hv.getThreshold(slave=ch)
                 status = self.hv.getStatus(slave=ch)
+
                 if status not in {"UP", "DOWN"}:
                     self.logger.error(f"Channel {ch}: cannot snapshot non-stable power status {status}")
                     failed.append(ch)
                     channel_results[ch]["error"] = f"unstable initial status: {status}"
                     continue
+
                 values = (m, q, rate_up, rate_down, voltage, threshold)
+
                 if not all(np.isfinite(value) for value in values):
                     self.logger.error(f"Channel {ch}: invalid initial configuration")
                     failed.append(ch)
                     channel_results[ch]["error"] = "invalid initial configuration"
                     continue
+
                 old_configuration[ch] = {
                     "calibration": (m, q), "rates": (rate_up, rate_down),
                     "voltage": voltage, "threshold": threshold, "status": status,
                 }
+
                 channels_to_be_done.append(ch)
+
             except Exception:
                 self.logger.exception(f"Failed to snapshot channel {ch}; leaving it untouched")
                 failed.append(ch)
                 channel_results[ch]["error"] = "hardware snapshot failed"
 
         try:
+            self.check_stop(stop_event=stop_event)
+
             for ch in list(channels_to_be_done):
+                self.check_stop(stop_event=stop_event)
+
+                if ch in set(self.getBadChannels()):
+                    if ch not in failed:
+                        failed.append(ch)
+
+                    if channel_results[ch]["error"] is None:
+                        channel_results[ch]["error"] = "channel became BAD during calibration"
+
+                    channels_to_be_done.remove(ch)
+                    continue
+
                 modified_channels.append(ch)
+
                 try:
                     self.hv.powerOff(slave=ch)
                     self.hv.setVoltageSet(value=10, slave=ch)
@@ -1806,14 +1839,29 @@ class HV:
                     failed.append(ch)
                     channel_results[ch]["error"] = "initial shutdown failed"
                     channels_to_be_done.remove(ch)
-            
+
 
             pending = set(channels_to_be_done)
             ready_channels = []
             deadline = time.monotonic() + 300
 
             while pending and time.monotonic() < deadline:
+                self.check_stop(stop_event=stop_event)
+
+                bad_channels = set(self.getBadChannels())
+
                 for ch in list(pending):
+
+                    if ch in bad_channels:
+                        if ch not in failed:
+                            failed.append(ch)
+
+                        if channel_results[ch]["error"] is None:
+                            channel_results[ch]["error"] = "channel became BAD during initial ramp-down"
+
+                        pending.remove(ch)
+                        continue
+
                     try:
                         status = self.hv.getStatus(slave=ch)
                         voltage = self.hv.getVoltage(slave=ch)
@@ -1839,45 +1887,84 @@ class HV:
                         self.moveToBad(ch)
 
                 if pending:
-                    time.sleep(1)
+                    if stop_event is not None:
+                        if stop_event.wait(1.0):
+                            raise CalibrationAborted
+                    else:
+                        time.sleep(1.0)
+
 
             for ch in pending:
                 self.logger.error(f"Timeout waiting for channel {ch} to fall below {Vexpect[0]} V")
-                failed.append(ch)
+
+                if ch not in failed:
+                    failed.append(ch)
+
                 channel_results[ch]["error"] = "initial ramp-down timeout"
 
 
             start_channels = []
+
             for ch in ready_channels:
+                self.check_stop(stop_event=stop_event)
+
+                if ch in set(self.getBadChannels()):
+                    if ch not in failed:
+                        failed.append(ch)
+
+                    if channel_results[ch]["error"] is None:
+                        channel_results[ch]["error"] = "channel became BAD before initial ramp-up"
+
+                    continue
+
                 try:
                     if not self._apply_calib_conf(ch, {ch: (1.0, 0.0)}):
                         self.logger.error(f"Channel {ch}: cannot install temporary coefficients")
                         failed.append(ch)
                         channel_results[ch]["error"] = "temporary coefficient write failed"
                         continue
+
                     self.hv.setRateRampup(value=25, slave=ch)
                     self.hv.setRateRampdown(value=25, slave=ch)
                     self.hv.setVoltageSet(value=Vexpect[0], slave=ch)
                     self.hv.powerOn(slave=ch)
+
                     start_channels.append(ch)
 
                 except Exception:
                     self.logger.exception(f"Failed to configure/power on channel {ch}")
                     failed.append(ch)
                     channel_results[ch]["error"] = "initial power-on failed"
-            
+
 
             pending = set(start_channels)
             up_channels = []
             deadline = time.monotonic() + 300
 
             while pending and time.monotonic() < deadline:
+                self.check_stop(stop_event=stop_event)
+
+                bad_channels = set(self.getBadChannels())
+
                 for ch in list(pending):
+
+                    if ch in bad_channels:
+                        if ch not in failed:
+                            failed.append(ch)
+
+                        if channel_results[ch]["error"] is None:
+                            channel_results[ch]["error"] = "channel became BAD during initial ramp-up"
+
+                        pending.remove(ch)
+                        continue
+
                     try:
                         status = self.hv.getStatus(slave=ch)
+
                         if status == "UP":
                             pending.remove(ch)
                             up_channels.append(ch)
+
                         elif status == "TRIP":
                             self.logger.error("HV TRIP during initial ramp-up")
                             channel_results[ch]["error"] = "TRIP during initial ramp-up"
@@ -1894,126 +1981,261 @@ class HV:
                         self.moveToBad(ch)
 
                 if pending:
-                    time.sleep(1)
+                    if stop_event is not None:
+                        if stop_event.wait(1.0):
+                            raise CalibrationAborted
+                    else:
+                        time.sleep(1.0)
+
 
             for ch in pending:
                 self.logger.error(f"Timeout waiting for channel {ch} to reach UP")
-                failed.append(ch)
+
+                if ch not in failed:
+                    failed.append(ch)
+
                 channel_results[ch]["error"] = "initial ramp-up timeout"
+
 
             Vread = {ch: [] for ch in up_channels}
             active_channels = list(up_channels)
-            
+
+
             for v in Vexpect:
+                self.check_stop(stop_event=stop_event)
+
                 pending = set()
+                bad_channels = set(self.getBadChannels())
+
                 for ch in list(active_channels):
+                    self.check_stop(stop_event=stop_event)
+
+                    if ch in bad_channels:
+                        if ch not in failed:
+                            failed.append(ch)
+
+                        if channel_results[ch]["error"] is None:
+                            channel_results[ch]["error"] = f"channel became BAD at {v} V"
+
+                        active_channels.remove(ch)
+                        continue
+
                     try:
                         self.hv.setVoltageSet(value=v, slave=ch)
                         pending.add(ch)
+
                     except Exception:
                         self.logger.exception(f"Failed to set {v} V on channel {ch}")
                         failed.append(ch)
                         active_channels.remove(ch)
                         channel_results[ch]["error"] = f"setpoint failed at {v} V"
 
+
                 ready_channels = []
                 deadline = time.monotonic() + 300
+
                 while pending and time.monotonic() < deadline:
+                    self.check_stop(stop_event=stop_event)
+
+                    bad_channels = set(self.getBadChannels())
+
                     for ch in list(pending):
+
+                        if ch in bad_channels:
+                            if ch not in failed:
+                                failed.append(ch)
+
+                            if channel_results[ch]["error"] is None:
+                                channel_results[ch]["error"] = f"channel became BAD at {v} V"
+
+                            pending.remove(ch)
+
+                            if ch in active_channels:
+                                active_channels.remove(ch)
+
+                            continue
+
                         try:
                             status = self.hv.getStatus(slave=ch)
+
                             if status == "UP":
                                 pending.remove(ch)
                                 ready_channels.append(ch)
+
                             elif status == "TRIP":
                                 self.logger.error(f"Channel {ch}: TRIP at Vset={v} V")
                                 failed.append(ch)
                                 channel_results[ch]["error"] = f"TRIP at {v} V"
                                 pending.remove(ch)
-                                active_channels.remove(ch)
+
+                                if ch in active_channels:
+                                    active_channels.remove(ch)
+
                                 self.hv.reset(slave=ch)
                                 self.moveToBad(ch)
+
                         except Exception:
                             self.logger.exception(f"Failed while waiting for channel {ch} to reach UP")
                             pending.remove(ch)
                             channel_results[ch]["error"] = f"status read failed at {v} V"
                             failed.append(ch)
-                            active_channels.remove(ch)
+
+                            if ch in active_channels:
+                                active_channels.remove(ch)
+
                             self.moveToBad(ch)
 
                     if pending:
-                        time.sleep(1)
-    
+                        if stop_event is not None:
+                            if stop_event.wait(1.0):
+                                raise CalibrationAborted
+                        else:
+                            time.sleep(1.0)
+
+
                 for ch in pending:
                     self.logger.error(f"Timeout waiting for channel {ch} at {v} V")
-                    failed.append(ch)
+
+                    if ch not in failed:
+                        failed.append(ch)
+
                     channel_results[ch]["error"] = f"ramp timeout at {v} V"
-                    active_channels.remove(ch)
+
+                    if ch in active_channels:
+                        active_channels.remove(ch)
+
 
                 if ready_channels:
-                    time.sleep(2)
+                    if stop_event is not None:
+                        if stop_event.wait(2.0):
+                            raise CalibrationAborted
+                    else:
+                        time.sleep(2.0)
+
+
+                bad_channels = set(self.getBadChannels())
 
                 for ch in ready_channels:
+                    self.check_stop(stop_event=stop_event)
+
+                    if ch in bad_channels:
+                        if ch not in failed:
+                            failed.append(ch)
+
+                        if channel_results[ch]["error"] is None:
+                            channel_results[ch]["error"] = f"channel became BAD before sampling at {v} V"
+
+                        if ch in active_channels:
+                            active_channels.remove(ch)
+
+                        continue
+
                     try:
                         Vtemp = []
+
                         for _ in range(10):
+                            self.check_stop(stop_event=stop_event)
+
                             Vtemp.append(self.hv.getVoltage(slave=ch))
-                            time.sleep(0.5)
+
+                            if stop_event is not None:
+                                if stop_event.wait(0.5):
+                                    raise CalibrationAborted
+                            else:
+                                time.sleep(0.5)
+
                         Vmeas = np.array(Vtemp, dtype=float)
+
                         if not np.all(np.isfinite(Vmeas)):
                             self.logger.error(f"Channel {ch}: non-finite voltage at {v} V")
                             failed.append(ch)
                             channel_results[ch]["error"] = f"non-finite voltage at {v} V"
-                            active_channels.remove(ch)
+
+                            if ch in active_channels:
+                                active_channels.remove(ch)
+
                             continue
+
                         Vmeas.sort()
                         Vread[ch].append(float(Vmeas[1:-1].mean()))
+
+                    except CalibrationAborted:
+                        raise
+
                     except Exception:
                         self.logger.exception(f"Failed to sample channel {ch} at {v} V")
                         failed.append(ch)
                         channel_results[ch]["error"] = f"sampling failed at {v} V"
-                        active_channels.remove(ch)
+
+                        if ch in active_channels:
+                            active_channels.remove(ch)
 
 
             for ch in active_channels:
+                self.check_stop(stop_event=stop_event)
+
+                if ch in set(self.getBadChannels()):
+                    if ch not in failed:
+                        failed.append(ch)
+
+                    if channel_results[ch]["error"] is None:
+                        channel_results[ch]["error"] = "channel became BAD before linear fit"
+
+                    continue
+
                 try:
                     if len(Vread[ch]) != len(Vexpect):
                         self.logger.error(f"Channel {ch}: incomplete voltage scan")
                         failed.append(ch)
                         channel_results[ch]["error"] = "incomplete voltage scan"
                         continue
+
                     x = np.array(Vread[ch], dtype=float)
                     y = np.array(Vexpect, dtype=float)
                     A = np.vstack([x, np.ones(len(x))]).T
+
                     if np.linalg.matrix_rank(A) < 2:
                         self.logger.error(f"Channel {ch}: measured voltages have zero spread")
                         failed.append(ch)
                         channel_results[ch]["error"] = "degenerate linear fit"
                         continue
+
                     slope, offset = np.linalg.lstsq(A, y, rcond=None)[0]
+
                     if not np.isfinite(slope) or not np.isfinite(offset) or slope <= 0:
                         self.logger.error(f"Channel {ch}: invalid fit slope={slope}, offset={offset}")
                         failed.append(ch)
                         channel_results[ch]["error"] = "invalid linear fit"
                         continue
+
                     new_calibration[ch] = (float(slope), float(offset))
+
                 except Exception:
                     self.logger.exception(f"Failed to fit channel {ch}")
                     failed.append(ch)
                     channel_results[ch]["error"] = "linear fit failed"
 
+
+        except CalibrationAborted:
+            aborted = True
+            self.logger.warning("HV voltage calibration aborted; restoring operating configuration")
+
+
         except Exception:
             self.logger.exception("Unexpected error during HV calibration")
+
             for ch in modified_channels:
                 if ch not in failed:
                     failed.append(ch)
                     channel_results[ch]["error"] = "unexpected calibration error"
 
+
         finally:
-            bad_channels = set(self.getBadChannels())
 
             for ch in modified_channels:
+
                 previous = old_configuration.get(ch)
+
                 if previous is None:
                     self.logger.error(f"Channel {ch}: previous configuration unavailable")
 
@@ -2025,14 +2247,15 @@ class HV:
                     try:
                         self.hv.powerOff(slave=ch)
                         self.hv.reset(slave=ch)
+
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to force safe state")
 
                     self.moveToBad(channel=ch)
                     continue
-                
 
-                if ch in bad_channels:
+
+                if ch in set(self.getBadChannels()):
                     self.logger.warning(f"Channel {ch}: restore skipped because channel is BAD")
 
                     if ch not in failed:
@@ -2046,11 +2269,12 @@ class HV:
                     try:
                         self.hv.powerOff(slave=ch)
                         self.hv.reset(slave=ch)
+
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to force safe state")
 
                     continue
-                
+
 
                 restore_ok = True
 
@@ -2061,57 +2285,51 @@ class HV:
                     selected_calibration = previous["calibration"]
                     calibration_success = False
 
+
                 if not self._apply_calib_conf(ch, {ch: selected_calibration}):
                     self.logger.error(f"Channel {ch}: failed to restore calibration coefficients")
                     restore_ok = False
 
 
                 for name, method, value in (
-                    (
-                        "ramp-up",
-                        self.hv.setRateRampup,
-                        previous["rates"][0],
-                    ),
-                    (
-                        "ramp-down",
-                        self.hv.setRateRampdown,
-                        previous["rates"][1],
-                    ),
-                    (
-                        "voltage",
-                        self.hv.setVoltageSet,
-                        previous["voltage"],
-                    ),
-                    (
-                        "threshold",
-                        self.hv.setThreshold,
-                        previous["threshold"],
-                    ),
+                    ("ramp-up", self.hv.setRateRampup, previous["rates"][0]),
+                    ("ramp-down", self.hv.setRateRampdown, previous["rates"][1]),
+                    ("voltage", self.hv.setVoltageSet, previous["voltage"]),
+                    ("threshold", self.hv.setThreshold, previous["threshold"]),
                 ):
 
                     try:
                         method(value=value, slave=ch)
+
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to restore {name}")
                         restore_ok = False
+
 
                 if restore_ok:
                     try:
                         if previous["status"] == "UP":
                             result = self.on_and_wait(channels=[ch])
+
                             if ch not in result["successful_channels"]:
                                 restore_ok = False
+
                         else:
                             result = self.off_and_wait(channels=[ch])
+
                             if ch not in result["successful_channels"]:
                                 restore_ok = False
+
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to restore power state")
                         restore_ok = False
-                
+
+
                 if not restore_ok:
+
                     if ch not in failed:
                         failed.append(ch)
+
                     if ch not in failed_restore:
                         failed_restore.append(ch)
 
@@ -2121,34 +2339,34 @@ class HV:
 
                     try:
                         self.hv.powerOff(slave=ch)
+
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to power off after restore failure")
-                    
+
                     try:
                         self.hv.reset(slave=ch)
+
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to reset after restore failure")
-                    
-                    self.moveToBad(ch)
 
+                    self.moveToBad(ch)
                     continue
+
 
                 channel_results[ch]["restore_success"] = True
 
                 if ch not in restored:
                     restored.append(ch)
 
+
                 if calibration_success:
+
                     if ch not in successful:
                         successful.append(ch)
 
                     channel_results[ch]["calibration_success"] = True
-                    channel_results[ch]["slope"] = (
-                        new_calibration[ch][0]
-                    )
-                    channel_results[ch]["offset"] = (
-                        new_calibration[ch][1]
-                    )
+                    channel_results[ch]["slope"] = new_calibration[ch][0]
+                    channel_results[ch]["offset"] = new_calibration[ch][1]
 
                 else:
                     channel_results[ch]["calibration_success"] = False
@@ -2158,6 +2376,7 @@ class HV:
         successful = sorted(set(successful))
         restored = sorted(set(restored))
         failed_restore = sorted(set(failed_restore))
+
 
         return {
             "requested_channels": list_channels_selected,
@@ -2171,9 +2390,11 @@ class HV:
             "failed_restore_channels": failed_restore,
 
             "channel_results": channel_results,
+            "aborted": aborted,
 
             "success": (
-                bool(channels_good_selected)
+                not aborted
+                and bool(channels_good_selected)
                 and not failed
                 and not failed_restore
             ),
@@ -2183,27 +2404,3 @@ class HV:
             "on_channels": self.getOnChannels(),
             "off_channels": self.getOffChannels(),
         }
-
-
-        
-
-
-
-                    
-
-
-
-
-
-
-
-    
-                
-        
-                
-            
-        
-            
-            
-        
-

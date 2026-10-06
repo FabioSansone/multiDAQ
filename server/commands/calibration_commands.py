@@ -447,6 +447,15 @@ def do_calibration(
             )
             return
 
+        if not self.optical_instrument_service.ensure_initialized():
+
+            self.poutput(
+                "Cannot move filter wheel: "
+                "optical instruments are unavailable."
+            )
+
+            return
+
         if not self.optical_instrument_service.move_wheel(
             position=args.position,
             which_wheel=args.which_wheel,
@@ -475,6 +484,15 @@ def do_calibration(
                 "Cannot move filter wheels: "
                 "another operation is active."
             )
+            return
+
+        if not self.optical_instrument_service.ensure_initialized():
+        
+            self.poutput(
+                "Cannot move filter wheels: "
+                "optical instruments are unavailable."
+            )
+
             return
 
         near_ok = (
@@ -522,6 +540,15 @@ def do_calibration(
                 "Cannot move polarizer: "
                 "another operation is active."
             )
+            return
+
+        if not self.optical_instrument_service.ensure_initialized():
+
+            self.poutput(
+                "Cannot move polarizer: "
+                "optical instruments are unavailable."
+            )
+
             return
 
         if not self.optical_instrument_service.move_polarizer(

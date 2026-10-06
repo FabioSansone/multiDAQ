@@ -141,11 +141,22 @@ class OpticalInstrumentService:
 
     def initialize(self) -> bool:
 
-        if self.far_wheel is not None or self.near_wheel is not None or self.polarizer is not None:
-            self.logger.warning(
+        if self.is_initialized():
+            self.logger.debug(
                 "Optical instruments already initialized"
             )
             return True
+
+        if (
+            self.near_wheel is not None
+            or self.far_wheel is not None
+            or self.polarizer is not None
+        ):
+            self.logger.warning(
+                "Partial optical initialization detected; "
+                "resetting optical instruments"
+            )
+            self.close()
 
         if not self._load_config():
             return False
@@ -339,7 +350,16 @@ class OpticalInstrumentService:
 
         return status
 
-    
+
+    def is_initialized(self) -> bool:
+        return (self.near_wheel is not None and self.far_wheel is not None and self.polarizer is not None and self.near_wheel.is_open() and self.far_wheel.is_open() and self.polarizer.is_open())
+
+
+    def ensure_initialized(self) -> bool:
+        if self.is_initialized():
+            return True
+
+        return self.is_initialized()
             
 
         

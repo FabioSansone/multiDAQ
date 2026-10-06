@@ -1,6 +1,8 @@
 import pymodbus.client as ModbusClient
 from pymodbus import FramerType, ModbusException
 import struct
+import threading
+
 from client.utils.logger import get_logger
 
 
@@ -13,6 +15,8 @@ class HVModBus:
         self.port = hv_port
         self.ch_addr = None
         self.num_channels = 20
+
+        self.hardware_lock = threading.RLock()
         
         self.client = ModbusClient.ModbusSerialClient(
             self.port, 
@@ -44,96 +48,101 @@ class HVModBus:
  
 
     def _safe_read(self, addr, count, slave, desc="unknown"):
-        
-        if not self._ensure_connected():
-            raise ModbusException("Modbus client is not connected")
-        
-        try:
-            rr = self.client.read_holding_registers(
-                address=addr,
-                count=count,
-                device_id=slave,
-            )
-
-            if rr is None or rr.isError():
-                raise ModbusException(
-                    f"Invalid response when reading for {desc} at {hex(addr)}"
+        with self.hardware_lock:
+            if not self._ensure_connected():
+                raise ModbusException("Modbus client is not connected")
+            
+            try:
+                rr = self.client.read_holding_registers(
+                    address=addr,
+                    count=count,
+                    device_id=slave,
                 )
 
-            return rr.registers
+                if rr is None or rr.isError():
+                    raise ModbusException(
+                        f"Invalid response when reading for {desc} at {hex(addr)}"
+                    )
 
-        except ModbusException as e:
-            self.logger.error(f"Exception during read of {desc}: {e}")
-            raise
+                return rr.registers
+
+            except ModbusException as e:
+                self.logger.error(f"Exception during read of {desc}: {e}")
+                raise
     
     def _safe_write(self, addr, value, slave, desc="unknown"):
-        
-        if not self._ensure_connected():
-            raise ModbusException("Modbus client is not connected")
-        
-        try:
-            rr = self.client.write_register(
-                address=addr,
-                value=value,
-                device_id=slave,
-            )
 
-            if rr is None or rr.isError():
-                raise ModbusException(
-                    f"Invalid response when writing for {desc} at {hex(addr)}"
+        with self.hardware_lock:
+        
+            if not self._ensure_connected():
+                raise ModbusException("Modbus client is not connected")
+            
+            try:
+                rr = self.client.write_register(
+                    address=addr,
+                    value=value,
+                    device_id=slave,
                 )
 
-            return rr
+                if rr is None or rr.isError():
+                    raise ModbusException(
+                        f"Invalid response when writing for {desc} at {hex(addr)}"
+                    )
 
-        except ModbusException as e:
-            self.logger.error(f"Exception during write of {desc}: {e}")
-            raise
+                return rr
+
+            except ModbusException as e:
+                self.logger.error(f"Exception during write of {desc}: {e}")
+                raise
 
     def _safe_write_coil(self, addr, value, slave, desc="unknown"):
-            
-        if not self._ensure_connected():
-            raise ModbusException("Modbus client is not connected")
-        
-        try:
-            rr = self.client.write_coil(
-                address=addr,
-                value=value,
-                device_id=slave,
-            )
 
-            if rr is None or rr.isError():
-                raise ModbusException(
-                    f"Invalid response when writing for {desc} at {hex(addr)}"
+        with self.hardware_lock:            
+            if not self._ensure_connected():
+                raise ModbusException("Modbus client is not connected")
+            
+            try:
+                rr = self.client.write_coil(
+                    address=addr,
+                    value=value,
+                    device_id=slave,
                 )
 
-            return rr
+                if rr is None or rr.isError():
+                    raise ModbusException(
+                        f"Invalid response when writing for {desc} at {hex(addr)}"
+                    )
 
-        except ModbusException as e:
-            self.logger.error(f"Exception during write of {desc}: {e}")
-            raise
+                return rr
+
+            except ModbusException as e:
+                self.logger.error(f"Exception during write of {desc}: {e}")
+                raise
 
     def _safe_write_multiple(self, addr, values, slave, desc="unknown"):
-        
-        if not self._ensure_connected():
-            raise ModbusException("Modbus client is not connected")
-        
-        try:
-            rr = self.client.write_registers(
-                address=addr,
-                values=values,
-                device_id=slave,
-            )
 
-            if rr is None or rr.isError():
-                raise ModbusException(
-                    f"Invalid response when writing for {desc} at {hex(addr)}"
+        with self.hardware_lock:
+        
+            if not self._ensure_connected():
+                raise ModbusException("Modbus client is not connected")
+            
+            try:
+                rr = self.client.write_registers(
+                    address=addr,
+                    values=values,
+                    device_id=slave,
                 )
 
-            return rr
+                if rr is None or rr.isError():
+                    raise ModbusException(
+                        f"Invalid response when writing for {desc} at {hex(addr)}"
+                    )
 
-        except ModbusException as e:
-            self.logger.error(f"Exception during write of {desc}: {e}")
-            raise
+                return rr
+
+            except ModbusException as e:
+                self.logger.error(f"Exception during write of {desc}: {e}")
+                raise
         
     def handleInterrupt(self):
         try:
