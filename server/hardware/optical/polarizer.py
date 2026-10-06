@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import time
 from pylablib.devices import Thorlabs
 
 from server.utils.logger import get_logger
@@ -195,32 +195,45 @@ class Polarizer:
             )
             return False
 
-        final_position = self.get_position()
+        verification_deadline = time.monotonic() + 3.0
+        final_position = None
+
+        while time.monotonic() < verification_deadline:
+            final_position = self.get_position()
+
+            if final_position is not None:
+                position_error = final_position - target_position
+                if position_error <= POSITION_TOLERANCE:
+                    logger.info(
+                        "Polarizer moved successfully: "
+                        f"device={self.device_path}, "
+                        f"requested={target_position}, "
+                        f"readback={final_position}"
+                    )
+
+                    return True
+
+            time.sleep(0.1)
 
         if final_position is None:
-            return False
+            logger.error(
+                "Polarizer movement verification failed: "
+                f"requested={target_position}, "
+                "readback unavailable"
+            )
+        else:
+            position_error = abs(
+                final_position - target_position
+            )
 
-        position_error = abs(
-            final_position - target_position
-        )
-
-        if position_error > POSITION_TOLERANCE:
             logger.error(
                 "Polarizer movement verification failed: "
                 f"requested={target_position}, "
                 f"readback={final_position}, "
                 f"error={position_error}"
             )
-            return False
 
-        logger.info(
-            "Polarizer moved successfully: "
-            f"device={self.device_path}, "
-            f"requested={target_position}, "
-            f"readback={final_position}"
-        )
-
-        return True
+        return False
 
     def home(self) -> bool:
 

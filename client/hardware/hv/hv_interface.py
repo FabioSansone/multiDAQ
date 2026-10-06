@@ -123,13 +123,13 @@ class HV:
             if channel in self.on_ch:
                 self.on_ch.remove(channel)
 
-            elif channel in self.off_ch:
+            if channel in self.off_ch:
                 self.off_ch.remove(channel)
             
-            elif channel in self.ok_ch:
+            if channel in self.ok_ch:
                 self.ok_ch.remove(channel)
             
-            elif channel in self.bad_ch:
+            if channel in self.bad_ch:
                 self.bad_ch.remove(channel)
             
             if channel not in self.fixed_bad:
@@ -145,13 +145,13 @@ class HV:
                 if channel in self.on_ch:
                     self.on_ch.remove(channel)
     
-                elif channel in self.off_ch:
+                if channel in self.off_ch:
                     self.off_ch.remove(channel)
                 
-                elif channel in self.ok_ch:
+                if channel in self.ok_ch:
                     self.ok_ch.remove(channel)
                 
-                elif channel in self.bad_ch:
+                if channel in self.bad_ch:
                     self.bad_ch.remove(channel)
                 
                 if channel not in self.missing_serial:
