@@ -1374,7 +1374,17 @@ class HV:
         }
     
 
-    def on_and_wait(self, channels: List[int] | str | int, timeout_s: float = 240.0, poll_s: float = 2.0):
+    def on_and_wait(self, channels: List[int] | str | int, timeout_s: float = 240.0, poll_s: float = 2.0, hardware_executor=None,):
+        
+        def hv_call(method, *args, **kwargs):
+            if hardware_executor is None:
+                return method(*args, **kwargs)
+
+            success, result = hardware_executor(lambda: method(*args, **kwargs))
+            if not success:
+                raise RuntimeError(result)
+            return result
+
         list_channels_selected = self.hv_channels_definition(
             channels=channels,
         )
@@ -1395,15 +1405,29 @@ class HV:
 
         for ch in channels_good_selected:
             try:
-                self.hv.powerOn(slave=ch)
+                hv_call(
+                    self.hv.powerOn,
+                    slave=ch,
+                )
+
                 power_on_successful.append(ch)
 
             except Exception as e:
-                self.logger.error(f"Problem powering on channel {ch}: {e}")
+                self.logger.error(
+                    f"Problem powering on channel {ch}: {e}"
+                )
 
                 try:
-                    self.hv.reset(slave=ch)
-                    self.hv.powerOff(slave=ch)
+                    hv_call(
+                        self.hv.reset,
+                        slave=ch,
+                    )
+
+                    hv_call(
+                        self.hv.powerOff,
+                        slave=ch,
+                    )
+
                 except Exception as shutdown_error:
                     self.logger.error(
                         f"Problem forcing channel {ch} off after power-on failure: "
@@ -1414,7 +1438,8 @@ class HV:
                 self.moveToBad(ch)
 
         pending_channels = [
-            ch for ch in power_on_successful
+            ch
+            for ch in power_on_successful
             if ch not in failed_channels
         ]
 
@@ -1423,8 +1448,15 @@ class HV:
         while pending_channels and time.time() < deadline:
             for ch in list(pending_channels):
                 try:
-                    status = self.hv.getStatus(slave=ch)
-                    alarm = self.hv.getAlarm(slave=ch)
+                    status = hv_call(
+                        self.hv.getStatus,
+                        slave=ch,
+                    )
+
+                    alarm = hv_call(
+                        self.hv.getAlarm,
+                        slave=ch,
+                    )
 
                     if status == "UP":
                         self.moveToOn(ch)
@@ -1438,8 +1470,16 @@ class HV:
                         )
 
                         try:
-                            self.hv.reset(slave=ch)
-                            self.hv.powerOff(slave=ch)
+                            hv_call(
+                                self.hv.reset,
+                                slave=ch,
+                            )
+
+                            hv_call(
+                                self.hv.powerOff,
+                                slave=ch,
+                            )
+
                         except Exception as shutdown_error:
                             self.logger.error(
                                 f"Problem resetting/off channel {ch} after unsafe state: "
@@ -1456,8 +1496,16 @@ class HV:
                     )
 
                     try:
-                        self.hv.reset(slave=ch)
-                        self.hv.powerOff(slave=ch)
+                        hv_call(
+                            self.hv.reset,
+                            slave=ch,
+                        )
+
+                        hv_call(
+                            self.hv.powerOff,
+                            slave=ch,
+                        )
+
                     except Exception as shutdown_error:
                         self.logger.error(
                             f"Problem resetting/off channel {ch} after read failure: "
@@ -1478,8 +1526,16 @@ class HV:
                 )
 
                 try:
-                    self.hv.reset(slave=ch)
-                    self.hv.powerOff(slave=ch)
+                    hv_call(
+                        self.hv.reset,
+                        slave=ch,
+                    )
+
+                    hv_call(
+                        self.hv.powerOff,
+                        slave=ch,
+                    )
+
                 except Exception as shutdown_error:
                     self.logger.error(
                         f"Problem resetting/off channel {ch} after timeout: "
@@ -1509,7 +1565,17 @@ class HV:
         channels: List[int] | str | int,
         timeout_s: float = 120.0,
         poll_s: float = 2.0,
+        hardware_executor=None,
     ):
+        def hv_call(method, *args, **kwargs):
+            if hardware_executor is None:
+                return method(*args, **kwargs)
+
+            success, result = hardware_executor(lambda: method(*args, **kwargs))
+            if not success:
+                raise RuntimeError(result)
+            return result
+
         list_channels_selected = self.hv_channels_definition(
             channels=channels,
         )
@@ -1530,16 +1596,24 @@ class HV:
 
         for ch in channels_good_selected:
             try:
-                self.hv.powerOff(slave=ch)
+                hv_call(
+                    self.hv.powerOff,
+                    slave=ch,
+                )
+
                 power_off_successful.append(ch)
 
             except Exception as e:
-                self.logger.error(f"Problem powering off channel {ch}: {e}")
+                self.logger.error(
+                    f"Problem powering off channel {ch}: {e}"
+                )
+
                 failed_channels.append(ch)
                 self.moveToBad(ch)
 
         pending_channels = [
-            ch for ch in power_off_successful
+            ch
+            for ch in power_off_successful
             if ch not in failed_channels
         ]
 
@@ -1548,7 +1622,10 @@ class HV:
         while pending_channels and time.time() < deadline:
             for ch in list(pending_channels):
                 try:
-                    status = self.hv.getStatus(slave=ch)
+                    status = hv_call(
+                        self.hv.getStatus,
+                        slave=ch,
+                    )
 
                     if status in {"DOWN", "OFF"}:
                         self.moveToOff(ch)
@@ -1561,8 +1638,16 @@ class HV:
                         )
 
                         try:
-                            self.hv.reset(slave=ch)
-                            self.hv.powerOff(slave=ch)
+                            hv_call(
+                                self.hv.reset,
+                                slave=ch,
+                            )
+
+                            hv_call(
+                                self.hv.powerOff,
+                                slave=ch,
+                            )
+
                         except Exception as shutdown_error:
                             self.logger.error(
                                 f"Problem resetting/off channel {ch} after TRIP: "
@@ -1740,7 +1825,17 @@ class HV:
             raise CalibrationAborted
 
     
-    def calibrate(self, channels: list[int], stop_event: threading.Event | None = None,) -> dict:
+    def calibrate(self, channels: list[int], stop_event: threading.Event | None = None, hardware_executor = None) -> dict:
+        def hv_call(method, *args, **kwargs):
+            if hardware_executor is None:
+                return method(*args, **kwargs)
+
+            success, result = hardware_executor(lambda: method(*args, **kwargs))
+            if not success:
+                raise RuntimeError(result)
+            return result
+
+
         aborted = False
 
         try:
@@ -1780,11 +1875,11 @@ class HV:
 
         for ch in channels_good_selected:
             try:
-                m, q, _ = self.hv.readCalibRegisters(slave=ch)
-                rate_up, rate_down = self.hv.getRate(fmt=tuple, slave=ch)
-                voltage = self.hv.getVoltageSet(slave=ch)
-                threshold = self.hv.getThreshold(slave=ch)
-                status = self.hv.getStatus(slave=ch)
+                m, q, _ = hv_call(self.hv.readCalibRegisters, slave=ch)
+                rate_up, rate_down = hv_call(self.hv.getRate, fmt=tuple, slave=ch)
+                voltage = hv_call(self.hv.getVoltageSet, slave=ch)
+                threshold = hv_call(self.hv.getThreshold, slave=ch)
+                status = hv_call(self.hv.getStatus, slave=ch)
 
                 if status not in {"UP", "DOWN"}:
                     self.logger.error(f"Channel {ch}: cannot snapshot non-stable power status {status}")
@@ -1831,8 +1926,8 @@ class HV:
                 modified_channels.append(ch)
 
                 try:
-                    self.hv.powerOff(slave=ch)
-                    self.hv.setVoltageSet(value=10, slave=ch)
+                    hv_call(self.hv.powerOff, slave=ch)
+                    hv_call(self.hv.setVoltageSet, value=10, slave=ch)
 
                 except Exception:
                     self.logger.exception(f"Failed to prepare initial shutdown on channel {ch}")
@@ -1863,15 +1958,15 @@ class HV:
                         continue
 
                     try:
-                        status = self.hv.getStatus(slave=ch)
-                        voltage = self.hv.getVoltage(slave=ch)
+                        status = hv_call(self.hv.getStatus, slave=ch)
+                        voltage = hv_call(self.hv.getVoltage, slave=ch)
 
                         if status == "TRIP":
                             self.logger.error("HV TRIP during initial ramp-down")
                             channel_results[ch]["error"] = "TRIP during initial ramp-down"
                             failed.append(ch)
                             pending.remove(ch)
-                            self.hv.reset(slave=ch)
+                            hv_call(self.hv.reset, slave=ch)
                             self.moveToBad(channel=ch)
                             continue
 
@@ -1918,16 +2013,16 @@ class HV:
                     continue
 
                 try:
-                    if not self._apply_calib_conf(ch, {ch: (1.0, 0.0)}):
+                    if not hv_call(self._apply_calib_conf, ch, {ch: (1.0, 0.0)}):
                         self.logger.error(f"Channel {ch}: cannot install temporary coefficients")
                         failed.append(ch)
                         channel_results[ch]["error"] = "temporary coefficient write failed"
                         continue
 
-                    self.hv.setRateRampup(value=25, slave=ch)
-                    self.hv.setRateRampdown(value=25, slave=ch)
-                    self.hv.setVoltageSet(value=Vexpect[0], slave=ch)
-                    self.hv.powerOn(slave=ch)
+                    hv_call(self.hv.setRateRampup, value=25, slave=ch)
+                    hv_call(self.hv.setRateRampdown, value=25, slave=ch)
+                    hv_call(self.hv.setVoltageSet, value=Vexpect[0], slave=ch)
+                    hv_call(self.hv.powerOn, slave=ch)
 
                     start_channels.append(ch)
 
@@ -1959,7 +2054,7 @@ class HV:
                         continue
 
                     try:
-                        status = self.hv.getStatus(slave=ch)
+                        status = hv_call(self.hv.getStatus, slave=ch)
 
                         if status == "UP":
                             pending.remove(ch)
@@ -1970,7 +2065,7 @@ class HV:
                             channel_results[ch]["error"] = "TRIP during initial ramp-up"
                             failed.append(ch)
                             pending.remove(ch)
-                            self.hv.reset(slave=ch)
+                            hv_call(self.hv.reset, slave=ch)
                             self.moveToBad(channel=ch)
 
                     except Exception:
@@ -2021,7 +2116,7 @@ class HV:
                         continue
 
                     try:
-                        self.hv.setVoltageSet(value=v, slave=ch)
+                        hv_call(self.hv.setVoltageSet, value=v, slave=ch)
                         pending.add(ch)
 
                     except Exception:
@@ -2056,7 +2151,7 @@ class HV:
                             continue
 
                         try:
-                            status = self.hv.getStatus(slave=ch)
+                            status = hv_call(self.hv.getStatus, slave=ch)
 
                             if status == "UP":
                                 pending.remove(ch)
@@ -2071,7 +2166,7 @@ class HV:
                                 if ch in active_channels:
                                     active_channels.remove(ch)
 
-                                self.hv.reset(slave=ch)
+                                hv_call(self.hv.reset, slave=ch)
                                 self.moveToBad(ch)
 
                         except Exception:
@@ -2136,7 +2231,7 @@ class HV:
                         for _ in range(10):
                             self.check_stop(stop_event=stop_event)
 
-                            Vtemp.append(self.hv.getVoltage(slave=ch))
+                            Vtemp.append(hv_call(self.hv.getVoltage, slave=ch))
 
                             if stop_event is not None:
                                 if stop_event.wait(0.5):
@@ -2245,8 +2340,8 @@ class HV:
                     failed_restore.append(ch)
 
                     try:
-                        self.hv.powerOff(slave=ch)
-                        self.hv.reset(slave=ch)
+                        hv_call(self.hv.powerOff, slave=ch)
+                        hv_call(self.hv.reset, slave=ch)
 
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to force safe state")
@@ -2267,8 +2362,8 @@ class HV:
                         failed_restore.append(ch)
 
                     try:
-                        self.hv.powerOff(slave=ch)
-                        self.hv.reset(slave=ch)
+                        hv_call(self.hv.powerOff, slave=ch)
+                        hv_call(self.hv.reset, slave=ch)
 
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to force safe state")
@@ -2286,7 +2381,7 @@ class HV:
                     calibration_success = False
 
 
-                if not self._apply_calib_conf(ch, {ch: selected_calibration}):
+                if not hv_call(self._apply_calib_conf, ch, {ch: selected_calibration}):
                     self.logger.error(f"Channel {ch}: failed to restore calibration coefficients")
                     restore_ok = False
 
@@ -2299,7 +2394,7 @@ class HV:
                 ):
 
                     try:
-                        method(value=value, slave=ch)
+                        hv_call(method, value=value, slave=ch)
 
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to restore {name}")
@@ -2309,13 +2404,13 @@ class HV:
                 if restore_ok:
                     try:
                         if previous["status"] == "UP":
-                            result = self.on_and_wait(channels=[ch])
+                            result = self.on_and_wait(channels=[ch], hardware_executor=hardware_executor)
 
                             if ch not in result["successful_channels"]:
                                 restore_ok = False
 
                         else:
-                            result = self.off_and_wait(channels=[ch])
+                            result = self.off_and_wait(channels=[ch], hardware_executor=hardware_executor)
 
                             if ch not in result["successful_channels"]:
                                 restore_ok = False
@@ -2338,13 +2433,13 @@ class HV:
                     channel_results[ch]["error"] = "previous operating configuration restore failed"
 
                     try:
-                        self.hv.powerOff(slave=ch)
+                        hv_call(self.hv.powerOff, slave=ch)
 
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to power off after restore failure")
 
                     try:
-                        self.hv.reset(slave=ch)
+                        hv_call(self.hv.reset, slave=ch)
 
                     except Exception:
                         self.logger.exception(f"Channel {ch}: failed to reset after restore failure")

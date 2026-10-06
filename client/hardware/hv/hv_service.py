@@ -45,7 +45,12 @@ CALIBRATION_ALLOWED_COMMANDS = {
     "hv_channel_lists",
 }
 
+class _HVHardwareOperation:
 
+    def __init__(self, operation, response_queue, deadline_s):
+        self.operation = operation
+        self.response_queue = response_queue
+        self.deadline_s = deadline_s
 
 class HVService:
     
@@ -147,6 +152,47 @@ class HVService:
             priority=priority,
             timeout_s=timeout_s,
         )
+
+    def _submit_hardware_operation(
+        self,
+        operation,
+        timeout_s: float = 35.0,
+    ):
+        response_queue = queue.Queue()
+
+        task = _HVHardwareOperation(
+            operation=operation,
+            response_queue=response_queue,
+            deadline_s=time.time() + timeout_s,
+        )
+
+        self.input_queue.put(
+            (
+                HVMessagePriority.MONITORING,
+                next(self._counter),
+                task,
+            )
+        )
+
+        try:
+            success, result = response_queue.get(
+                timeout=timeout_s
+            )
+
+        except queue.Empty:
+            self.logger.error(
+                "HV internal hardware operation timeout"
+            )
+
+            return (
+                False,
+                "HV internal hardware operation timeout",
+            )
+
+        return success, result
+
+
+
     def _execute_response(self, hv_request: HVRequest) -> HVResponse:
         if not self._is_command_allowed(hv_request.command):
             self.logger.warning(
@@ -253,15 +299,29 @@ class HVService:
         
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set():
+
             try:
                 _, _, hv_request = self.input_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+
             try:
-                if (
-                    hv_request.deadline_s is not None
-                    and time.time() > hv_request.deadline_s
-                ):
+                if isinstance(hv_request, _HVHardwareOperation):
+                    if time.time() > hv_request.deadline_s:
+                        hv_request.response_queue.put((False, TimeoutError("HV internal hardware operation expired")))
+                        continue
+                    try:
+                        result = hv_request.operation()
+                        hv_request.response_queue.put((True, result))
+                    except Exception as e:
+                        self.logger.error(
+                            f"HV internal hardware operation failed: {e}"
+                        )
+                        hv_request.response_queue.put((False, str(e)))
+
+                    continue
+
+                if (hv_request.deadline_s is not None and time.time() > hv_request.deadline_s):
                     self.logger.warning(
                         f"Skipping expired HV request: {hv_request.request_id}"
                     )
@@ -329,16 +389,18 @@ class HVService:
                     hv_request.response_queue.put(response)
 
             finally:
-                if hv_request.command == "check_channel_safety":
-                    with self.pending_lock:
-                        self.safety_check_pending = False
+                if isinstance(hv_request, HVRequest):
+                    if hv_request.command == "check_channel_safety":
+                        with self.pending_lock:
+                            self.safety_check_pending = False
 
-                elif hv_request.command == "check_recovery_bad":
-                    with self.pending_lock:
-                        self.recovery_check_pending = False
-                elif hv_request.command == "check_channel_power":
-                    with self.pending_lock:
-                        self.power_check_pending = False 
+                    elif hv_request.command == "check_recovery_bad":
+                        with self.pending_lock:
+                            self.recovery_check_pending = False
+                    elif hv_request.command == "check_channel_power":
+                        with self.pending_lock:
+                            self.power_check_pending = False 
+                            
                 self.input_queue.task_done()
                 
                 
@@ -413,14 +475,14 @@ class HVService:
     def stop(self) -> None:
         self.stop_check()
 
-        self.stop_event.set()
-        
-        if self.worker_thread and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=2.0)
-
         self.calibration_stop_event.set()
         if self.calibration_thread and self.calibration_thread.is_alive():
             self.calibration_thread.join()
+
+        self.stop_event.set()
+        
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=2.0)        
 
         try:
             self.hv.close()
@@ -604,7 +666,7 @@ class HVService:
         result = None
 
         try:
-            result = self.hv.calibrate(channels=self.calibration_channels, stop_event = self.calibration_stop_event)
+            result = self.hv.calibrate(channels=self.calibration_channels, stop_event = self.calibration_stop_event, hardware_executor=self._submit_hardware_operation)
         except Exception as e:
             self.logger.exception("Unexpected HV calibration thread failure")
 
