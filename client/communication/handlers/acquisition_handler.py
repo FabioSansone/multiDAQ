@@ -7,6 +7,7 @@ def handle_set_acq_mode_sync(manager, message):
     new_mode = payload.get("acq_mode")
     acq_info = payload.get("acquisition_configuration")
     pe_thr = payload.get("pe_thr")
+    fixed_bad_channels = payload.get("fixed_bad_channels", [])
 
     if not new_mode:
         manager.logger.error("Missing acq_mode in set_acq_mode_sync command")
@@ -34,6 +35,7 @@ def handle_set_acq_mode_sync(manager, message):
         new_mode=new_mode,
         acq_info=acq_info,
         pe_thr=pe_thr,
+        fixed_bad_channels=fixed_bad_channels,
     )
 
     success = result.get("success", False)

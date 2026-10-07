@@ -15,11 +15,13 @@ class AcquisitionService:
         new_mode: str,
         acq_info: dict | None = None,
         pe_thr: int | float | None = None,
+        fixed_bad_channels: list[int] | None = None,
     ) -> dict:
 
         runtime = self.runtime
         new_mode = new_mode.lower()
         old_mode = runtime.acq_mode
+        fixed_bad_channels = fixed_bad_channels or []
 
         self.logger.info(
             f"Applying acquisition mode change: {old_mode} -> {new_mode}"
@@ -30,11 +32,11 @@ class AcquisitionService:
             return {"success": False, "missing_serial_channels": []}
 
         if new_mode == "test":
-            return self._apply_test_mode()
+            return self._apply_test_mode(fixed_bad_channels=fixed_bad_channels)
         if new_mode == "calibration":
-            return self._apply_calibration_mode()
+            return self._apply_calibration_mode(fixed_bad_channels=fixed_bad_channels)
         if new_mode == "multipmt":
-            return self._apply_multipmt_mode(acq_info=acq_info, pe_thr=pe_thr)
+            return self._apply_multipmt_mode(acq_info=acq_info, pe_thr=pe_thr, fixed_bad_channels=fixed_bad_channels)
         
         self.logger.error(f"Unhandled acquisition mode: {new_mode}")
         return {"success": False, "missing_serial_channels": []}
@@ -68,7 +70,67 @@ class AcquisitionService:
 
         return True
 
-    def _apply_test_mode(self) -> dict:
+    def _prepare_hv_service(
+        self,
+        fixed_bad_channels: list[int],
+    ) -> bool:
+
+        runtime = self.runtime
+
+        fixed_bad_hv = [
+            ch + 1
+            for ch in fixed_bad_channels
+        ]
+
+        if runtime.hv_service is None:
+            return runtime.ensure_hv_service(
+                fixed_bad_channels=fixed_bad_hv,
+            )
+
+        hv = runtime.hv_service.hv
+
+        old_fixed = set(hv.getFixedBad())
+        new_fixed = set(fixed_bad_hv)
+
+        newly_fixed = new_fixed - old_fixed
+
+        newly_fixed_on = sorted(
+            newly_fixed & set(hv.getOnChannels())
+        )
+
+        if newly_fixed_on:
+            if not self._submit_hv_command(
+                command="hv_off_and_wait",
+                payload={
+                    "channels": newly_fixed_on,
+                    "timeout_s": 90.0,
+                    "poll_s": 2.0,
+                },
+                timeout_s=120.0,
+            ):
+                self.logger.error(
+                    "Cannot power off channels becoming FIXED BAD"
+                )
+                return False
+
+        hv.set_fixed_bad_channels(
+            fixed_bad_hv
+        )
+
+        if not self._submit_hv_command(
+            command="set_hv_sync",
+            payload={"channels": "all"},
+            timeout_s=90.0,
+        ):
+            self.logger.error(
+                "Cannot synchronize HV state after "
+                "fixed bad channel update"
+            )
+            return False
+
+        return True
+    
+    def _apply_test_mode(self, fixed_bad_channels: list[int],) -> dict:
         runtime = self.runtime
 
         
@@ -85,7 +147,7 @@ class AcquisitionService:
             )
             return {"success": False, "missing_serial_channels": []}
 
-        if runtime.ensure_hv_service():
+        if self._prepare_hv_service(fixed_bad_channels=fixed_bad_channels):
             runtime.hv_service.set_policy("monitor_only")
             runtime.hv_service.start()
         else:
@@ -103,7 +165,7 @@ class AcquisitionService:
         runtime.evproducer.start(runtime.server_ip, runtime.get_mac_to_id())
         return {"success": True, "missing_serial_channels": []}
 
-    def _apply_calibration_mode(self) -> dict:
+    def _apply_calibration_mode(self, fixed_bad_channels: list[int],) -> dict:
         runtime = self.runtime
 
 
@@ -123,9 +185,15 @@ class AcquisitionService:
                 "missing_serial_channels": [],
             }
 
-        if not runtime.ensure_hv_service():
-            self.logger.error("Cannot apply calibration mode: HVService unavailable")
-            return {"success": False, "missing_serial_channels": []}
+        if not self._prepare_hv_service(fixed_bad_channels):
+            self.logger.error(
+                "Cannot apply calibration mode: "
+                "HVService unavailable"
+            )
+            return {
+                "success": False,
+                "missing_serial_channels": [],
+            }
         
         runtime.hv_service.set_policy("full_control")
 
@@ -172,6 +240,7 @@ class AcquisitionService:
         self,
         acq_info: dict | None,
         pe_thr: int | float | None,
+        fixed_bad_channels: list[int],
     ) -> dict:
         runtime = self.runtime
 
@@ -198,9 +267,15 @@ class AcquisitionService:
                 "missing_serial_channels": [],
             }
 
-        if not runtime.ensure_hv_service():
-            self.logger.error("Cannot apply multipmt mode: HVService unavailable")
-            return {"success": False, "missing_serial_channels": []}
+        if not self._prepare_hv_service(fixed_bad_channels):
+            self.logger.error(
+                "Cannot apply calibration mode: "
+                "HVService unavailable"
+            )
+            return {
+                "success": False,
+                "missing_serial_channels": [],
+            }
         
         runtime.hv_service.set_policy("full_control")
 

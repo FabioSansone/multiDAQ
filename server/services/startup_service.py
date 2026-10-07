@@ -25,21 +25,6 @@ class StartupService:
     def _sync_one_client(self, client_id: bytes, mode: str) -> bool:
         client_name = client_id.decode(errors="ignore")
 
-        identity = self.server_state.get_identity(client_id)
-
-        if identity is None:
-            self.poutput(f"Client {client_name}: missing identity")
-            self.logger.error(f"No identity found for client {client_name}")
-            return False
-
-        multipmt_id = identity.get("multipmt_id")
-        batch_id = identity.get("batch_id")
-
-        if not multipmt_id or not batch_id:
-            self.poutput(f"Client {client_name}: incomplete identity")
-            self.logger.error(f"Incomplete identity for client {client_name}: {identity}")
-            return False
-
         pe_thr = None
         acq_info = None
 
@@ -63,7 +48,12 @@ class StartupService:
         elif mode == "calibration":
             fixed_params = {ch: {"voltage": 1200, "threshold": 400} for ch in range(7)}
             self.server_state.set_client_hv_parameters(client_id, fixed_params)
-            
+
+        fixed_bad_channels = self.acquisition_service.get_detector_fixed_bad_channels(client_id)
+        if fixed_bad_channels is None:
+            self.poutput(f"Client {client_name}: cannot resolve detector fixed bad channels")
+            return False
+          
         mode_sync_command = self.control_manager.message_handler.create_command(
             channel=Channel.ACQUISITION,
             command="set_acq_mode_sync",
@@ -71,6 +61,7 @@ class StartupService:
                 "acq_mode": mode,
                 "pe_thr": pe_thr,
                 "acquisition_configuration": acq_info,
+                "fixed_bad_channels": fixed_bad_channels,
             },
             sender="server",
         )

@@ -78,6 +78,8 @@ class CalibrationOrchestrator:
         session: ClientCalibrationSession,
     ) -> dict:
 
+        configuration_identity = self.server_state.get_configuration_identity(client_id) or {}
+
         return {
             "version": 1,
             "calibration_type": run.calibration_type,
@@ -101,6 +103,15 @@ class CalibrationOrchestrator:
             "run_status": run.status.value,
 
             "client_id": client_id.decode(errors="ignore"),
+
+            "configuration_identity": {
+                "multipmt_id": configuration_identity.get(
+                    "multipmt_id"
+                ),
+                "batch_id": configuration_identity.get(
+                    "batch_id"
+                ),
+            },
 
             "requested_channels": list(
                 session.requested_channels
@@ -2664,6 +2675,58 @@ class CalibrationOrchestrator:
         )
 
         return True
+
+    def show_status(self) -> None:
+
+        status = self.calibration_service.get_status()
+
+        if not status.get("active", False):
+            self.poutput("No calibration currently active.")
+            return
+
+        self.poutput("")
+        self.poutput("Calibration status")
+        self.poutput(
+            f"  Type:   {status.get('calibration_type')}"
+        )
+        self.poutput(
+            f"  Mode:   {status.get('execution_mode')}"
+        )
+        self.poutput(
+            f"  State:  {status.get('state')}"
+        )
+
+        outcome = status.get("outcome")
+        if outcome is not None:
+            self.poutput(
+                f"  Outcome: {outcome}"
+            )
+
+        self.poutput(
+            f"  Active clients: "
+            f"{[c.decode(errors='ignore') for c in status.get('active_clients', [])]}"
+        )
+
+        self.poutput(
+            f"  Completed clients: "
+            f"{[c.decode(errors='ignore') for c in status.get('completed_clients', [])]}"
+        )
+
+        self.poutput(
+            f"  Restored clients: "
+            f"{[c.decode(errors='ignore') for c in status.get('restored_clients', [])]}"
+        )
+
+        failed_restore = status.get(
+            "failed_restore_clients",
+            [],
+        )
+
+        if failed_restore:
+            self.poutput(
+                f"  Restore failed: "
+                f"{[c.decode(errors='ignore') for c in failed_restore]}"
+            )
                 
                 
             

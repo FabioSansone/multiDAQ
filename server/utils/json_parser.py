@@ -86,7 +86,7 @@ class JsonParser:
                 self.config_file_path = None
                 continue
 
-            if self._validate_metadata():
+            if self._validate_detector_metadata():
                 self.logger.info(f"Config file validated: {path}")
                 return path
 
@@ -99,30 +99,29 @@ class JsonParser:
         )
         return None
     
-    def _validate_metadata(self) -> bool:
+    def _validate_detector_metadata(self) -> bool:
         if self.config_file is None:
-            self.logger.error("Cannot validate metadata: config file not loaded")
             return False
 
-        for section in ("pedestal", "polarizer", "spe", "gain", "PE", "threshold"):
-            metadata = self.config_file.get(section, {}).get("metadata", {})
+        detector = self.config_file.get("detector", {},)
 
-            if metadata.get("batch_id") != self.batch_id:
-                self.logger.error(
-                    f"Batch mismatch in {section}: "
-                    f"{metadata.get('batch_id')} != {self.batch_id}"
-                )
-                return False
+        batch_id = self._normalize_batch_id(detector.get("batch_id", ""))
 
-            if (
-                self.multipmt_id != "generic"
-                and self.multipmt_id not in str(metadata.get("multipmt_id", "")).lower()
-            ):
-                self.logger.error(
-                    f"multiPMT mismatch in {section}: "
-                    f"{metadata.get('multipmt_id')} != {self.multipmt_id}"
-                )
-                return False
+        multipmt_id = str(detector.get("multipmt_id", "")).lower()
+
+        if batch_id != self.batch_id:
+            self.logger.error(
+                f"Detector batch mismatch: "
+                f"{batch_id} != {self.batch_id}"
+            )
+            return False
+
+        if (self.multipmt_id != "generic" and multipmt_id != self.multipmt_id):
+            self.logger.error(
+                f"Detector multiPMT mismatch: "
+                f"{multipmt_id} != {self.multipmt_id}"
+            )
+            return False
 
         return True
     
@@ -275,7 +274,107 @@ class JsonParser:
                 json_serial_ch_info[int(ch)] = "0"
 
         return json_serial_ch_info
-        
+
+    def load_fixed_bad_channels(
+        self,
+    ) -> list[int] | None:
+
+        if self.config_file is None:
+            self.logger.error(
+                "Cannot load fixed bad channels: "
+                "config file not loaded"
+            )
+            return None
+
+        detector = self.config_file.get("detector", {},)
+
+        raw_channels = detector.get("fixed_bad_channels", [],)
+
+        if not isinstance(raw_channels, list):
+            self.logger.error(
+                "Invalid fixed_bad_channels: "
+                "expected a list"
+            )
+            return None
+
+        channels = []
+
+        for value in raw_channels:
+            try:
+                channel = int(value)
+            except (TypeError, ValueError):
+                self.logger.error(
+                    f"Invalid fixed bad channel: {value!r}"
+                )
+                return None
+
+            if channel < 0 or channel >= 7:
+                self.logger.error(
+                    f"Fixed bad channel outside 0..6: "
+                    f"{channel}"
+                )
+                return None
+
+            channels.append(channel)
+
+        return sorted(set(channels))
+
+
+    def set_fixed_bad_channels(
+        self,
+        channels: list[int],
+    ) -> bool:
+
+        normalized = []
+
+        for value in channels:
+            try:
+                channel = int(value)
+            except (TypeError, ValueError):
+                self.logger.error(
+                    f"Invalid fixed bad channel: {value!r}"
+                )
+                return False
+
+            if channel < 0 or channel >= 7:
+                self.logger.error(
+                    f"Fixed bad channel outside 0..6: "
+                    f"{channel}"
+                )
+                return False
+
+            normalized.append(channel)
+
+        if self.config_file is None:
+            return False
+
+        detector = self.config_file.setdefault(
+            "detector",
+            {},
+        )
+
+        detector["fixed_bad_channels"] = sorted(
+            set(normalized)
+        )
+
+        try:
+            with self.config_file_path.open(
+                "w",
+                encoding="utf-8",
+            ) as file:
+                json.dump(
+                    self.config_file,
+                    file,
+                    indent=4,
+                )
+
+        except Exception as exc:
+            self.logger.error(
+                f"Cannot save fixed bad channels: {exc}"
+            )
+            return False
+
+        return True
 
 
 

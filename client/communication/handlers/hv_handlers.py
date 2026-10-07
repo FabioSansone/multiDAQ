@@ -50,9 +50,6 @@ def _handle_hv_command(manager, message, *, hv_command: str, timeout_s: float = 
         timeout_s=timeout_s,
     )
 
-    if hv_command in {"hv_set_user_bad", "hv_unset_user_bad"} and hv_response.status == MessageStatus.OK:
-        manager.runtime.identity.set_fixed_bad_channels(hv_response.result.get("fixed_bad_channels", []))
-
     reply = manager.message_handler.create_reply(
         channel=Channel.HV, in_reply_to=message.request_id,
         payload={"hv_request_id": hv_response.request_id, "status": hv_response.status.value,

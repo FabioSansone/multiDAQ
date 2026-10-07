@@ -126,15 +126,15 @@ class AcquisitionService:
         return result
     
     def _convert_pe_map_to_mv(self, client_id: bytes, pe_by_channel: dict[int, float]) -> dict[int, float] | None:
-        identity = self.server_state.get_identity(client_id)
-        
-        if identity is None:
-            self.logger.error(f"Cannot resolve PE calibration: no identity for client {client_id!r}")
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
+
+        if configuration_identity is None:
+            self.logger.error(f"Cannot resolve PE calibration: no configuration identity for client {client_id!r}")
             return None
-        
-        multipmt_id = identity.get("multipmt_id")
-        batch_id = identity.get("batch_id")
-        
+
+        multipmt_id = configuration_identity.get("multipmt_id")  
+        batch_id = configuration_identity.get("batch_id")
+
         if not multipmt_id or not batch_id:
             self.logger.error(f"Cannot resolve PE calibration: incomplete identity for client {client_id!r}")
             return None
@@ -307,18 +307,39 @@ class AcquisitionService:
         )
         return True
             
+    def get_detector_fixed_bad_channels(
+        self,
+        client_id: bytes,
+    ) -> list[int] | None:
 
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
+
+        if configuration_identity is None:
+            return None
+
+        multipmt_id = configuration_identity.get("multipmt_id")
+        batch_id = configuration_identity.get("batch_id")
+
+        if not multipmt_id or not batch_id:
+            return None
+
+        parser = JsonParser(
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+        )
+
+        return parser.load_fixed_bad_channels()
     
     def build_multipmt_configuration(self, client_id: bytes, pe_thr: int | float) -> dict[int, dict[str, float]] | None:
         client_name = client_id.decode(errors="ignore")
-        identity = self.server_state.get_identity(client_id)
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
                 
-        if identity is None:
+        if configuration_identity is None:
             self.logger.error(f"Cannot build multipmt configuration: no identity for client {client_name}")
             return None
         
-        multipmt_id = identity.get("multipmt_id")
-        batch_id = identity.get("batch_id")
+        multipmt_id = configuration_identity.get("multipmt_id")
+        batch_id = configuration_identity.get("batch_id")
         
         if not multipmt_id or not batch_id:
             self.logger.error(f"Cannot build multipmt configuration: incomplete identity for client {client_name}")
@@ -1494,6 +1515,7 @@ class AcquisitionService:
         )
 
         metadata_by_client = {}
+        configuration_identity = self.server_state.get_configuration_identity(client_id) or {}
 
         for client_id in client_ids:
             client_name = client_id.decode(errors="ignore")
@@ -1521,6 +1543,12 @@ class AcquisitionService:
                     else ""
                 ),
                 "client_id": client_name,
+                "configuration_multipmt_id": configuration_identity.get(
+                    "multipmt_id"
+                ),
+                "configuration_batch_id": configuration_identity.get(
+                    "batch_id"
+                ),
             }
 
             for address in ACQ_REGISTER_ADDRESSES:
@@ -1675,14 +1703,14 @@ class AcquisitionService:
             return None
 
         client_id = client_ids[0]
-        identity = self.server_state.get_identity(client_id) or {}
+        configuration_identity = self.server_state.get_configuration_identity(client_id) or {}
 
-        batch_id = identity.get("batch_id")
+        batch_id = configuration_identity.get("batch_id")
         if batch_id:
-            self.poutput(f"Using batch_id from client identity: {batch_id}")
+            self.poutput(f"Using batch_id from active configuration: {batch_id}")
             return batch_id
 
-        multipmt_id = identity.get("multipmt_id")
+        multipmt_id = configuration_identity.get("multipmt_id")
         if multipmt_id:
             self.poutput(f"No batch_id in client identity. Using multipmt_id as acquisition folder id: {multipmt_id}")
             return multipmt_id

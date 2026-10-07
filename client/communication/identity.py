@@ -23,7 +23,6 @@ class ClientIdentity:
         self.multipmt_id: Optional[str] = None
         self.hostname = socket.gethostname()
         self.mac = self._get_mac_address()
-        self.fixed_bad_channels : Optional[list] = None
         self.i2cbus_sensors: int | None = None
         
         self._load_from_file()
@@ -53,7 +52,6 @@ class ClientIdentity:
                         data = json.load(f)
                         self.multipmt_id = data.get('multipmt_id')
                         self.batch_id = data.get('batch_id')
-                        self.fixed_bad_channels = data.get('fixed_bad_channels')
                         self.i2cbus_sensors = data.get("i2cbus_sensors")
 
                         if self.i2cbus_sensors is not None:
@@ -65,7 +63,7 @@ class ClientIdentity:
                                 )
                                 self.i2cbus_sensors = None
                                 
-                        self.logger.info(f"Loaded identity from {path}: batch={self.batch_id}, multipmt={self.multipmt_id}, bad channels={self.fixed_bad_channels}")
+                        self.logger.info(f"Loaded identity from {path}: batch={self.batch_id}, multipmt={self.multipmt_id}")
         
                         return True
                 except Exception as e:
@@ -90,7 +88,6 @@ class ClientIdentity:
                         'hostname': self.hostname,
                         'mac_address': self.mac,
                         'configured_at': str(datetime.now()),
-                        'fixed_bad_channels': self.fixed_bad_channels,
                         "i2cbus_sensors": self.i2cbus_sensors,
                     }, f, indent=2)
                     self.logger.info(f"Identity saved to {path}")
@@ -130,96 +127,7 @@ class ClientIdentity:
             "multipmt_id": self.multipmt_id,
             "hostname": self.hostname,
             "mac_address": self.mac,
-            "fixed_bad_channels": self.fixed_bad_channels
         }
-    
-    def update_fixed_bad_channels(self, bad_channel: int) -> None:
-        for path in CONFIG_PATHS:
-            if path.exists():
-                try:
-                    with open(path) as f:
-                        data = json.load(f)
-
-                    current_bad_channels = data.get("fixed_bad_channels") or []
-
-                    if bad_channel not in current_bad_channels:
-                        current_bad_channels.append(bad_channel)
-                        data["fixed_bad_channels"] = current_bad_channels
-                        self.fixed_bad_channels = current_bad_channels
-
-                        with open(path, 'w') as f:
-                            json.dump(data, f, indent=2)
-                    else:
-                        self.logger.warning("Specified channel was already marked as bad")
-                    return
-
-                except Exception as e:
-                    self.logger.error(f"Error updating fixed_bad_channels in {path}: {e}")
-                    return
-
-        self.logger.warning("Failed to retrieve client identity from config file.")
-
-
-    def remove_fixed_bad_channels(self, bad_channel: int) -> None:
-        for path in CONFIG_PATHS:
-            if path.exists():
-                try:
-                    with open(path) as f:
-                        data = json.load(f)
-
-                    current_bad_channels = data.get("fixed_bad_channels") or []
-
-                    if bad_channel in current_bad_channels:
-                        current_bad_channels.remove(bad_channel)
-                        data["fixed_bad_channels"] = current_bad_channels
-                        self.fixed_bad_channels = current_bad_channels
-
-                        with open(path, 'w') as f:
-                            json.dump(data, f, indent=2)
-                    else:
-                        self.logger.warning("Specified channel was not marked as bad")
-                    return
-
-                except Exception as e:
-                    self.logger.error(f"Error updating fixed_bad_channels in {path}: {e}")
-                    return
-
-        self.logger.warning("Failed to retrieve client identity from config file.")
-
-
-    def get_fixed_bad_channels(self) -> list:
-        for path in CONFIG_PATHS:
-            if path.exists():
-                try:
-                    with open(path) as f:
-                        data = json.load(f)
-                    return data.get("fixed_bad_channels") or []
-                except Exception as e:
-                    self.logger.error(f"Error loading {path}: {e}")
-                    return []
-
-        self.logger.warning("Failed to retrieve client identity from config file.")
-        return []
-    
-    def set_fixed_bad_channels(self, channels: list[int]) -> None:
-        """Overwrite the entire fixed_bad_channels list and persist it to file."""
-        for path in CONFIG_PATHS:
-            if path.exists():
-                try:
-                    with open(path) as f:
-                        data = json.load(f)
-
-                    data["fixed_bad_channels"] = list(channels)
-                    self.fixed_bad_channels = list(channels)
-
-                    with open(path, 'w') as f:
-                        json.dump(data, f, indent=2)
-
-                except Exception as e:
-                    self.logger.error(f"Error updating fixed_bad_channels in {path}: {e}")
-                return
-
-        self.logger.warning("Failed to retrieve client identity from config file.")
     
     
     def get_i2cbus(self) -> int | None:

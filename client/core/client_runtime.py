@@ -97,12 +97,13 @@ class ClientRunTime:
 
         return f"{multipmt_id}-{batch_id}-{mac_suffix}"
 
-    def ensure_hv_service(self) -> bool:
+
+    def ensure_hv_service(self, fixed_bad_channels: list[int] | None = None,) -> bool:
         if self.hv_service is not None:
             return True
 
         try:
-            self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=self.identity.get_fixed_bad_channels(), state_change_callback=self.sync_rc_register_39_with_hv, hv_parameters_callback=self.update_hv_parameters_after_command)
+            self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=fixed_bad_channels or [], state_change_callback=self.sync_rc_register_39_with_hv, hv_parameters_callback=self.update_hv_parameters_after_command)
             self.monitor_sample_service.set_hv_service(self.hv_service)
             self.logger.info("HVService initialized")
             return True

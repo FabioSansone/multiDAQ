@@ -228,6 +228,7 @@ class ClientRecord:
     last_event_context: dict | None = None
     error_context: dict | None = None
     identity: dict | None = None
+    configuration_identity: dict | None = None
     hv_parameters: dict[int, dict] = field(default_factory=dict)
     calibration_excluded_channels: list[int] = field(default_factory=list)
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -1327,6 +1328,7 @@ class ServerState:
                 if self.error_context
                 else None,
                 "client_states": {cid: record.state for cid, record in self.clients.items()},
+                "configuration_identities": {client_id.decode(errors="ignore"): dict(record.configuration_identity) if record.configuration_identity else None for client_id, record in self.clients.items()}
             }
 
     def set_client_hv_parameters(self, client_id: bytes, acq_info: dict[int, dict]) -> None:
@@ -1604,3 +1606,109 @@ class ServerState:
             }
 
         self.set_client_hv_parameters(client_id=client_id, acq_info=update)
+
+
+    def get_configuration_identity(
+        self,
+        client_id: bytes,
+    ) -> dict | None:
+
+        with self._lock:
+
+            record = self.clients.get(client_id)
+
+            if record is None:
+                return None
+
+            if record.configuration_identity is not None:
+                return dict(record.configuration_identity)
+
+            if record.identity is not None:
+                return {
+                    "multipmt_id": record.identity.get(
+                        "multipmt_id"
+                    ),
+                    "batch_id": record.identity.get(
+                        "batch_id"
+                    ),
+                }
+
+            return None
+
+
+    def set_configuration_identity(
+        self,
+        client_id: bytes,
+        *,
+        multipmt_id: str | None = None,
+        batch_id: str | None = None,
+    ) -> bool:
+
+        with self._lock:
+
+            record = self.clients.get(client_id)
+
+            if record is None:
+                self.logger.error(
+                    f"Cannot set configuration identity: "
+                    f"unknown client {client_id!r}"
+                )
+                return False
+
+            current = (
+                record.configuration_identity
+                or record.identity
+                or {}
+            )
+
+            new_multipmt_id = (
+                multipmt_id
+                if multipmt_id is not None
+                else current.get("multipmt_id")
+            )
+
+            new_batch_id = (
+                batch_id
+                if batch_id is not None
+                else current.get("batch_id")
+            )
+
+            if not new_multipmt_id or not new_batch_id:
+                self.logger.error(
+                    "Incomplete configuration identity"
+                )
+                return False
+
+            record.configuration_identity = {
+                "multipmt_id": str(new_multipmt_id),
+                "batch_id": str(new_batch_id),
+            }
+
+            return True
+
+
+    def get_configuration_id(
+        self,
+        client_id: bytes,
+    ) -> str | None:
+
+        configuration = (
+            self.get_configuration_identity(
+                client_id
+            )
+        )
+
+        if not configuration:
+            return None
+
+        multipmt_id = configuration.get(
+            "multipmt_id"
+        )
+        batch_id = configuration.get(
+            "batch_id"
+        )
+
+        if not multipmt_id or not batch_id:
+            return None
+
+        return f"{multipmt_id}:{batch_id}"

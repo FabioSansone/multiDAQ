@@ -5,6 +5,7 @@ from server.utils.logger import get_logger
 from common.message_handler import Channel
 from server.core.server_state import command_guard, ServerFSM
 from server.utils.channels import hv_to_user_channels
+from server.utils.json_parser import JsonParser
 
 logger = get_logger("hv_commands")
 
@@ -430,6 +431,48 @@ def do_hv(self, args: argparse.Namespace) -> None:
             )
             self.poutput(f"No reply from client {client_name}. Reason: {reason}")
             continue
+
+        if args.command_group in {
+            "mark_bad",
+            "unmark_bad",
+        }:
+
+            reply_payload = reply.payload or {}
+
+            if reply_payload.get("status") == "ok":
+
+                result = reply_payload.get("result", {},)
+
+                fixed_bad_hv = result.get("fixed_bad_channels",[],)
+
+                fixed_bad_channels = [ch - 1 for ch in fixed_bad_hv]
+
+                configuration_identity = self.server_state.get_configuration_identity(client_id)
+
+                if configuration_identity is None:
+                    logger.error(
+                        f"Cannot persist fixed bad channels "
+                        f"for client {client_name}: "
+                        "missing configuration identity"
+                    )
+                else:
+                    parser = JsonParser(
+                        multipmt_id=configuration_identity.get(
+                            "multipmt_id"
+                        ),
+                        batch_id=configuration_identity.get(
+                            "batch_id"
+                        ),
+                    )
+
+                    if not parser.set_fixed_bad_channels(
+                        fixed_bad_channels
+                    ):
+                        self.poutput(
+                            f"Client {client_name}: "
+                            "FIXED BAD updated on hardware, "
+                            "but persistence failed."
+                        )
         
         if reply is not None and args.command_group == "set_common":  
             result = reply.payload.get("result", {})

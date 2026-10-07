@@ -1421,7 +1421,34 @@ class CalibrationService:
             )
 
             return True
-            
+
+    def get_status(self) -> dict:
+        with self._lock:
+
+            run = self._run
+
+            if run is None:
+                return {
+                    "active": False,
+                }
+
+            return {
+                "active": run.state != CalibrationRunState.FINISHED,
+                "calibration_type": run.calibration_type,
+                "execution_mode": run.execution_mode.value,
+                "state": run.state.value,
+                "outcome": (
+                    run.outcome.value
+                    if run.outcome is not None
+                    else None
+                ),
+                "active_clients": list(self.get_active_clients()),
+                "completed_clients": list(self.get_completed_clients()),
+                "restored_clients": list(self.get_restored_clients()),
+                "failed_restore_clients": list(
+                    self.get_failed_restore_clients()
+                ),
+            }
             
             
 

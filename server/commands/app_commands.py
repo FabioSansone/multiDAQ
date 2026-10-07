@@ -4,6 +4,7 @@ from server.utils.logger import get_logger
 from server.utils.channels import *
 from common.message_handler import Channel
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
+from server.utils.json_parser import JsonParser
 from server.commands.hv_commands import _print_hv_lists
 
 
@@ -148,43 +149,109 @@ def do_quit(self, _) -> bool:
 
 @cmd2.with_category("Generic Commands")
 def do_snapshot(self, _) -> None:
-    """Print a formatted snapshot of the server FSM state."""
-
     snap = self.server_state.snapshot()
 
     def _decode(client_ids):
-        return [cid.decode(errors="ignore") for cid in client_ids]
+        return [
+            cid.decode(errors="ignore")
+            for cid in client_ids
+        ]
 
     lines = []
+
     lines.append("=" * 60)
-    lines.append(f"  SERVER STATE SNAPSHOT")
+    lines.append("  SERVER STATE SNAPSHOT")
     lines.append("=" * 60)
+
     lines.append(f"  Mode:              {snap['mode']}")
     lines.append(f"  State:             {snap['state'].value}")
     lines.append(
         f"  Previous state:    "
         f"{snap['previous_state'].value if snap['previous_state'] else '-'}"
     )
+
     lines.append("-" * 60)
-    lines.append(f"  Control clients ({len(snap['control_clients'])}):")
-    lines.append(f"    {_decode(snap['control_clients']) or '(none)'}")
-    lines.append(f"  Acquisition clients ({len(snap['acquisition_clients'])}):")
-    lines.append(f"    {_decode(snap['acquisition_clients']) or '(none)'}")
-    lines.append(f"  Common plane clients ({len(snap['common_clients'])}):")
-    lines.append(f"    {_decode(snap['common_clients']) or '(none)'}")
-    lines.append(f"  Monitoring clients ({len(snap['monitoring_clients'])}):")
-    lines.append(f"    {_decode(snap['monitoring_clients']) or '(none)'}")
-    lines.append(f"  Operational clients ({len(snap['operational_clients'])}):")
-    lines.append(f"    {_decode(snap['operational_clients']) or '(none)'}")
+
+    lines.append(
+        f"  Control clients ({len(snap['control_clients'])}):"
+    )
+    lines.append(
+        f"    {_decode(snap['control_clients']) or '(none)'}"
+    )
+
+    lines.append(
+        f"  Acquisition clients ({len(snap['acquisition_clients'])}):"
+    )
+    lines.append(
+        f"    {_decode(snap['acquisition_clients']) or '(none)'}"
+    )
+
+    lines.append(
+        f"  Common plane clients ({len(snap['common_clients'])}):"
+    )
+    lines.append(
+        f"    {_decode(snap['common_clients']) or '(none)'}"
+    )
+
+    lines.append(
+        f"  Monitoring clients ({len(snap['monitoring_clients'])}):"
+    )
+    lines.append(
+        f"    {_decode(snap['monitoring_clients']) or '(none)'}"
+    )
+
+    lines.append(
+        f"  Operational clients ({len(snap['operational_clients'])}):"
+    )
+    lines.append(
+        f"    {_decode(snap['operational_clients']) or '(none)'}"
+    )
+
     lines.append("-" * 60)
-    lines.append(f"  Per-client states:")
+    lines.append("  Per-client states:")
 
     if snap["client_states"]:
         for client_id, state in snap["client_states"].items():
             client_name = client_id.decode(errors="ignore")
-            lines.append(f"    {client_name:30s} {state.value}")
+            lines.append(
+                f"    {client_name:30s} {state.value}"
+            )
     else:
         lines.append("    (no clients registered)")
+
+    lines.append("-" * 60)
+    lines.append("  Client configurations:")
+
+    configuration_identities = snap.get(
+        "configuration_identities",
+        {},
+    )
+
+    if configuration_identities:
+        for client_id, configuration in (
+            configuration_identities.items()
+        ):
+            if configuration is None:
+                lines.append(
+                    f"    {client_id}: none"
+                )
+                continue
+
+            multipmt_id = configuration.get(
+                "multipmt_id"
+            )
+            batch_id = configuration.get(
+                "batch_id"
+            )
+
+            lines.append(
+                f"    {client_id}: "
+                f"{multipmt_id}/{batch_id}"
+            )
+    else:
+        lines.append(
+            "    (no client configurations)"
+        )
 
     lines.append("-" * 60)
 
@@ -200,26 +267,52 @@ def do_snapshot(self, _) -> None:
         lines.append("-" * 60)
 
     last_event = snap["last_event_context"]
+
     if last_event is not None:
-        lines.append(f"  Last event:")
-        lines.append(f"    event:     {last_event['event'].value if last_event['event'] else '-'}")
-        lines.append(f"    reason:    {last_event['reason']}")
-        lines.append(f"    source:    {last_event['source']}")
-        lines.append(f"    timestamp: {last_event['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        lines.append("  Last event:")
+        lines.append(
+            f"    event:     "
+            f"{last_event['event'].value if last_event['event'] else '-'}"
+        )
+        lines.append(
+            f"    reason:    {last_event['reason']}"
+        )
+        lines.append(
+            f"    source:    {last_event['source']}"
+        )
+        lines.append(
+            f"    timestamp: "
+            f"{last_event['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
+
         if last_event.get("error"):
-            lines.append(f"    error:     {last_event['error']}")
+            lines.append(
+                f"    error:     {last_event['error']}"
+            )
 
     error_context = snap["error_context"]
+
     if error_context is not None:
         lines.append("-" * 60)
-        lines.append(f"  ERROR context:")
+        lines.append("  ERROR context:")
         lines.append(
-            f"    previous_state: {error_context['previous_state'].value}"
+            f"    previous_state: "
+            f"{error_context['previous_state'].value}"
         )
-        lines.append(f"    reason:         {error_context['reason']}")
-        lines.append(f"    source:         {error_context['source']}")
+        lines.append(
+            f"    reason:         "
+            f"{error_context['reason']}"
+        )
+        lines.append(
+            f"    source:         "
+            f"{error_context['source']}"
+        )
+
         if error_context.get("error"):
-            lines.append(f"    error:          {error_context['error']}")
+            lines.append(
+                f"    error:          "
+                f"{error_context['error']}"
+            )
 
     lines.append("=" * 60)
 
@@ -698,6 +791,128 @@ def do_connect(self, args: argparse.Namespace) -> None:
                     
     client_ids = self.server_state.list_common_plane_clients()
     self.startup_service.configure_clients(client_ids=client_ids, mode=self.mode)
+
+
+
+############################
+#SERVER BATCH CONFIGURATION#
+############################
+
+configuration_parser = argparse.ArgumentParser()
+
+configuration_subparsers = (
+    configuration_parser.add_subparsers(
+        dest="command",
+        required=True,
+    )
+)
+
+configuration_set_parser = (
+    configuration_subparsers.add_parser(
+        "set",
+        help="Select the active detector configuration",
+    )
+)
+
+configuration_set_parser.add_argument(
+    "--client-id",
+    required=True,
+    type=str,
+)
+
+configuration_set_parser.add_argument(
+    "--multipmt-id",
+    required=True,
+    type=str,
+)
+
+configuration_set_parser.add_argument(
+    "--batch-id",
+    required=True,
+    type=str,
+)
+
+configuration_subparsers.add_parser(
+    "show",
+    help="Show active detector configurations",
+)
+
+@cmd2.with_argparser(configuration_parser)
+@cmd2.with_category("Generic Commands")
+@command_guard([ServerFSM.READY])
+def do_configuration(self, args: argparse.Namespace) -> None:
+    if args.command == "show":
+        for client_id in self.server_state.list_connected_clients():
+            client_name = client_id.decode(errors="ignore")
+            identity = self.server_state.get_identity(client_id) or {}
+            configuration = self.server_state.get_configuration_identity(client_id) or {}
+            self.poutput(
+                f"{client_name}: "
+                f"identity="
+                f"{identity.get('multipmt_id')}/"
+                f"{identity.get('batch_id')} | "
+                f"configuration="
+                f"{configuration.get('multipmt_id')}/"
+                f"{configuration.get('batch_id')}"
+            )
+            return
+
+    elif args.commad == "set":
+        requested_client_id = args.client_id.encode()
+        connected = self.server_state.list_connected_clients()
+
+        if requested_client_id not in connected:
+            self.poutput(
+                f"Unknown connected client: "
+                f"{args.client_id}"
+            )
+            return
+
+        parser = JsonParser(multipmt_id=args.multipmt_id, batch_id=args.batch_id,)
+        if parser.config_file_path is None:
+            self.poutput(
+                "Cannot select configuration: "
+                "matching detector configuration "
+                "file not found."
+            )
+            return
+
+        fixed_bad = parser.load_fixed_bad_channels()
+        if fixed_bad is None:
+            self.poutput(
+                "Cannot select configuration: "
+                "invalid detector metadata."
+            )
+            return
+
+        old_configuration = self.server_state.get_configuration_identity(requested_client_id)
+        updated = self.server_state.set_configuration_identity(requested_client_id, multipmt_id=args.multipmt_id, batch_id=args.batch_id,)
+        if not updated:
+            self.poutput(
+                "Failed to update configuration identity."
+            )
+            return
+
+        mode = self.server_state.get_mode()
+        configured = self.startup_service.configure_clients(client_ids=[requested_client_id], mode=mode,)
+        if configured:
+            new_configuration = self.server_state.get_configuration_identity(requested_client_id)
+            self.poutput(
+                f"Client {args.client_id}: "
+                f"configuration changed "
+                f"from {old_configuration} "
+                f"to {new_configuration}."
+            )
+
+            return
+
+        self.poutput(
+            f"Client {args.client_id}: "
+            "configuration identity changed, "
+            "but hardware configuration failed. "
+            "Client is not operational."
+        )
+
 
 #####################################
 #HANDLING EVENT MESSAGES FROM CLIENT#

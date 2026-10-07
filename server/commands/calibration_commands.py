@@ -351,6 +351,17 @@ hv_target_group.add_argument(
     ),
 )
 
+#
+# ==========================
+# CALIBRATION STATUS
+# ==========================
+#
+
+status_parser = calibration_subparsers.add_parser(
+    "status",
+    help="Show current calibration status",
+)
+
 
 #
 # ==========================
@@ -372,6 +383,7 @@ calibration_subparsers.add_parser(
 @command_guard([
     ServerFSM.READY,
     ServerFSM.CALIBRATING,
+    ServerFSM.CALIBRATION_FINALIZING,
 ])
 @acquisition_guard([
     AcquisitionMode.TEST,
@@ -564,4 +576,8 @@ def do_calibration(
             f"position={args.position}."
         )
 
+        return
+
+    if args.command == "status":
+        self.calibration_orchestrator.show_status()
         return
