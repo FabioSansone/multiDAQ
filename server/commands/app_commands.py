@@ -1115,6 +1115,8 @@ def handle_event(self, message):
 
     elif event == "hv_power_state_aligned":
         _print_power_alignment_event(self, payload)
+    elif event == "rc_configuration_changed":
+        return
 
     else:
         self.poutput(f"\n[INFO] {event}: {payload}")

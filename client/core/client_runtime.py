@@ -206,7 +206,7 @@ class ClientRunTime:
             )
             return False
 
-        self.logger.info(
+        self.logger.debug(
             "RC register 39 synchronized: "
             f"mode={self.acq_mode}, "
             f"hv_channels={hv_enabled_channels}, "
