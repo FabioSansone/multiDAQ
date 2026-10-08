@@ -839,7 +839,7 @@ configuration_subparsers.add_parser(
 
 @cmd2.with_argparser(configuration_parser)
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.READY])
+@command_guard([ServerFSM.READY, ServerFSM.CONNECTED,])
 def do_configuration(self, args: argparse.Namespace) -> None:
     if args.command == "show":
         for client_id in self.server_state.list_connected_clients():
@@ -855,9 +855,9 @@ def do_configuration(self, args: argparse.Namespace) -> None:
                 f"{configuration.get('multipmt_id')}/"
                 f"{configuration.get('batch_id')}"
             )
-            return
+        return
 
-    elif args.commad == "set":
+    elif args.command == "set":
         requested_client_id = args.client_id.encode()
         connected = self.server_state.list_connected_clients()
 

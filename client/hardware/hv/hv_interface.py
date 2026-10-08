@@ -1798,6 +1798,11 @@ class HV:
                 self.moveToMissingSerial(ch)
         
         return {"missing_serial_channels": missing, "checked_channels": list(channels)}
+
+    def _normalize_serial(self, serial: str | None) -> str:
+        if not serial:
+            return ""
+        return serial.rstrip("\x00").strip()
     
     def get_serial_map(self, channels: list[int]) -> dict:
         
@@ -1807,7 +1812,7 @@ class HV:
             if ch not in serial_ch_map:
                 try:
                     _, pmt_serial, _, _, _ = self.hv.getInfo(slave=ch)
-                    serial_ch_map[ch] = pmt_serial
+                    serial_ch_map[ch] = self._normalize_serial(pmt_serial)
                 except Exception as e:
                     self.logger.error(f"Failed to read PMT info for channel {ch}: {e}")
                     serial_ch_map[ch] = "0"

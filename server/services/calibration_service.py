@@ -1425,7 +1425,7 @@ class CalibrationService:
     def get_status(self) -> dict:
         with self._lock:
 
-            run = self._run
+            run = self.current_run
 
             if run is None:
                 return {
@@ -1433,10 +1433,9 @@ class CalibrationService:
                 }
 
             return {
-                "active": run.state != CalibrationRunState.FINISHED,
+                "active": run.status != CalibrationStatus.FINISHED,
                 "calibration_type": run.calibration_type,
                 "execution_mode": run.execution_mode.value,
-                "state": run.state.value,
                 "outcome": (
                     run.outcome.value
                     if run.outcome is not None

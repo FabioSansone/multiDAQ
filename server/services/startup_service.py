@@ -43,11 +43,8 @@ class StartupService:
                 self.logger.error(f"Cannot build multipmt configuration for client {client_name}")
                 return False
             
-            self.server_state.set_client_hv_parameters(client_id, acq_info)
-
         elif mode == "calibration":
-            fixed_params = {ch: {"voltage": 1200, "threshold": 400} for ch in range(7)}
-            self.server_state.set_client_hv_parameters(client_id, fixed_params)
+            acq_info = {ch: {"voltage": 1200, "threshold": 400} for ch in range(7)}
 
         fixed_bad_channels = self.acquisition_service.get_detector_fixed_bad_channels(client_id)
         if fixed_bad_channels is None:
@@ -100,6 +97,9 @@ class StartupService:
                 f"status={reply_status}, mode={reply_mode}, error={error}"
             )
             return False
+
+        if acq_info is not None:
+            self.server_state.set_client_hv_parameters(client_id, acq_info)
 
         self.poutput(f"Client {client_name}: mode synchronized to {reply_mode}")
         self.logger.info(f"Client {client_name} synchronized to mode '{reply_mode}'")

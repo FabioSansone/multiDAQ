@@ -695,7 +695,7 @@ class MonitoringPlaneManager:
                     )
 
                 else:
-                    self.logger.info(
+                    self.logger.debug(
                         log_message
                     )
 

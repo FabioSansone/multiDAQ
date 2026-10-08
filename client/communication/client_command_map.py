@@ -9,6 +9,8 @@ from client.communication.handlers.monitoring_handlers import *
 COMMAND_MAP = {
     #System Handlers
     "server_shutdown": handle_server_shutdown,
+
+    #Acquisition Handlers
     'set_acq_mode_sync': handle_set_acq_mode_sync,
     
     #HV Handlers

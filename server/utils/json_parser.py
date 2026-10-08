@@ -6,13 +6,7 @@ from server.utils.logger import get_logger
 
 class JsonParser:
 
-    CONFIG_FILES_POSSIBLE_PATHS = [
-        Path("multiDAQ/server/multipmt_config_files"),
-        Path("/swgo/Test/multiPMT_analysis/config_files/calibration"),
-        Path.home() / "multiPMT" / "multipmt_config_files",
-        Path("swgo/multiPMT/multipmt_config_files")
-    ]
-
+    CONFIG_FILES_FOLDER = Path(__file__).resolve().parents[1] / "multipmt_config_files"
     def __init__(self, multipmt_id:str, batch_id:str|int):
         
         self.logger = get_logger("json_parser")
@@ -41,15 +35,21 @@ class JsonParser:
 
         return f"batch_{batch_id}"
 
-    def _find_config_files_folder(self) -> Path | None:
-        for path in self.CONFIG_FILES_POSSIBLE_PATHS:
-            if path.exists() and path.is_dir():
-                self.logger.info(f"Found config files folder at: {path}")
-                return path
+    def _find_config_files_folder(
+        self,
+    ) -> Path | None:
 
-            self.logger.warning(f"Config files folder not found at: {path}")
+        path = self.CONFIG_FILES_FOLDER
 
-        self.logger.error("Config files folder not found in possible paths")
+        if path.exists() and path.is_dir():
+            self.logger.info(
+                f"Found config files folder at: {path}"
+            )
+            return path
+
+        self.logger.error(
+            f"Config files folder not found at: {path}"
+        )
         return None
     
     def _expected_filename(self) -> str:
@@ -99,15 +99,31 @@ class JsonParser:
         )
         return None
     
-    def _validate_detector_metadata(self) -> bool:
+    def _validate_detector_metadata(
+        self,
+    ) -> bool:
+
         if self.config_file is None:
             return False
 
-        detector = self.config_file.get("detector", {},)
+        detector = self.config_file.get(
+            "detector",
+            {},
+        )
 
-        batch_id = self._normalize_batch_id(detector.get("batch_id", ""))
+        batch_id = self._normalize_batch_id(
+            detector.get(
+                "batch_id",
+                "",
+            )
+        )
 
-        multipmt_id = str(detector.get("multipmt_id", "")).lower()
+        multipmt_id = str(
+            detector.get(
+                "multipmt_id",
+                "",
+            )
+        ).lower()
 
         if batch_id != self.batch_id:
             self.logger.error(
@@ -116,12 +132,25 @@ class JsonParser:
             )
             return False
 
-        if (self.multipmt_id != "generic" and multipmt_id != self.multipmt_id):
-            self.logger.error(
-                f"Detector multiPMT mismatch: "
-                f"{multipmt_id} != {self.multipmt_id}"
+        if self.multipmt_id != "generic":
+
+            exact_match = (
+                multipmt_id == self.multipmt_id
             )
-            return False
+
+            legacy_match = (
+                multipmt_id.startswith(
+                    self.multipmt_id
+                )
+            )
+
+            if not exact_match and not legacy_match:
+                self.logger.error(
+                    f"Detector multiPMT mismatch: "
+                    f"{multipmt_id} != "
+                    f"{self.multipmt_id}"
+                )
+                return False
 
         return True
     

@@ -34,7 +34,7 @@ class AcquisitionService:
         if new_mode == "test":
             return self._apply_test_mode(fixed_bad_channels=fixed_bad_channels)
         if new_mode == "calibration":
-            return self._apply_calibration_mode(fixed_bad_channels=fixed_bad_channels)
+            return self._apply_calibration_mode(acq_info=acq_info, fixed_bad_channels=fixed_bad_channels)
         if new_mode == "multipmt":
             return self._apply_multipmt_mode(acq_info=acq_info, pe_thr=pe_thr, fixed_bad_channels=fixed_bad_channels)
         
@@ -165,7 +165,14 @@ class AcquisitionService:
         runtime.evproducer.start(runtime.server_ip, runtime.get_mac_to_id())
         return {"success": True, "missing_serial_channels": []}
 
-    def _apply_calibration_mode(self, fixed_bad_channels: list[int],) -> dict:
+    def _apply_calibration_mode(self, acq_info: dict | None, fixed_bad_channels: list[int],) -> dict:
+
+        if acq_info is None:
+            self.logger.error(
+                "Cannot apply multipmt mode: missing acquisition configuration"
+            )
+            return {"success": False, "missing_serial_channels": []}
+
         runtime = self.runtime
 
 
@@ -206,18 +213,17 @@ class AcquisitionService:
         missing_serial_channels = missing_result.get("missing_serial_channels", [])
         
         if not self._submit_hv_command(
-            command="set_common_voltage",
-            payload={"channels": "all", "common_voltage": 1200},
-            timeout_s=35.0,
+            command="set_acquisition_configuration",
+            payload={
+                "channels": "all",
+                "acquisition_configuration": acq_info,
+            },
+            timeout_s=300.0,
         ):
-            return {"success": False, "missing_serial_channels": missing_serial_channels}
-
-        if not self._submit_hv_command(
-            command="set_common_threshold",
-            payload={"channels": "all", "common_threshold": 400},
-            timeout_s=35.0,
-        ):
-            return {"success": False, "missing_serial_channels": missing_serial_channels}
+            return {
+                "success": False,
+                "missing_serial_channels": missing_serial_channels,
+            }
 
         if not self._submit_hv_command(
             command="hv_on",
@@ -230,7 +236,7 @@ class AcquisitionService:
 
         runtime.set_acquisition_mode(
             acq_mode="calibration",
-            acq_info=None,
+            acq_info=acq_info,
             start_thr=None,
         )
 
