@@ -1160,6 +1160,9 @@ def handle_monitoring_event(
             payload,
         )
 
+    elif event == "rc_configuration_changed":
+        return
+
     else:
 
         client_name = client_id.decode(
