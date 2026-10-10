@@ -353,6 +353,123 @@ hv_target_group.add_argument(
 
 #
 # ==========================
+# PEDESTAL CALIBRATION
+# ==========================
+#
+
+pedestal_parser = calibration_subparsers.add_parser(
+    "pedestal",
+    help=(
+        "Acquire the electronic pedestal "
+        "for the selected PMT channels."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--duration",
+    type=float,
+    default=60.0,
+    help=(
+        "Pedestal acquisition duration in seconds. "
+        "Default: 60."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--type",
+    dest="acq_type",
+    type=str,
+    default="pedestal",
+    help=(
+        "Acquisition type folder name. "
+        "Default: pedestal."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--suffix",
+    type=str,
+    default="pedestal",
+    help=(
+        "Output file suffix. "
+        "Default: pedestal."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--run-id",
+    type=str,
+    default=None,
+    help=(
+        "Optional run ID. If omitted, "
+        "automatic acquisition folder is created."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--file-format",
+    choices=["csv", "bin"],
+    default="csv",
+    help=(
+        "Output file format. Default: csv."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--channels",
+    type=str,
+    default="all",
+    help=(
+        'Channels selected. Can be "all" '
+        "or a comma-separated list."
+    ),
+)
+
+
+#
+# Target selection.
+#
+
+pedestal_target_group = (
+    pedestal_parser
+    .add_mutually_exclusive_group()
+)
+
+
+pedestal_target_group.add_argument(
+    "--multipmt-id",
+    type=str,
+    default=None,
+    help="Target client by multiPMT ID.",
+)
+
+
+pedestal_target_group.add_argument(
+    "--batch-id",
+    type=str,
+    default=None,
+    help="Target client by batch ID.",
+)
+
+
+pedestal_target_group.add_argument(
+    "--all-clients",
+    action="store_true",
+    help=(
+        "Run the pedestal calibration on all eligible clients. "
+        "This is also the default when no target "
+        "selector is specified."
+    ),
+)
+
+#
+# ==========================
 # CALIBRATION STATUS
 # ==========================
 #

@@ -776,6 +776,119 @@ class CalibrationOrchestrator:
 
         return True
 
+    ################################
+    #Pedestal Calibration Procedure#
+    ################################
+
+    def _apply_pedestal_point(self, client_id: bytes, point: ScanPoint) -> bool:
+        client_name = client_id.decode(errors="ignore")
+        session = self.calibration_service.get_session(client_id=client_id)
+
+        if session is None:
+            self.logger.error(
+                f"Cannot prepare pedestal for "
+                f"client {client_name}: no calibration session"
+            )
+            return False
+
+        reply, reason = (
+            self.command_service.send_calibration_command(
+                client_id=client_id,
+                command="pedestal_calibration",
+                payload={
+                    "channels": list(
+                        session.effective_channels
+                    ),
+                },
+                plane=CommandPlane.ACQUISITION,
+                timeout_s=320.0,
+            )
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"Pedestal preparation failed for "
+                f"client {client_name}: {reason}"
+            )
+            return False
+
+        payload = reply.payload or {}
+
+        if payload.get("status") != "ok":
+            self.logger.error(
+                f"Pedestal preparation rejected by "
+                f"client {client_name}: "
+                f"{payload.get('error')}"
+            )
+            return False
+
+        return True
+
+    def pedestal(self, args) -> bool:
+        self.poutput("Pedestal calibration requested.")
+        
+        if self.server_state.get_server_state() != ServerFSM.READY:
+            self.poutput("Cannot start Pedestal calibration: server is not READY.")
+            return False
+
+        if self._calibration_thread is not None and self._calibration_thread.is_alive():
+            self.poutput("Another calibration worker is already running.")
+            return False
+
+        all_clients = bool(getattr(args, "all_clients", False))
+        multipmt_id = getattr(args, "multipmt_id", None)
+        batch_id = getattr(args, "batch_id", None)
+
+        if multipmt_id is None and batch_id is None and not all_clients:
+            all_clients = True
+
+        targets = self._resolve_calibration_targets(
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+            all_clients=all_clients,
+            channels=args.channels,
+            require_acquisition_plane=True,
+        )
+
+        if not targets:
+            return False
+
+        point = ScanPoint(
+            index=0,
+            parameter_name="pedestal",
+            value=1,
+            suffix=args.suffix, 
+        )
+
+
+        snapshot_spec = HardwareSnapshotSpec(
+            rc_register=(
+                12,
+                19
+            ),
+            hv_power_state=True,
+        )
+
+        scan_spec = CalibrationScanSpec(
+            calibration_type="pedestal",
+            points=(point,),
+            snapshot_spec=snapshot_spec,
+            apply_point=self._apply_pedestal_point,
+        )
+
+        return self.start_calibration_scan(
+            scan_spec=scan_spec,
+            execution_mode=CalibrationMode.SAFE,
+            targets=targets,
+            trigger_config=None,
+            acq_type=args.acq_type,
+            file_format=args.file_format,
+            duration=args.duration,
+            run_id=args.run_id,
+            use_calibration_trigger_defaults=False,
+        )
+        
+
         
     ####################################
     #Time-To-Peak Calibration Procedure#
@@ -1025,6 +1138,7 @@ class CalibrationOrchestrator:
             execution_mode=execution_mode,
             targets=targets,
             trigger_config=trigger_config,
+            use_calibration_trigger_defaults=True,
             acq_type=args.acq_type,
             file_format=args.file_format,
             duration=args.duration,
@@ -1125,6 +1239,9 @@ class CalibrationOrchestrator:
         else:
             self.poutput(f"Client {client_name}: calibration rechecked. All channels matched — nothing excluded.")
 
+    #############################################
+    #General Functions for Calibration Procedure#
+    #############################################
 
     def _resolve_calibration_targets(
         self,
@@ -1193,7 +1310,7 @@ class CalibrationOrchestrator:
         return resolution.targets
 
 
-    def _prepare_calibration_client(self, client_id: bytes, trigger_config=None, ) -> bool:
+    def _prepare_calibration_client(self, client_id: bytes, trigger_config=None, use_calibration_trigger_defaults: bool = True, ) -> bool:
         client_name = client_id.decode(errors="ignore")
 
         session = self.calibration_service.get_session(client_id=client_id)
@@ -1239,7 +1356,7 @@ class CalibrationOrchestrator:
 
         effective_trigger_config = trigger_config
 
-        if mode == "calibration" and effective_trigger_config is None:
+        if mode == "calibration" and effective_trigger_config is None and use_calibration_trigger_defaults:
             effective_trigger_config = TriggerConfiguration(
                 mode="external",
                 input_type="single-ended",
@@ -1414,10 +1531,7 @@ class CalibrationOrchestrator:
             channel_mask |= 1 << channel
 
         
-        if (
-            mode in {"test", "multipmt"}
-            and trigger_config is None
-        ):
+        if effective_trigger_config is None:
 
             current_reg19 = (
                 self.command_service.read_rc_register(
@@ -1495,7 +1609,7 @@ class CalibrationOrchestrator:
 
         return True  
 
-    def _prepare_active_calibration_clients(self, trigger_config: TriggerConfiguration | None = None) -> list[bytes]:
+    def _prepare_active_calibration_clients(self, trigger_config: TriggerConfiguration | None = None, use_calibration_trigger_defaults: bool = True, ) -> list[bytes]:
 
         active_clients = self.calibration_service.get_active_clients()
 
@@ -1503,7 +1617,7 @@ class CalibrationOrchestrator:
 
         for client_id in active_clients:
             client_name = client_id.decode(errors="ignore")
-            ok = self._prepare_calibration_client(client_id=client_id, trigger_config=trigger_config)
+            ok = self._prepare_calibration_client(client_id=client_id, trigger_config=trigger_config, use_calibration_trigger_defaults=use_calibration_trigger_defaults, )
 
             if not ok:
                 self.calibration_service.mark_client_failed(client_id=client_id, error="calibration hardware preparation failed")
@@ -1769,6 +1883,7 @@ class CalibrationOrchestrator:
         targets: dict[bytes, list[int]],
         trigger_config: TriggerConfiguration | None,
         acq_type: str,
+        use_calibration_trigger_defaults: bool = True,
         file_format: str = "csv",
         duration: float | None = None,
         run_id=None,
@@ -1899,6 +2014,7 @@ class CalibrationOrchestrator:
                 "snapshot_spec": snapshot_spec,
                 "execution_mode": execution_mode,
                 "trigger_config": trigger_config,
+                "use_calibration_trigger_defaults": use_calibration_trigger_defaults,
                 "points": list(points),
                 "calibration_type": calibration_type,
                 "acq_type": acq_type,
@@ -1949,6 +2065,7 @@ class CalibrationOrchestrator:
         calibration_type: str,
         acq_type: str,
         run_folder_clients,
+        use_calibration_trigger_defaults: bool = True,
         file_format: str = "csv",
         duration: float | None = None,
         run_id=None,
@@ -2006,7 +2123,7 @@ class CalibrationOrchestrator:
                 rc19_by_client = {}
                 if execution_mode == CalibrationMode.FAST:
 
-                    ready_clients = self._prepare_active_calibration_clients(trigger_config=trigger_config)
+                    ready_clients = self._prepare_active_calibration_clients(trigger_config=trigger_config, use_calibration_trigger_defaults=use_calibration_trigger_defaults,)
                     for client_id in ready_clients:
                         value = self.command_service.read_rc_register(client_id=client_id, address=19, plane=CommandPlane.ACQUISITION,)
                         if value is None:
@@ -2042,7 +2159,8 @@ class CalibrationOrchestrator:
                     if execution_mode == CalibrationMode.SAFE:
 
                         self._prepare_active_calibration_clients(
-                            trigger_config=trigger_config
+                            trigger_config=trigger_config,
+                            use_calibration_trigger_defaults=use_calibration_trigger_defaults
                         )
 
                         if self._calibration_stop_requested.is_set():

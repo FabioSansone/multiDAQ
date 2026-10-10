@@ -303,6 +303,16 @@ def do_hv(self, args: argparse.Namespace) -> None:
     target_client_ids = client_ids
     
     if args.command_group == "on":
+        
+        if self.server_state.get_mode() == "test":
+            self.poutput(
+                "Cannot power HV channels ON in TEST mode."
+            )
+            logger.warning(
+                "HV ON blocked by TEST acquisition mode"
+            )
+            return
+        
         command = "hv_on"
         value = None
         payload = {

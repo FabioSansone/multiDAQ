@@ -35,6 +35,9 @@ LOGGER_NAMES = {
     # Acquisition
     "acquisition_service": "client.acquisition.acquisition_service",
 
+    #Calibration
+    "calibration_service": "client.calibration.calibration_service",
+
     # Sensors
     "bme280": "client.hardware.main.sensors.bme280",
     "tla2024": "client.hardware.main.sensors.tla2024",

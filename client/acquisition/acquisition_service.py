@@ -147,14 +147,37 @@ class AcquisitionService:
             )
             return {"success": False, "missing_serial_channels": []}
 
-        if self._prepare_hv_service(fixed_bad_channels=fixed_bad_channels):
-            runtime.hv_service.set_policy("monitor_only")
-            runtime.hv_service.start()
-        else:
-            self.logger.warning(
-                "Test mode applied without HVService. "
-                "Acquisition will use RC fallback if needed."
+        if not self._prepare_hv_service(fixed_bad_channels=fixed_bad_channels):
+            self.logger.error(
+                "Cannot apply test mode: HVService unavailable"
             )
+
+            return {
+                "success": False,
+                "missing_serial_channels": [],
+            }
+        
+        
+        runtime.hv_service.set_policy("monitor_only")
+        runtime.hv_service.start()
+
+        if not self._submit_hv_command(
+            command="hv_off_and_wait",
+            payload={
+                "channels": "all",
+            },
+            timeout_s=300.0,
+        ):
+            self.logger.error(
+                "Cannot apply test mode: "
+                "failed to force HV channels OFF"
+            )
+
+            return {
+                "success": False,
+                "missing_serial_channels": [],
+            }
+        
 
         runtime.set_acquisition_mode(
             acq_mode="test",

@@ -6,6 +6,7 @@ from client.hardware.rc.rc_service import RCService
 from client.hardware.main.main_service import MainService
 from client.hardware.evproducer.ev_service import EVService
 from client.acquisition.acquisition_service import AcquisitionService
+from client.calibration.calibration_service import CalibrationService
 from client.core.monitor_sample_service import MonitorSampleService
 from client.hardware.feb.feb_service import FEBService
 from common.message_handler import MessageStatus, Channel
@@ -55,6 +56,7 @@ class ClientRunTime:
         self.start_thr: Optional[int | float] = None
 
         self.acquisition_service = AcquisitionService(self)
+        self.calibration_service = CalibrationService(self)
         
         self.mac_to_id: int | None = None
         
