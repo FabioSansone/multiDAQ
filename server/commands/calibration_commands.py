@@ -698,3 +698,29 @@ def do_calibration(
     if args.command == "status":
         self.calibration_orchestrator.show_status()
         return
+
+    if args.command == "pedestal":
+
+        if (
+            self.server_state.get_server_state()
+            != ServerFSM.READY
+        ):
+            self.poutput(
+                "Cannot start pedestal calibration: "
+                "another operation is already active."
+            )
+            return
+
+        self.calibration_orchestrator.pedestal(
+            args
+        )
+
+        return
+
+    self.poutput(
+        f"Unsupported calibration command: {args.command}"
+    )
+
+    logger.error(
+        f"Unhandled calibration command: {args.command}"
+    )
