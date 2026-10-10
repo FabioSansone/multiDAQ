@@ -2146,7 +2146,13 @@ class HV:
                         active_channels.remove(ch)
                         channel_results[ch]["error"] = f"setpoint failed at {v} V"
 
-
+                if pending:
+                    if stop_event is not None:
+                        if stop_event.wait(1.0):
+                            raise CalibrationAborted
+                    else:
+                        time.sleep(1.0)
+                        
                 ready_channels = []
                 deadline = time.monotonic() + 300
 
