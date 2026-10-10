@@ -1896,6 +1896,23 @@ class HV:
 
         for ch in channels_good_selected:
             try:
+                deadline = time.monotonic() + 300.0
+                while True:
+
+                    status = hv_call(self.hv.getStatus, slave=ch)
+                    if status in {"UP", "DOWN"}:
+                        break
+                    if status == "TRIP":
+                        raise RuntimeError(f"Channel {ch}: TRIP before calibration")
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"Channel {ch}: timeout waiting for stable initial state (last status={status})")
+
+                    if stop_event is not None:
+                        if stop_event.wait(1.0):
+                            raise CalibrationAborted
+                    else:
+                        time.sleep(1.0)
+
                 m, q, _ = hv_call(self.hv.readCalibRegisters, slave=ch)
                 rate_up, rate_down = hv_call(self.hv.getRate, fmt=tuple, slave=ch)
                 voltage = hv_call(self.hv.getVoltageSet, slave=ch)
@@ -1959,7 +1976,7 @@ class HV:
 
             pending = set(channels_to_be_done)
             ready_channels = []
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + 600
 
             while pending and time.monotonic() < deadline:
                 self.check_stop(stop_event=stop_event)
@@ -2152,7 +2169,7 @@ class HV:
                             raise CalibrationAborted
                     else:
                         time.sleep(1.0)
-                        
+
                 ready_channels = []
                 deadline = time.monotonic() + 300
 
