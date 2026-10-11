@@ -533,6 +533,8 @@ class HV:
     def get_power_state(
         self,
         channels: List[int] | str | int,
+        timeout_s: float = 300.0,
+        poll_s: float = 2.0,
     ):
 
         list_channels_selected = self.hv_channels_definition(
@@ -544,36 +546,53 @@ class HV:
         power_state = {}
 
         for ch in list_channels_selected:
+            deadline = time.monotonic() + timeout_s
 
             try:
-                status = self.hv.getStatus(slave=ch)
+                while True:
+                    status = self.hv.getStatus(slave=ch)
 
-                if status in {"UP", "ON"}:
-                    state = "on"
-                    self.moveToOn(ch)
+                    if status in {"UP", "ON"}:
+                        state = "on"
+                        self.moveToOn(ch)
+                        break
 
-                elif status in {"DOWN", "OFF"}:
-                    state = "off"
-                    self.moveToOff(ch)
+                    elif status in {"DOWN", "OFF"}:
+                        state = "off"
+                        self.moveToOff(ch)
+                        break
 
-                elif status == "TRIP":
-                    self.logger.error(
-                        f"HV channel {ch} is in TRIP state"
-                    )
-                    failed.append(ch)
-                    self.moveToBad(ch)
-                    continue
+                    elif status == "TRIP":
+                        self.logger.error(
+                            f"HV channel {ch} is in TRIP state"
+                        )
+                        failed.append(ch)
+                        self.moveToBad(ch)
+                        break
 
-                else:
-                    self.logger.error(
-                        f"Cannot determine stable power state for "
-                        f"HV channel {ch}: status={status}"
-                    )
-                    failed.append(ch)
-                    continue
+                    elif status in {"RUP", "RDN", "TUP", "TDN"}:
+                        if time.monotonic() >= deadline:
+                            self.logger.error(
+                                f"Timeout waiting for stable HV power "
+                                f"state on channel {ch}: status={status}"
+                            )
+                            failed.append(ch)
+                            break
 
-                power_state[ch] = state
-                successful.append(ch)
+                        time.sleep(poll_s)
+                        continue
+
+                    else:
+                        self.logger.error(
+                            f"Unknown HV power state on "
+                            f"channel {ch}: status={status}"
+                        )
+                        failed.append(ch)
+                        break
+
+                if status in {"UP", "ON", "DOWN", "OFF"}:
+                    power_state[ch] = state
+                    successful.append(ch)
 
             except Exception as e:
                 self.logger.error(

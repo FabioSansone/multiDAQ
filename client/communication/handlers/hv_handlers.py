@@ -304,7 +304,7 @@ def handle_hv_get_power_state_channels(manager, message):
         manager=manager,
         message=message,
         hv_command="get_power_state_channels",
-        timeout_s=30.0,
+        timeout_s=300.0,
     )
 
 

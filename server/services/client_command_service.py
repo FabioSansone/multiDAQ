@@ -454,7 +454,7 @@ class ClientCommandService:
         )
 
         return {
-            int(channel): value
+            int(channel) - 1: value
             for channel, value in configuration.items()
         }
 
@@ -504,7 +504,7 @@ class ClientCommandService:
         )
 
         return {
-            int(channel): value
+            int(channel) - 1: value
             for channel, value in configuration.items()
         }
 
@@ -554,11 +554,11 @@ class ClientCommandService:
         )
 
         return {
-            int(channel): {
+            int(hv_channel) - 1: {
                 "voltage": values.get("voltage"),
                 "threshold": values.get("threshold"),
             }
-            for channel, values in configuration.items()
+            for hv_channel, values in configuration.items()
         }
 
 
@@ -567,7 +567,7 @@ class ClientCommandService:
         client_id: bytes,
         requested_channels: str | int | list[int] = "all",
         plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 35.0,
+        timeout_s: float = 300.0,
     ) -> dict[int, str] | None:
 
         client_name = client_id.decode(errors="ignore")
