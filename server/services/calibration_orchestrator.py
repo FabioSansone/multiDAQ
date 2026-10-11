@@ -860,13 +860,14 @@ class CalibrationOrchestrator:
             suffix=args.suffix, 
         )
 
-
+        mode = self.get_mode()
+        
         snapshot_spec = HardwareSnapshotSpec(
             rc_register=(
                 12,
                 19
             ),
-            hv_power_state=True,
+            hv_power_state=mode != "test",
         )
 
         scan_spec = CalibrationScanSpec(
