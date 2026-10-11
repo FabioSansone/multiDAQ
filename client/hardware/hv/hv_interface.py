@@ -1390,7 +1390,7 @@ class HV:
         }
     
 
-    def on_and_wait(self, channels: List[int] | str | int, timeout_s: float = 240.0, poll_s: float = 2.0, hardware_executor=None,):
+    def on_and_wait(self, channels: List[int] | str | int, timeout_s: float = 300.0, poll_s: float = 2.0, hardware_executor=None,):
         
         def hv_call(method, *args, **kwargs):
             if hardware_executor is None:

@@ -86,3 +86,130 @@ class CalibrationService:
                 "pedestal calibration"
             )
             return False
+
+
+    
+    def prepare_spe(
+        self,
+        channels: list[int],
+        *,
+        voltage: int,
+        threshold: float,
+    ) -> bool:
+
+        if self.runtime.hv_service is None:
+            self.logger.error(
+                "Cannot prepare SPE: HVService unavailable"
+            )
+            return False
+
+        if self.runtime.acq_mode != "calibration":
+            self.logger.error(
+                "Cannot prepare SPE: "
+                "Acquisition mode is not calibration"
+            )
+            return False
+
+        if not channels:
+            self.logger.error(
+                "Cannot prepare SPE: no channels selected"
+            )
+            return False
+
+        try:
+            hv_channels = [
+                channel + 1
+                for channel in channels
+            ]
+
+            acq_conf = {
+                ch: {
+                    "voltage": voltage,
+                    "threshold": threshold,
+                }
+                for ch in channels
+            }
+
+            config_response = (
+                self.runtime.hv_service._submit_command(
+                    command="set_acquisition_configuration",
+                    payload={
+                        "channels": hv_channels,
+                        "acquisition_configuration": acq_conf,
+                    },
+                    sender="client_calibration_spe",
+                    priority=HVMessagePriority.ACQUISITION,
+                    timeout_s=300.0,
+                )
+            )
+
+            if config_response.status != MessageStatus.OK:
+                self.logger.error(
+                    "SPE HV configuration failed: "
+                    f"{config_response.error}"
+                )
+                return False
+
+            config_result = config_response.result or {}
+
+            if (
+                set(config_result.get("successful_channels", []))
+                != set(hv_channels)
+                or config_result.get("skipped_channels")
+                or config_result.get("failed_channels")
+            ):
+                self.logger.error(
+                    "SPE HV configuration incomplete: "
+                    f"{config_result}"
+                )
+                return False
+
+            on_response = (
+                self.runtime.hv_service._submit_command(
+                    command="hv_on_and_wait",
+                    payload={
+                        "channels": hv_channels,
+                    },
+                    sender="client_calibration_spe",
+                    priority=HVMessagePriority.ACQUISITION,
+                    timeout_s=300.0,
+                )
+            )
+
+            if on_response.status != MessageStatus.OK:
+                self.logger.error(
+                    "SPE HV power-on failed: "
+                    f"{on_response.error}"
+                )
+                return False
+
+            on_result = on_response.result or {}
+
+            if (
+                set(on_result.get("successful_channels", []))
+                != set(hv_channels)
+                or on_result.get("skipped_channels")
+                or on_result.get("failed_channels")
+            ):
+                self.logger.error(
+                    "SPE HV power-on incomplete: "
+                    f"{on_result}"
+                )
+                return False
+
+            self.logger.info(
+                "SPE preparation completed: "
+                f"channels={channels}, "
+                f"voltage={voltage}, "
+                f"threshold={threshold}"
+            )
+
+            return True
+
+        except Exception:
+            self.logger.exception(
+                "Unexpected error during SPE preparation"
+            )
+            return False
+
+        

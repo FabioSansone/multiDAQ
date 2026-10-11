@@ -94,6 +94,7 @@ class CalibrationScanSpec:
     points: tuple[ScanPoint, ...]
     snapshot_spec: HardwareSnapshotSpec
     apply_point: Callable[[bytes, ScanPoint], bool]
+    prepare_point: Callable[[ScanPoint], bool] | None = None
 
 
 class CalibrationService:

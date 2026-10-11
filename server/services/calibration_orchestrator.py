@@ -9,6 +9,7 @@ from server.services.client_command_service import CommandPlane
 from server.core.server_state import ServerFSM, ServerFSMEvent
 from server.services.acquisition_service import TriggerConfiguration
 from server.services.calibration_service import CalibrationService, ScanPoint, HardwareSnapshotSpec, ClientHardwareSnapshot, CalibrationMode, CalibrationRun, ClientCalibrationSession, CalibrationRunOutcome, CalibrationScanSpec
+from server.services.optical_instrument_service import OpticalInstrumentService
 from server.utils.logger import get_logger
 
 
@@ -34,11 +35,12 @@ from server.utils.logger import get_logger
 
 class CalibrationOrchestrator:
 
-    def __init__(self, server_state, acquisition_service, channel_selection_service, command_service, calibration_service: CalibrationService, get_mode, output_func=None) -> None:
+    def __init__(self, server_state, acquisition_service, channel_selection_service, command_service, calibration_service: CalibrationService, get_mode, optical_service: OpticalInstrumentService, output_func=None) -> None:
         self.acquisition_service = acquisition_service
         self.channel_selection_service = channel_selection_service
         self.command_service = command_service
         self.calibration_service = calibration_service
+        self.optical_service = optical_service
         self.poutput = output_func or (lambda message: None)
         self.get_mode = get_mode
         self.server_state = server_state
@@ -69,6 +71,35 @@ class CalibrationOrchestrator:
             "hv_parameters": {channel: dict(parameters) for channel, parameters in snapshot.hv_parameters.items()},
             "extra": dict(snapshot.extra),
         }
+
+    def _prepare_optics(self, point: ScanPoint) -> bool:
+
+        metadata = point.metadata
+
+        if not self.optical_service.ensure_initialized():
+            self.logger.error(
+                "Cannot prepare SPE: optical instruments unavailable"
+            )
+            return False
+
+        if not self.optical_service.move_wheel(
+            position=metadata["near_wheel"],
+            which_wheel="near",
+        ):
+            return False
+
+        if not self.optical_service.move_wheel(
+            position=metadata["far_wheel"],
+            which_wheel="far",
+        ):
+            return False
+
+        if not self.optical_service.move_polarizer(
+            position=metadata["polarizer"],
+        ):
+            return False
+
+        return True
 
 
     def _build_calibration_manifest(
@@ -780,7 +811,7 @@ class CalibrationOrchestrator:
     #Pedestal Calibration Procedure#
     ################################
 
-    def _apply_pedestal_point(self, client_id: bytes, point: ScanPoint) -> bool:
+    def _apply_pedestal_point(self, client_id: bytes) -> bool:
         client_name = client_id.decode(errors="ignore")
         session = self.calibration_service.get_session(client_id=client_id)
 
@@ -886,6 +917,197 @@ class CalibrationOrchestrator:
             file_format=args.file_format,
             duration=args.duration,
             run_id=args.run_id,
+            use_calibration_trigger_defaults=False,
+        )
+
+    ###########################
+    #SPE Calibration Procedure#
+    ###########################
+
+
+    def _build_spe_run_id(self, args) -> str:
+        if args.run_id is not None:
+            return args.run_id
+
+        return (
+            f"spe_"
+            f"near{args.near_wheel}_"
+            f"far{args.far_wheel}_"
+            f"pol{args.polarizer:g}_"
+            f"v{args.voltage}_"
+            f"thr{args.threshold:g}_"
+            f"dur{args.duration:g}_"
+            f"delay{args.delay_ns}_"
+            f"win{args.window_ns}"
+        )
+
+
+    def _apply_spe_point(self, client_id: bytes, point: ScanPoint,) -> bool:
+        client_name = client_id.decode(errors="ignore")
+        session = self.calibration_service.get_session(client_id=client_id)
+
+        voltage = point.metadata["spe_voltage"]
+        threshold = point.metadata["spe_threshold"]
+
+        if session is None:
+            self.logger.error(
+                f"Cannot prepare spe for "
+                f"client {client_name}: no calibration session"
+            )
+            return False
+
+
+        reply, reason = (
+            self.command_service.send_calibration_command(
+                client_id=client_id,
+                command="spe_calibration",
+                payload={
+                    "channels": list(
+                        session.effective_channels
+                    ),
+                    "spe_voltage": voltage,
+                    "spe_threshold": threshold,
+                },
+                plane=CommandPlane.ACQUISITION,
+                timeout_s=320.0,
+            )
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"SPE preparation failed for "
+                f"client {client_name}: {reason}"
+            )
+            return False
+
+        payload = reply.payload or {}
+
+        if payload.get("status") != "ok":
+            self.logger.error(
+                f"SPE preparation rejected by "
+                f"client {client_name}: "
+                f"{payload.get('error')}"
+            )
+            return False
+
+        return True
+
+
+    def spe(self, args) -> bool:
+        self.poutput("SPE calibration requested.")
+        
+        if self.server_state.get_server_state() != ServerFSM.READY:
+            self.poutput("Cannot start SPE calibration: server is not READY.")
+            return False
+
+        mode = self.get_mode()
+
+        if mode != "calibration":
+            self.poutput(
+                "SPE calibration is available only "
+                "in CALIBRATION mode."
+            )
+            return False
+
+        if args.duration <= 0:
+            self.poutput("SPE duration must be greater than zero.")
+            return False
+
+        if args.window_ns <= 0 or args.window_ns % 5 != 0:
+            self.poutput(
+                "SPE trigger window must be positive "
+                "and a multiple of 5 ns."
+            )
+            return False
+
+        if args.delay_ns < 0 or args.delay_ns % 5 != 0:
+            self.poutput(
+                "SPE trigger delay must be non-negative "
+                "and a multiple of 5 ns."
+            )
+            return False
+
+        if self._calibration_thread is not None and self._calibration_thread.is_alive():
+            self.poutput("Another calibration worker is already running.")
+            return False
+
+        all_clients = bool(getattr(args, "all_clients", False))
+        multipmt_id = getattr(args, "multipmt_id", None)
+        batch_id = getattr(args, "batch_id", None)
+
+        if multipmt_id is None and batch_id is None and not all_clients:
+            all_clients = True
+
+        targets = self._resolve_calibration_targets(
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+            all_clients=all_clients,
+            channels=args.channels,
+            require_acquisition_plane=True,
+        )
+
+        if not targets:
+            return False
+
+        trigger_config = TriggerConfiguration(
+            mode="external",
+            input_type=args.trigger_input,
+            polarity=args.polarity,
+            window_ns=args.window_ns,
+            delay_ns=args.delay_ns,
+            save_external=True,
+            save_auto=False,
+        )
+
+
+        point = ScanPoint(
+            index=0,
+            parameter_name="spe",
+            value=1,
+            suffix=args.suffix,
+            metadata={
+                "near_wheel": args.near_wheel,
+                "far_wheel": args.far_wheel,
+                "polarizer": args.polarizer,
+                "spe_voltage": args.voltage,
+                "spe_threshold": args.threshold,
+                "trigger_input": args.trigger_input,
+                "trigger_polarity": args.polarity,
+                "delay_ns": args.delay_ns,
+                "window_ns": args.window_ns,
+                "duration_s": args.duration,
+            },
+        )
+        
+        snapshot_spec = HardwareSnapshotSpec(
+            rc_register=(
+                15,
+                16,
+                18,
+                19
+            ),
+            hv_voltage=True,
+            hv_threshold=True,
+            hv_power_state=True,
+        )
+
+        scan_spec = CalibrationScanSpec(
+            calibration_type="spe",
+            points=(point,),
+            snapshot_spec=snapshot_spec,
+            prepare_point=self._prepare_optics,
+            apply_point=self._apply_spe_point,
+        )
+
+        return self.start_calibration_scan(
+            scan_spec=scan_spec,
+            execution_mode=CalibrationMode.SAFE,
+            targets=targets,
+            trigger_config=trigger_config,
+            acq_type=args.acq_type,
+            file_format=args.file_format,
+            duration=args.duration,
+            run_id=self._build_spe_run_id(args),
             use_calibration_trigger_defaults=False,
         )
         
@@ -2146,6 +2368,7 @@ class CalibrationOrchestrator:
                 "duration": duration,
                 "run_id": run_id,
                 "run_folder_clients": run_folder_clients,
+                "prepare_point": scan_spec.prepare_point,
             },
             daemon=True,
             name=f"calibration-{calibration_type}",
@@ -2193,6 +2416,7 @@ class CalibrationOrchestrator:
         file_format: str = "csv",
         duration: float | None = None,
         run_id=None,
+        prepare_point: Callable[[ScanPoint], bool] | None = None,
     ) -> None:
 
         run_clients = (
@@ -2273,6 +2497,28 @@ class CalibrationOrchestrator:
                         f"{point.index}: "
                         f"{point.parameter_name}={point.value}"
                     )
+
+                    if prepare_point is not None:
+                        try:
+                            prepared = prepare_point(point)
+                        except Exception:
+                            self.logger.exception(
+                                f"Shared preparation failed "
+                                f"for calibration point {point.index}"
+                            )
+                            prepared = False
+
+                        if not prepared:
+                            for client_id in self.calibration_service.get_active_clients():
+                                self.calibration_service.mark_client_failed(
+                                    client_id=client_id,
+                                    error=(
+                                        f"shared preparation failed "
+                                        f"at calibration point {point.index}"
+                                    ),
+                                )
+
+                            break
 
                     #
                     # SAFE revalidates/prepares the hardware before

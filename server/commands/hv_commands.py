@@ -16,9 +16,9 @@ COMMAND_FSM_MAP = {
     "set_common": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "mark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "unmark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
-    "status": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "status": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.CALIBRATION_FINALIZING, ServerFSM.CALIBRATING},
     "set_serial": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
-    "get_serial_map": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "get_serial_map": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.CALIBRATION_FINALIZING, ServerFSM.CALIBRATING},
 }
 
 
@@ -275,7 +275,7 @@ pmt_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma se
 
 @cmd2.with_argparser(hv_parser)
 @cmd2.with_category("HV Commands")
-@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR])
+@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.CALIBRATING, ServerFSM.CALIBRATION_FINALIZING])
 def do_hv(self, args: argparse.Namespace) -> None:
     """HV commands: hv on, hv off, hv set_common voltage, hv set_common threshold."""
 

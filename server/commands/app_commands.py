@@ -109,7 +109,7 @@ def do_change_mode(self, args):
 
 
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR, ServerFSM.CALIBRATING])
 def do_quit(self, _) -> bool:
     """Send quit command to all connected clients"""
 
