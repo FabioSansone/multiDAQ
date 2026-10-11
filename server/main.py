@@ -220,6 +220,7 @@ class Server(cmd2.Cmd):
             channel_selection_service=self.channel_selection_service,
             command_service=self.client_command_service,
             calibration_service=self.calibration_service,
+            optical_service=self.optical_instrument_service,
             get_mode=lambda: self.mode,
             output_func=self.poutput,
         )
