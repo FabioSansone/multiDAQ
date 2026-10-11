@@ -955,10 +955,17 @@ class CalibrationService:
                 )
                 return False
 
-            requested_channels = session.requested_channels
+            snapshot_channels = list(session.effective_channels)
+            if not snapshot_channels:
+                self.logger.error(
+                    f"Hardware snapshot failed for "
+                    f"{client_id!r}: "
+                    "effective channels are not resolved"
+                )
+                return False
 
         rc_registers: dict[int, int] = {}
-        hv_parameters: dict[int, dict[str, Any]] = {channel: {} for channel in requested_channels}
+        hv_parameters: dict[int, dict[str, Any]] = {channel: {} for channel in snapshot_channels}
 
         # RC snapshot
         for register in spec.rc_register:
@@ -985,7 +992,7 @@ class CalibrationService:
             configuration = (
                 self.command_service.get_hv_volt_thr_configuration(
                     client_id=client_id,
-                    requested_channels=requested_channels,
+                    requested_channels=snapshot_channels,
                     plane=CommandPlane.CONTROL,
                     timeout_s=120.0,
                 )
@@ -998,7 +1005,7 @@ class CalibrationService:
                 )
                 return False
 
-            for channel in requested_channels:
+            for channel in snapshot_channels:
 
                 values = configuration.get(channel)
 
@@ -1017,7 +1024,7 @@ class CalibrationService:
             configuration = (
                 self.command_service.get_hv_voltage_configuration(
                     client_id=client_id,
-                    requested_channels=requested_channels,
+                    requested_channels=snapshot_channels,
                     plane=CommandPlane.CONTROL,
                     timeout_s=60.0,
                 )
@@ -1026,7 +1033,7 @@ class CalibrationService:
             if configuration is None:
                 return False
 
-            for channel in requested_channels:
+            for channel in snapshot_channels:
 
                 if channel not in configuration:
                     self.logger.error(
@@ -1042,7 +1049,7 @@ class CalibrationService:
             configuration = (
                 self.command_service.get_hv_threshold_configuration(
                     client_id=client_id,
-                    requested_channels=requested_channels,
+                    requested_channels=snapshot_channels,
                     plane=CommandPlane.CONTROL,
                     timeout_s=60.0,
                 )
@@ -1051,7 +1058,7 @@ class CalibrationService:
             if configuration is None:
                 return False
 
-            for channel in requested_channels:
+            for channel in snapshot_channels:
 
                 if channel not in configuration:
                     self.logger.error(
@@ -1067,7 +1074,7 @@ class CalibrationService:
 
             power_state = self.command_service.get_hv_power_state(
                 client_id=client_id,
-                requested_channels=requested_channels,
+                requested_channels=snapshot_channels,
                 plane=CommandPlane.CONTROL,
                 timeout_s=60.0,
             )
@@ -1075,7 +1082,7 @@ class CalibrationService:
             if power_state is None:
                 return False
 
-            for channel in requested_channels:
+            for channel in snapshot_channels:
 
                 state = power_state.get(channel)
 
@@ -1099,6 +1106,7 @@ class CalibrationService:
         snapshot = ClientHardwareSnapshot(
             rc_registers=rc_registers,
             hv_parameters=hv_parameters,
+            extra={"snapshot_channels": list(snapshot_channels)}
         )
 
         if not self.set_hardware_snapshot(

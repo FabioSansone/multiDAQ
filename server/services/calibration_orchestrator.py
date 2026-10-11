@@ -1243,6 +1243,163 @@ class CalibrationOrchestrator:
     #General Functions for Calibration Procedure#
     #############################################
 
+    def _resolve_calibration_client_channels(self, client_id: bytes) -> bool:
+        client_name = client_id.decode(errors="ignore")
+        session = self.calibration_service.get_session(client_id=client_id)
+
+        if session is None:
+            self.logger.error(
+                f"Cannot resolve calibration channels "
+                f"for client {client_name}: "
+                "no calibration session"
+            )
+            return False
+
+        requested_channels = list(session.requested_channels)
+        if not requested_channels:
+            self.logger.error(
+                f"Cannot resolve calibration channels "
+                f"for client {client_name}: "
+                "no requested channels"
+            )
+            return False
+
+        mode = self.get_mode()
+        if mode not in {"test", "calibration", "multipmt"}:
+            self.logger.error(
+                f"Cannot resolve calibration channels "
+                f"for client {client_name}: "
+                f"unsupported mode {mode!r}"
+            )
+            return False
+
+        effective_channels = self.channel_selection_service.get_test_rc_channels(client_id=client_id, requested_channels=requested_channels, plane=CommandPlane.ACQUISITION,)
+        if not effective_channels:
+            self.logger.warning(
+                f"Cannot resolve calibration channels "
+                f"for client {client_name}: "
+                "no effective channels available"
+            )
+            return False
+
+        if not self.calibration_service.set_effective_channels(client_id=client_id, channels=effective_channels):
+            self.logger.error(
+                f"Failed to record effective channels "
+                f"for calibration client {client_name}"
+            )
+            return False
+
+        self.logger.info(
+            "Calibration channels resolved: "
+            f"client={client_name}, "
+            f"requested={requested_channels}, "
+            f"effective={effective_channels}"
+        )
+
+        return True
+
+    def _resolve_active_calibration_channels(self) -> list[bytes]:
+        ready_clients = []
+        for client_id in self.calibration_service.get_active_clients():
+            if not self._resolve_calibration_client_channels(client_id=client_id):
+                self.calibration_service.mark_client_failed(
+                    client_id=client_id,
+                    error=(
+                        "calibration channel "
+                        "resolution failed"
+                    ),
+                )
+                continue
+            ready_clients.append(client_id)
+
+        return ready_clients
+
+    def _revalidate_calibration_client_channels(self, client_id: bytes) -> bool:
+        client_name = client_id.decode(errors="ignore")
+        session = self.calibration_service.get_session(client_id=client_id)
+
+        if session is None:
+            self.logger.error(
+                f"Cannot revalidate calibration channels "
+                f"for client {client_name}: "
+                "no calibration session"
+            )
+            return False
+
+        snapshot = session.hardware_snapshot
+        if snapshot is None:
+            self.logger.error(
+                f"Cannot revalidate calibration channels "
+                f"for client {client_name}: "
+                "no hardware snapshot"
+            )
+            return False
+
+        snapshot_channels = list(snapshot.extra.get("snapshot_channels", []))
+        if not snapshot_channels:
+            self.logger.error(
+                f"Cannot revalidate calibration channels "
+                f"for client {client_name}: "
+                "snapshot contains no channel set"
+            )
+            return False
+
+        effective_channels = self.channel_selection_service.get_test_rc_channels(client_id=client_id, requested_channels=snapshot_channels, plane=CommandPlane.ACQUISITION,)
+        if not effective_channels:
+            self.logger.warning(
+                f"Calibration SAFE revalidation failed "
+                f"for client {client_name}: "
+                "no effective channels remain"
+            )
+            return False
+
+        if not self.calibration_service.set_effective_channels(client_id=client_id, channels=effective_channels):
+            self.logger.error(
+                f"Failed to update effective channels "
+                f"for calibration client {client_name}"
+            )
+            return False
+
+        self.logger.info(
+            "Calibration channels revalidated: "
+            f"client={client_name}, "
+            f"snapshot_channels={snapshot_channels}, "
+            f"effective_channels={effective_channels}"
+        )
+
+        return True
+
+
+
+    def _revalidate_active_calibration_channels(
+        self,
+    ) -> list[bytes]:
+
+        ready_clients = []
+
+        for client_id in (
+            self.calibration_service
+            .get_active_clients()
+        ):
+
+            if not self._revalidate_calibration_client_channels(
+                client_id=client_id
+            ):
+                self.calibration_service.mark_client_failed(
+                    client_id=client_id,
+                    error=(
+                        "calibration SAFE channel "
+                        "revalidation failed"
+                    ),
+                )
+                continue
+
+            ready_clients.append(client_id)
+
+        return ready_clients
+
+
+
     def _resolve_calibration_targets(
         self,
         *,
@@ -1321,38 +1478,17 @@ class CalibrationOrchestrator:
             )
             return False
 
-        requested_channels = list(session.requested_channels)
-        if not requested_channels:
+        effective_channels = list(session.effective_channels)
+        if not effective_channels:
             self.logger.error(
-                f"Cannot prepare calibration client {client_name}: "
-                "no requested channels"
+                f"Cannot prepare calibration client "
+                f"{client_name}: "
+                "effective channels are not resolved"
             )
-            return False
+            return False 
 
         mode = self.get_mode()
 
-
-        if mode in {"test", "calibration", "multipmt"}:
-            effective_channels = self.channel_selection_service.get_test_rc_channels(
-                client_id=client_id,
-                requested_channels=requested_channels,
-                plane=CommandPlane.ACQUISITION,
-            )
-
-        else:
-            self.logger.error(
-                f"Cannot prepare calibration client {client_name}: "
-                f"unsupported mode {mode!r}"
-            )
-            return False
-
-        if not effective_channels:
-            self.logger.warning(
-                f"Cannot prepare calibration client {client_name}: "
-                "no effective channels available"
-            )
-
-            return False
 
         effective_trigger_config = trigger_config
 
@@ -1587,23 +1723,10 @@ class CalibrationOrchestrator:
             return False  
 
 
-        if not self.calibration_service.set_effective_channels(
-            client_id=client_id,
-            channels=effective_channels,
-        ):
-
-            self.logger.error(
-                f"Failed to record effective channels "
-                f"for calibration client {client_name}"
-            )
-
-            return False
-
         self.logger.info(
             f"Calibration client prepared: "
             f"client={client_name}, "
             f"mode={mode}, "
-            f"requested_channels={requested_channels}, "
             f"effective_channels={effective_channels}"
         )
 
@@ -2078,32 +2201,30 @@ class CalibrationOrchestrator:
 
         try:
 
-            #
-            # ============================================================
-            # 1. HARDWARE SNAPSHOT
-            # ============================================================
-            #
-            # Snapshot must happen before any calibration modification.
-            #
-            for client_id in run_clients:
+            self._resolve_active_calibration_channels()
+            if self._calibration_stop_requested.is_set():
+                for client_id in self.calibration_service.get_active_clients():
+                    self.calibration_service.mark_client_aborted(client_id=client_id)
+            else:
+                for client_id in self.calibration_service.get_active_clients():
 
-                if self._calibration_stop_requested.is_set():
-                    break
+                    if self._calibration_stop_requested.is_set():
+                        break
 
-                snapshot_ok = (
-                    self.calibration_service
-                    .capture_hardware_snapshot(
-                        client_id=client_id,
-                        spec=snapshot_spec,
+                    snapshot_ok = (
+                        self.calibration_service
+                        .capture_hardware_snapshot(
+                            client_id=client_id,
+                            spec=snapshot_spec,
+                        )
                     )
-                )
 
-                if not snapshot_ok:
+                    if not snapshot_ok:
 
-                    self.calibration_service.mark_client_failed(
-                        client_id=client_id,
-                        error="hardware snapshot failed",
-                    )
+                        self.calibration_service.mark_client_failed(
+                            client_id=client_id,
+                            error="hardware snapshot failed",
+                        )
 
             #
             # User may have requested stop while snapshots were being taken.
@@ -2157,6 +2278,11 @@ class CalibrationOrchestrator:
                     # every ScanPoint.
                     #
                     if execution_mode == CalibrationMode.SAFE:
+
+                        self._revalidate_active_calibration_channels()
+
+                        if self._calibration_stop_requested.is_set():
+                            break
 
                         self._prepare_active_calibration_clients(
                             trigger_config=trigger_config,
