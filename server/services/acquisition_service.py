@@ -1515,9 +1515,10 @@ class AcquisitionService:
         )
 
         metadata_by_client = {}
-        configuration_identity = self.server_state.get_configuration_identity(client_id) or {}
 
         for client_id in client_ids:
+            configuration_identity = self.server_state.get_configuration_identity(client_id) or {}
+
             client_name = client_id.decode(errors="ignore")
 
             register_values = self._read_client_acq_registers(client_id)
