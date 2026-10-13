@@ -1472,6 +1472,7 @@ class HV:
                 failed_channels.append(ch)
                 self.moveToBad(ch)
 
+        time.sleep(0.5)
         pending_channels = [
             ch
             for ch in power_on_successful

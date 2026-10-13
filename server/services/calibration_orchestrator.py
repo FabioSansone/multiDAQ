@@ -1110,6 +1110,223 @@ class CalibrationOrchestrator:
             run_id=self._build_spe_run_id(args),
             use_calibration_trigger_defaults=False,
         )
+
+
+    ###########################
+    #GAIN Calibration Procedure#
+    ###########################
+
+
+    def _build_gain_run_id(self, args) -> str:
+        if args.run_id is not None:
+            return args.run_id
+
+        return (
+            f"gain_"
+            f"near{args.near_wheel}_"
+            f"far{args.far_wheel}_"
+            f"pol{args.polarizer:g}_"
+            f"v_start{args.start}_"
+            f"v_stop{args.stop}_"
+            f"v_step{args.step}_"
+            f"thr{args.threshold:g}_"
+            f"dur{args.duration:g}_"
+            f"delay{args.delay_ns}_"
+            f"win{args.window_ns}"
+        )
+
+    def _prepare_gain_optics(self, point: ScanPoint) -> bool:
+        if point.index != 0:
+            return True
+
+        return self._prepare_optics(point)
+
+
+    def _apply_gain_point(self, client_id: bytes, point: ScanPoint,) -> bool:
+        client_name = client_id.decode(errors="ignore")
+        session = self.calibration_service.get_session(client_id=client_id)
+
+        voltage = point.metadata["gain_voltage"]
+        threshold = point.metadata["gain_threshold"]
+
+        if session is None:
+            self.logger.error(
+                f"Cannot prepare gain for "
+                f"client {client_name}: no calibration session"
+            )
+            return False
+
+
+        reply, reason = (
+            self.command_service.send_calibration_command(
+                client_id=client_id,
+                command="gain_calibration",
+                payload={
+                    "channels": list(
+                        session.effective_channels
+                    ),
+                    "gain_voltage": voltage,
+                    "gain_threshold": threshold,
+                },
+                plane=CommandPlane.ACQUISITION,
+                timeout_s=320.0,
+            )
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"GAIN preparation failed for "
+                f"client {client_name}: {reason}"
+            )
+            return False
+
+        payload = reply.payload or {}
+
+        if payload.get("status") != "ok":
+            self.logger.error(
+                f"GAIN preparation rejected by "
+                f"client {client_name}: "
+                f"{payload.get('error')}"
+            )
+            return False
+
+        return True
+
+
+    def gain(self, args) -> bool:
+        self.poutput("GAIN calibration requested.")
+        
+        if self.server_state.get_server_state() != ServerFSM.READY:
+            self.poutput("Cannot start GAIN calibration: server is not READY.")
+            return False
+
+        mode = self.get_mode()
+
+        if mode != "calibration":
+            self.poutput(
+                "GAIN calibration is available only "
+                "in CALIBRATION mode."
+            )
+            return False
+
+        if args.duration <= 0:
+            self.poutput("GAIN duration must be greater than zero.")
+            return False
+
+        if args.window_ns <= 0 or args.window_ns % 5 != 0:
+            self.poutput(
+                "GAIN trigger window must be positive "
+                "and a multiple of 5 ns."
+            )
+            return False
+
+        if args.delay_ns < 0 or args.delay_ns % 5 != 0:
+            self.poutput(
+                "GAIN trigger delay must be non-negative "
+                "and a multiple of 5 ns."
+            )
+            return False
+
+        if args.step <= 0:
+            self.poutput("GAIN voltage step must be greater than zero.")
+            return False
+
+        if args.start > args.stop:
+            self.poutput(
+                "GAIN initial voltage must not exceed the final voltage."
+            )
+            return False
+
+        voltages = list(
+            range(args.start, args.stop + 1, args.step)
+        )
+
+        if self._calibration_thread is not None and self._calibration_thread.is_alive():
+            self.poutput("Another calibration worker is already running.")
+            return False
+
+        all_clients = bool(getattr(args, "all_clients", False))
+        multipmt_id = getattr(args, "multipmt_id", None)
+        batch_id = getattr(args, "batch_id", None)
+
+        if multipmt_id is None and batch_id is None and not all_clients:
+            all_clients = True
+
+        targets = self._resolve_calibration_targets(
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+            all_clients=all_clients,
+            channels=args.channels,
+            require_acquisition_plane=True,
+        )
+
+        if not targets:
+            return False
+
+        trigger_config = TriggerConfiguration(
+            mode="external",
+            input_type=args.trigger_input,
+            polarity=args.polarity,
+            window_ns=args.window_ns,
+            delay_ns=args.delay_ns,
+            save_external=True,
+            save_auto=False,
+        )
+
+
+        points = [
+            ScanPoint(
+                index=index,
+                parameter_name="gain_voltage",
+                value=voltage,
+                suffix=f"{args.suffix}_{voltage}",
+                metadata={
+                    "near_wheel": args.near_wheel,
+                    "far_wheel": args.far_wheel,
+                    "polarizer": args.polarizer,
+                    "gain_voltage": voltage,
+                    "gain_threshold": args.threshold,
+                    "trigger_input": args.trigger_input,
+                    "trigger_polarity": args.polarity,
+                    "delay_ns": args.delay_ns,
+                    "window_ns": args.window_ns,
+                    "duration_s": args.duration,
+                },
+            )
+            for index, voltage in enumerate(voltages)
+        ]
+        
+        snapshot_spec = HardwareSnapshotSpec(
+            rc_register=(
+                15,
+                16,
+                18,
+                19
+            ),
+            hv_voltage=True,
+            hv_threshold=True,
+            hv_power_state=True,
+        )
+
+        scan_spec = CalibrationScanSpec(
+            calibration_type="gain",
+            points=tuple(points),
+            snapshot_spec=snapshot_spec,
+            prepare_point=self._prepare_gain_optics,
+            apply_point=self._apply_gain_point,
+        )
+
+        return self.start_calibration_scan(
+            scan_spec=scan_spec,
+            execution_mode=CalibrationMode.SAFE,
+            targets=targets,
+            trigger_config=trigger_config,
+            acq_type=args.acq_type,
+            file_format=args.file_format,
+            duration=args.duration,
+            run_id=self._build_gain_run_id(args),
+            use_calibration_trigger_defaults=False,
+        )
         
 
         

@@ -674,6 +674,189 @@ spe_target_group.add_argument(
 
 #
 # ==========================
+# GAIN CALIBRATION
+# ==========================
+#
+
+gain_parser = calibration_subparsers.add_parser(
+    "gain",
+    help="Acquire PMT gain spectra while scanning HV voltage.",
+)
+
+# Voltage scan.
+
+gain_parser.add_argument(
+    "--start",
+    type=int,
+    default=950,
+    help="Initial PMT voltage in V. Default: 950.",
+)
+
+gain_parser.add_argument(
+    "--stop",
+    type=int,
+    default=1450,
+    help="Final voltage limit in V, inclusive if reached. Default: 1450.",
+)
+
+gain_parser.add_argument(
+    "--step",
+    type=int,
+    default=50,
+    help="Voltage step in V. Default: 50.",
+)
+
+gain_parser.add_argument(
+    "--threshold",
+    type=float,
+    default=400.0,
+    help="Common PMT threshold for every scan point. Default: 400.",
+)
+
+# Acquisition configuration.
+
+gain_parser.add_argument(
+    "--duration",
+    type=float,
+    default=60.0,
+    help="Acquisition duration per voltage point in seconds. Default: 60.",
+)
+
+gain_parser.add_argument(
+    "--type",
+    dest="acq_type",
+    type=str,
+    default="gain",
+    help="Acquisition type folder name. Default: gain.",
+)
+
+gain_parser.add_argument(
+    "--suffix",
+    type=str,
+    default="gain",
+    help="Base output suffix; voltage is appended for each point. Default: gain.",
+)
+
+gain_parser.add_argument(
+    "--run-id",
+    type=str,
+    default=None,
+    help=(
+        "Optional run ID. If omitted, an automatic ID "
+        "is generated from GAIN configuration parameters."
+    ),
+)
+
+gain_parser.add_argument(
+    "--file-format",
+    choices=["csv", "bin"],
+    default="csv",
+    help="Output file format. Default: csv.",
+)
+
+gain_parser.add_argument(
+    "--channels",
+    type=str,
+    default="all",
+    help='PMT channels selected: "all" or a comma-separated list.',
+)
+
+# Optical configuration, identical for every voltage point.
+
+gain_parser.add_argument(
+    "--near-wheel",
+    type=int,
+    default=9,
+    help="Near filter-wheel position. Default: 9.",
+)
+
+gain_parser.add_argument(
+    "--far-wheel",
+    type=int,
+    default=9,
+    help="Far filter-wheel position. Default: 9.",
+)
+
+gain_parser.add_argument(
+    "--polarizer",
+    type=float,
+    default=20.0,
+    help="Polarizer position in degrees. Default: 20.",
+)
+
+# GAIN always uses an external trigger.
+
+gain_parser.add_argument(
+    "--input",
+    dest="trigger_input",
+    choices=["differential", "single-ended"],
+    default="single-ended",
+    help="External trigger electrical input. Default: single-ended.",
+)
+
+gain_parser.add_argument(
+    "--polarity",
+    choices=["default", "inverted"],
+    default="default",
+    help="External trigger polarity. Default: default.",
+)
+
+gain_parser.add_argument(
+    "--delay-ns",
+    type=int,
+    default=800,
+    help="Trigger delay in ns. Hardware resolution: 5 ns. Default: 800.",
+)
+
+gain_parser.add_argument(
+    "--window-ns",
+    type=int,
+    default=400,
+    help="Acquisition window in ns. Hardware resolution: 5 ns. Default: 400.",
+)
+
+# Target selection.
+
+gain_target_group = gain_parser.add_mutually_exclusive_group()
+
+gain_target_group.add_argument(
+    "--multipmt-id",
+    type=str,
+    default=None,
+    help="Target client by multiPMT ID.",
+)
+
+gain_target_group.add_argument(
+    "--batch-id",
+    type=str,
+    default=None,
+    help="Target client by batch ID.",
+)
+
+gain_target_group.add_argument(
+    "--all-clients",
+    action="store_true",
+    help=(
+        "Run GAIN calibration on all eligible clients. "
+        "This is also the default when no target selector is specified."
+    ),
+)
+
+
+#
+# ==========================
+# OPTICAL STATUS
+# ==========================
+#
+
+optical_status_parser = calibration_subparsers.add_parser(
+    "optical_status",
+    help="Read current near/far filter-wheel positions and polarizer angle.",
+)
+
+
+#
+# ==========================
 # CALIBRATION STATUS
 # ==========================
 #
@@ -939,6 +1122,26 @@ def do_calibration(
         self.calibration_orchestrator.spe(args)
 
         return
+
+
+    if args.command == "gain":
+            if self.server_state.get_server_state() != ServerFSM.READY:
+                self.poutput(
+                    "Cannot start GAIN calibration: "
+                    "another operation is already active."
+                )
+                return
+    
+            if self.server_state.get_mode() != AcquisitionMode.CALIBRATION.value:
+                self.poutput(
+                    "GAIN calibration is available only "
+                    "in CALIBRATION mode."
+                )
+                return
+    
+            self.calibration_orchestrator.gain(args)
+    
+            return
 
 
     self.poutput(

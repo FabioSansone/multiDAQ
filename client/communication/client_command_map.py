@@ -17,6 +17,7 @@ COMMAND_MAP = {
     #Calibration Handlers
     'pedestal_calibration': handle_pedestal_calibration,
     'spe_calibration': handle_spe_calibration,
+    'gain_calibration': handle_gain_calibration,
     
     #HV Handlers
     "hv_on": handle_hv_on,

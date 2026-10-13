@@ -89,30 +89,31 @@ class CalibrationService:
 
 
     
-    def prepare_spe(
+    def _prepare_calibration_point(
         self,
         channels: list[int],
         *,
         voltage: int,
         threshold: float,
+        calibration_name: str,
     ) -> bool:
 
         if self.runtime.hv_service is None:
             self.logger.error(
-                "Cannot prepare SPE: HVService unavailable"
+                f"Cannot prepare {calibration_name}: HVService unavailable"
             )
             return False
 
         if self.runtime.acq_mode != "calibration":
             self.logger.error(
-                "Cannot prepare SPE: "
+                f"Cannot prepare {calibration_name}: "
                 "Acquisition mode is not calibration"
             )
             return False
 
         if not channels:
             self.logger.error(
-                "Cannot prepare SPE: no channels selected"
+                f"Cannot prepare {calibration_name}: no channels selected"
             )
             return False
 
@@ -137,7 +138,7 @@ class CalibrationService:
                         "channels": hv_channels,
                         "acquisition_configuration": acq_conf,
                     },
-                    sender="client_calibration_spe",
+                    sender=f"{calibration_name}",
                     priority=HVMessagePriority.ACQUISITION,
                     timeout_s=300.0,
                 )
@@ -145,7 +146,7 @@ class CalibrationService:
 
             if config_response.status != MessageStatus.OK:
                 self.logger.error(
-                    "SPE HV configuration failed: "
+                    f"{calibration_name} HV configuration failed: "
                     f"{config_response.error}"
                 )
                 return False
@@ -159,7 +160,7 @@ class CalibrationService:
                 or config_result.get("failed_channels")
             ):
                 self.logger.error(
-                    "SPE HV configuration incomplete: "
+                    f"{calibration_name} HV configuration incomplete: "
                     f"{config_result}"
                 )
                 return False
@@ -170,7 +171,7 @@ class CalibrationService:
                     payload={
                         "channels": hv_channels,
                     },
-                    sender="client_calibration_spe",
+                    sender=f"{calibration_name}",
                     priority=HVMessagePriority.ACQUISITION,
                     timeout_s=300.0,
                 )
@@ -178,7 +179,7 @@ class CalibrationService:
 
             if on_response.status != MessageStatus.OK:
                 self.logger.error(
-                    "SPE HV power-on failed: "
+                    f"{calibration_name} HV power-on failed: "
                     f"{on_response.error}"
                 )
                 return False
@@ -192,13 +193,13 @@ class CalibrationService:
                 or on_result.get("failed_channels")
             ):
                 self.logger.error(
-                    "SPE HV power-on incomplete: "
+                    f"{calibration_name} HV power-on incomplete: "
                     f"{on_result}"
                 )
                 return False
 
             self.logger.info(
-                "SPE preparation completed: "
+                f"{calibration_name} preparation completed: "
                 f"channels={channels}, "
                 f"voltage={voltage}, "
                 f"threshold={threshold}"
@@ -208,8 +209,39 @@ class CalibrationService:
 
         except Exception:
             self.logger.exception(
-                "Unexpected error during SPE preparation"
+                f"Unexpected error during {calibration_name} preparation"
             )
             return False
+
+
+    def prepare_spe(
+        self,
+        channels: list[int],
+        *,
+        voltage: int,
+        threshold: float,
+    ) -> bool:
+        return self._prepare_calibration_point(
+            channels=channels,
+            voltage=voltage,
+            threshold=threshold,
+            calibration_name="SPE",
+        )
+
+
+    def prepare_gain(
+        self,
+        channels: list[int],
+        *,
+        voltage: int,
+        threshold: float,
+    ) -> bool:
+        return self._prepare_calibration_point(
+            channels=channels,
+            voltage=voltage,
+            threshold=threshold,
+            calibration_name="GAIN",
+        )
+
 
         
