@@ -1597,40 +1597,83 @@ class AcquisitionService:
 
     def flush_client(self, client_id: bytes) -> bool:
         client_name = client_id.decode(errors="ignore")
+        plane = CommandPlane.ACQUISITION
 
-        read_prev = self.command_service.read_rc_register(
-            client_id=client_id, address=15, plane=CommandPlane.ACQUISITION
-        )
+        for attempt in range(1, 4):
+            read_prev = self.command_service.read_rc_register(client_id=client_id, address=15, plane=plane,)
 
-        if read_prev is None:
-            self.poutput(f"Client {client_name}: flush skipped, no valid read from register 15.")
-            return False
+            if read_prev is None:
+                self.logger.warning(
+                    f"Client {client_name}: missing initial RC15 read "
+                    f"on flush attempt {attempt}/3."
+                )
+                if attempt < 3:
+                    time.sleep(1.0)
+                continue
 
-        if not self.command_service.write_rc_register(
-            client_id=client_id, address=15, value=read_prev + 32, plane=CommandPlane.ACQUISITION
-        ):
-            self.poutput(f"Client {client_name}: flush failed while writing register 15.")
-            return False
+            completed = False
 
-        time.sleep(2.0)
+            write_ok = self.command_service.write_rc_register(client_id=client_id, address=15, value=read_prev + 32, plane=plane,)
 
-        read_now = self.command_service.read_rc_register(
-            client_id=client_id, address=15, plane=CommandPlane.ACQUISITION
-        )
+            if write_ok:
+                for check in range(1, 4):
+                    time.sleep(1.0)
 
-        if read_now is None:
-            self.poutput(f"Client {client_name}: flush failed, missing final read.")
-            return False
+                    read_now = self.command_service.read_rc_register(client_id=client_id, address=15, plane=plane,)
 
-        if read_now - read_prev - 32 == 64:
-            self.poutput(f"Client {client_name}: data flushing ended successfully.")
-            self.command_service.write_rc_register(
-                client_id=client_id, address=15, value=read_prev, plane=CommandPlane.ACQUISITION
+                    if read_now is None:
+                        self.logger.warning(
+                            f"Client {client_name}: missing RC15 read, "
+                            f"attempt {attempt}/3, check {check}/3."
+                        )
+                        continue
+
+                    flush_result = read_now - read_prev - 32
+
+                    self.logger.info(
+                        f"Client {client_name}: "
+                        f"flush attempt {attempt}/3, check {check}/3, "
+                        f"prev={read_prev}, now={read_now}, "
+                        f"result={flush_result}, expected=64."
+                    )
+
+                    if flush_result == 64:
+                        completed = True
+                        break
+            else:
+                self.logger.warning(
+                    f"Client {client_name}: flush request write failed "
+                    f"on attempt {attempt}/3."
+                )
+
+            restore_ok = self.command_service.write_rc_register(client_id=client_id, address=15, value=read_prev, plane=plane,)
+
+            if not restore_ok:
+                self.poutput(
+                    f"Client {client_name}: "
+                    "flush failed while restoring register 15."
+                )
+                return False
+
+            if completed:
+                self.poutput(
+                    f"Client {client_name}: data flushing ended "
+                    f"successfully on attempt {attempt}/3."
+                )
+                return True
+
+            self.logger.warning(
+                f"Client {client_name}: flush not confirmed "
+                f"on attempt {attempt}/3."
             )
-            return True
 
-        self.poutput(f"Client {client_name}: flush error. Please check.")
-        self.logger.error(f"Flush check failed for client {client_name}: prev={read_prev}, now={read_now}")
+            if attempt < 3:
+                time.sleep(1.0)
+
+        self.poutput(
+            f"Client {client_name}: flush error "
+            "after 3 attempts. Please check."
+        )
         return False
 
     def flush_clients(self, client_ids: List[bytes]) -> bool:
