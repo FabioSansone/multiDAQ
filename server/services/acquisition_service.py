@@ -94,6 +94,8 @@ class AcquisitionService:
         self.data_receiver_service = data_receiver_service
         self.mac_identity_registry = mac_identity_registry
 
+        self._prepared_rc19: dict[bytes, int] = {}
+
         self.poutput = output_func or (lambda message: None)
 
         self.logger = get_logger("acquisition_service")
@@ -836,43 +838,92 @@ class AcquisitionService:
         )
 
         return register_configuration
+
+
+    def prepare_rc_channels(
+        self,
+        client_id: bytes,
+        channels: list[int],
+    ) -> bool:
+
+        if not channels or any(
+            type(channel) is not int
+            or not 0 <= channel < 7
+            for channel in channels
+        ):
+            self.logger.error(
+                "Invalid RC channels for %r: %r",
+                client_id,
+                channels,
+            )
+            return False
+
+        mask = 0
+
+        for channel in channels:
+            mask |= 1 << channel
+
+        with self._session_lock:
+            self._prepared_rc19.pop(client_id, None)
+
+        if not self.disable_rc_channels(
+            client_ids=[client_id]
+        ):
+            return False
+
+        with self._session_lock:
+            self._prepared_rc19[client_id] = mask
+
+        return True
         
 
     def configure_acquisition_client(self, client_id: bytes, trigger_config: TriggerConfiguration, effective_channels: list[int],) -> bool:
 
-        client_name = client_id.decode(errors="ignore")
-
-        register_configuration = self._build_trigger_registers(
+        configuration = self._build_trigger_registers(
             trigger_config=trigger_config,
             effective_channels=effective_channels,
         )
 
-        if register_configuration is None:
-            self.logger.error(
-                f"Cannot configure acquisition for client {client_name}: "
-                "failed to build RC register configuration"
-            )
+        if configuration is None:
             return False
 
-        success = self.command_service.set_rc_acquisition_registers(
-            client_id=client_id,
-            rc_acq_dict=register_configuration,
-            plane=CommandPlane.ACQUISITION,
-            priority=2,
+        intended_rc19 = configuration["registers"][19]
+
+        with self._session_lock:
+            self._prepared_rc19.pop(client_id, None)
+
+        if not self.disable_rc_channels(
+            client_ids=[client_id]
+        ):
+            return False
+
+        #conservo i bit da mandare per dopo e al momento mando zero
+        configuration["registers"][19] = 0
+
+        success = (
+            self.command_service.set_rc_acquisition_registers(
+                client_id=client_id,
+                rc_acq_dict=configuration,
+                plane=CommandPlane.ACQUISITION,
+                priority=2,
+            )
         )
 
         if not success:
             self.logger.error(
-                f"Failed to configure acquisition RC registers "
-                f"for client {client_name}"
+                "RC preparation failed for %r",
+                client_id,
             )
             return False
 
+        with self._session_lock:
+            self._prepared_rc19[client_id] = intended_rc19
+
         self.logger.info(
-            f"Acquisition RC registers configured successfully "
-            f"for client {client_name}: "
-            f"channels={effective_channels}, "
-            f"trigger_mode={trigger_config.mode}"
+            "RC prepared with channels disabled: "
+            "client=%r, intended RC19=%d",
+            client_id,
+            intended_rc19,
         )
 
         return True
@@ -960,14 +1011,175 @@ class AcquisitionService:
             suffix=suffix,
             run_id=run_id,
             run_folder=run_folder,
+            confirmed=True,
         )
 
-    def close_file_for_client(self, client_id: bytes) -> bool:
+
+    def _open_and_start_prepared_clients(
+        self,
+        client_ids: list[bytes],
+        metadata_by_client: dict[bytes, dict],
+        acq_type: str,
+        file_format: str = "csv",
+        suffix: str = "",
+        run_id=None,
+        run_folder_clients=None,
+        rc19_after_open: dict[bytes, int] | None = None,
+    ) -> tuple[list[bytes], list[bytes], dict[bytes, str],]:
+
+        opened = []
+        acquiring = []
+        errors = {}
+        masks = {}
+
+        # Controlliamo la preparazione prima di aprire
+        # file o avviare producer.
+        for client_id in client_ids:
+            with self._session_lock:
+                mask = (
+                    rc19_after_open.get(client_id)
+                    if rc19_after_open is not None
+                    else self._prepared_rc19.get(client_id)
+                )
+
+            if (
+                type(mask) is not int
+                or not 0 < mask <= 0x1FF
+            ):
+                errors[client_id] = (
+                    "missing or invalid prepared RC19 mask"
+                )
+                continue
+
+            current = (
+                self.command_service.read_rc_register(
+                    client_id=client_id,
+                    address=19,
+                    plane=CommandPlane.ACQUISITION,
+                )
+            )
+
+            if current is None or current & 0x1FF:
+                errors[client_id] = (
+                    "RC19 must be disabled before OPEN_READY"
+                )
+                continue
+
+            masks[client_id] = mask
+
+            # L'header descrive la misura prevista,
+            # non lo zero usato durante la preparazione.
+            metadata_by_client[client_id]["status_reg19"] = mask
+
+        for client_id, mask in masks.items():
+            if self._stop_requested.is_set():
+                errors[client_id] = (
+                    "stopped before OPEN_READY"
+                )
+                continue
+
+            folder = (
+                run_folder_clients.get(client_id)
+                if run_folder_clients is not None
+                else None
+            )
+
+            result = self.open_file_for_client(
+                client_id=client_id,
+                metadata=metadata_by_client[client_id],
+                acq_type=acq_type,
+                file_format=file_format,
+                suffix=suffix,
+                run_id=run_id,
+                run_folder=folder,
+            )
+
+            if result is None:
+                errors[client_id] = (
+                    "OPEN_READY failed or not confirmed"
+                )
+
+                # Se si è persa la risposta, il file
+                # potrebbe essere stato comunque aperto.
+                self.close_file_for_client(
+                    client_id=client_id
+                )
+                continue
+
+            opened.append(client_id)
+
+            if self._stop_requested.is_set():
+                errors[client_id] = (
+                    "stopped before producer START"
+                )
+                continue
+
+            numeric_id = self._resolve_numeric_id(client_id)
+
+            if (
+                numeric_id is None
+                or not self.data_receiver_service.start_producer(
+                    client_id=numeric_id
+                )
+            ):
+                errors[client_id] = (
+                    "producer START failed or not confirmed"
+                )
+                continue
+
+            if self._stop_requested.is_set():
+                errors[client_id] = (
+                    "stopped before RC19 enable"
+                )
+                continue
+
+            enabled = (
+                self.command_service.write_rc_register(
+                    client_id=client_id,
+                    address=19,
+                    value=mask,
+                    plane=CommandPlane.ACQUISITION,
+                )
+            )
+
+            if not enabled:
+                errors[client_id] = (
+                    "RC19 enable failed after producer ACK"
+                )
+                continue
+
+            acquiring.append(client_id)
+
+            self.logger.info(
+                "Acquisition enabled: client=%r, RC19=%d",
+                client_id,
+                mask,
+            )
+
+        for client_id, error in errors.items():
+            self.logger.error(
+                "Acquisition start failed: "
+                "client=%r, reason=%s",
+                client_id,
+                error,
+            )
+
+        return opened, acquiring, errors
+
+    def close_file_for_client(
+        self,
+        client_id: bytes,
+    ) -> bool:
+
         numeric_id = self._resolve_numeric_id(client_id)
+
         if numeric_id is None:
             return False
 
-        return self.data_receiver_service.close_file(numeric_id)
+        return self.data_receiver_service.close_file(
+            client_id=numeric_id,
+            confirmed=True,
+        )
 
     def open_acq_all_clients(
         self,
@@ -1073,10 +1285,11 @@ class AcquisitionService:
         duration: float | None = None,
         reason: str = "acquisition session completed",
         manage_session: bool = True,
-        reset_trigger_config: bool = True
+        reset_trigger_config: bool = True,
+        session_already_started: bool = False,
     ) -> bool:
 
-        if manage_session:
+        if manage_session and not session_already_started:
             self.begin_session()
         
         metadata_by_client = self.build_run_metadata(
@@ -1086,35 +1299,77 @@ class AcquisitionService:
             acq_type_param=acq_type_param,
         )
 
-        open_results = self.open_acq_all_clients(
-            client_ids=client_ids, acq_type=acq_type, metadata_by_client=metadata_by_client, file_format=file_format, suffix=suffix, run_id=run_id, run_folder=run_folder_clients
+
+        opened_client_ids, acquiring_client_ids, start_errors = self._open_and_start_prepared_clients(
+            client_ids=client_ids,
+            metadata_by_client=metadata_by_client,
+            acq_type=acq_type,
+            file_format=file_format,
+            suffix=suffix,
+            run_id=run_id,
+            run_folder_clients=run_folder_clients,
         )
-        opened_client_ids = [cid for cid, result in open_results.items() if result is not None]
 
         if not opened_client_ids:
-            self.poutput("No clients ready for acquisition (all OPEN failed).")
+            self.poutput(
+                "No clients ready for acquisition."
+            )
+
             if manage_session:
-                self.close_session(success=False, reason="no clients opened")
+                self._enter_acquisition_finalization(
+                    reason="no clients opened"
+                )
+
+                self.close_session(
+                    success=False,
+                    reason="no clients opened",
+                )
+
             return False
 
-        if duration is not None and duration > 0:
-            stopped_early = self._stop_requested.wait(timeout=duration)
-            if stopped_early:
-                self.logger.info("Acquisition stopped early by request, before duration elapsed")
+        if acquiring_client_ids:
+            if duration is not None and duration > 0:
+                stopped_early = self._stop_requested.wait(timeout=duration)
+                if stopped_early:
+                    self.logger.info("Acquisition stopped early by request, before duration elapsed")
+                else:
+                    self.logger.info(f"Acquisition duration ({duration}s) elapsed naturally")
+                    if manage_session:
+                        self.server_state.process_event(
+                            event=ServerFSMEvent.RECEIVER_COMPLETED,
+                            reason="Acquisition duration elapsed",
+                            source="acquisition_service.run_acquisition_session",
+                        )
             else:
-                self.logger.info(f"Acquisition duration ({duration}s) elapsed naturally")
-                if manage_session:
-                    self.server_state.process_event(
-                        event=ServerFSMEvent.RECEIVER_COMPLETED,
-                        reason="Acquisition duration elapsed",
-                        source="acquisition_service.run_acquisition_session",
-                    )
-        else:
-            self._stop_requested.wait()  
+                self._stop_requested.wait()  
 
-        success = self.run_hardware_stop_and_flush(client_ids=opened_client_ids, reason=reason, reset_trigger_config=reset_trigger_config)
+        transition_ok = True
+
         if manage_session:
-            self.close_session(success=success, reason=reason)
+            transition_ok = (
+                self._enter_acquisition_finalization(
+                    reason=reason
+                )
+            )
+
+        success = self.run_hardware_stop_and_flush(
+            client_ids=opened_client_ids,
+            reason=reason,
+            reset_trigger_config=reset_trigger_config,
+        )
+
+        success = (
+            success
+            and transition_ok
+            and not start_errors
+        )
+
+        if manage_session:
+            self.close_session(
+                success=success,
+                reason=reason,
+            )
+
         return success
 
 
@@ -1130,7 +1385,8 @@ class AcquisitionService:
         duration: float | None = None,
         reason: str = "acquisition session completed",
         reset_trigger_config: bool = False,
-        extra_metadata_by_client: dict[bytes, dict] | None = None
+        extra_metadata_by_client: dict[bytes, dict] | None = None,
+        rc19_after_open: dict[bytes, int] | None = None,
     ) -> AcquisitionSessionResult:
 
         client_results = {
@@ -1142,12 +1398,10 @@ class AcquisitionService:
             self.logger.warning(
                 "Detailed acquisition requested without clients"
             )
-
             return AcquisitionSessionResult(
                 clients=client_results
             )
 
-        
         metadata_by_client = self.build_run_metadata(
             client_ids=client_ids,
             acq_mode=self.server_state.get_mode(),
@@ -1156,127 +1410,88 @@ class AcquisitionService:
             extra_metadata_by_client=extra_metadata_by_client,
         )
 
-        
-        open_results = self.open_acq_all_clients(
+    
+        opened_clients, acquiring_clients, start_errors = self._open_and_start_prepared_clients(
             client_ids=client_ids,
-            acq_type=acq_type,
             metadata_by_client=metadata_by_client,
+            acq_type=acq_type,
             file_format=file_format,
             suffix=suffix,
             run_id=run_id,
-            run_folder=run_folder_clients,
+            run_folder_clients=run_folder_clients,
+            rc19_after_open=rc19_after_open,
         )
 
-        opened_clients: list[bytes] = []
-
-        for client_id in client_ids:
-
-            open_result = open_results.get(
-                client_id
+        for client_id, client_result in client_results.items():
+            client_result.opened = (
+                client_id in opened_clients
             )
+            client_result.error = start_errors.get(client_id)
 
-            if open_result is None:
-
-                client_results[client_id].error = (
-                    "failed to open acquisition file"
-                )
-
-                self.logger.error(
-                    "Detailed acquisition OPEN failed: "
-                    f"client={client_id!r}"
-                )
-
-                continue
-
-            client_results[client_id].opened = True
-            opened_clients.append(client_id)
-
-        
         if not opened_clients:
-
-            self.poutput(
-                "No clients ready for acquisition "
-                "(all OPEN failed)."
-            )
-
-            self.logger.error(
-                "Detailed acquisition aborted: "
-                "all clients failed during OPEN"
-            )
-
             return AcquisitionSessionResult(
                 clients=client_results
             )
 
-        
-        if duration is not None and duration > 0:
-
-            stopped_early = self._stop_requested.wait(
-                timeout=duration
-            )
-
-            if stopped_early:
-
-                self.logger.info(
-                    "Detailed acquisition stopped early "
-                    "by request"
+        # Il tempo di misura parte dopo l'abilitazione.
+        # Se nessun client è partito, passiamo alla finalizzazione.
+        if acquiring_clients:
+            if duration is not None and duration > 0:
+                stopped_early = self._stop_requested.wait(
+                    timeout=duration
                 )
+
+                if stopped_early:
+                    self.logger.info(
+                        "Detailed acquisition stopped early "
+                        "by request"
+                    )
+                else:
+                    self.logger.info(
+                        f"Detailed acquisition duration "
+                        f"({duration}s) elapsed naturally"
+                    )
 
             else:
+                self._stop_requested.wait()
 
                 self.logger.info(
-                    f"Detailed acquisition duration "
-                    f"({duration}s) elapsed naturally"
+                    "Detailed acquisition stopped by request"
                 )
 
-        else:
-
-            self._stop_requested.wait()
-
-            self.logger.info(
-                "Detailed acquisition stopped by request"
-            )
-
-        
+        # Finalizziamo tutti i file aperti, anche se
+        # l'abilitazione del relativo client è fallita.
         finalize_results = (
             self.run_hardware_stop_and_flush_detailed(
                 client_ids=opened_clients,
                 reason=reason,
-                reset_trigger_config=(
-                    reset_trigger_config
-                ),
+                reset_trigger_config=reset_trigger_config,
             )
         )
 
-        
         for client_id in opened_clients:
+            client_result = client_results[client_id]
 
             finalized = bool(
-                finalize_results.get(
-                    client_id,
-                    False,
-                )
+                finalize_results.get(client_id, False)
             )
 
-            client_results[
-                client_id
-            ].finalized = finalized
+            client_result.finalized = finalized
 
-            client_results[
-                client_id
-            ].success = finalized
+            # Una finalizzazione riuscita non deve nascondere
+            # un errore precedente nell'avvio.
+            client_result.success = (
+                finalized and client_result.error is None
+            )
 
             if not finalized:
-
-                client_results[
-                    client_id
-                ].error = (
+                client_result.error = (
                     "acquisition finalization failed"
                 )
 
                 self.logger.error(
-                    "Detailed acquisition finalization "
-                    f"failed: client={client_id!r}"
+                    f"Detailed acquisition finalization failed: "
+                    f"client={client_id!r}"
                 )
 
         result = AcquisitionSessionResult(
@@ -1284,7 +1499,7 @@ class AcquisitionService:
         )
 
         self.logger.info(
-            "Detailed acquisition completed: "
+            f"Detailed acquisition completed: "
             f"requested={len(client_ids)}, "
             f"opened={len(opened_clients)}, "
             f"successful={len(result.successful_clients)}, "
@@ -1295,179 +1510,130 @@ class AcquisitionService:
 
 
 
-    def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str, reset_trigger_config: bool = True) -> bool:
-        self.poutput(f"Finalizing: {reason}")
-        self.logger.info(f"Finalizing: {reason}")
+    def run_hardware_stop_and_flush(
+        self,
+        client_ids: list[bytes],
+        reason: str,
+        reset_trigger_config: bool = True,
+    ) -> bool:
 
+        results = (
+            self.run_hardware_stop_and_flush_detailed(
+                client_ids=client_ids,
+                reason=reason,
+                reset_trigger_config=reset_trigger_config,
+            )
+        )
 
-        if not client_ids:
-            self.poutput("No active clients. Nothing to close.")
-            return True
-        
-        overall_success = True
-
-        disable_results = self.disable_rc_channels(client_ids=client_ids)
-
-        if not disable_results:
-            overall_success = False
-
-        self.poutput("Pushing FIFO flush via register 15...")
-        flush_results = self.flush_clients(client_ids=client_ids)
-        if not flush_results:
-            overall_success = False
-
-        if reset_trigger_config:
-            for client_id in client_ids:
-                ok = self.configure_acquisition_end_client(client_id=client_id)
-
-                if not ok:
-                    overall_success = False
-        else:
-            self.poutput("Trigger configuration preserved (multi-step acquisition, not the final point).")
-
-        success = self.stop_acq_all_clients(client_ids=client_ids)
-
-        if not success:
-            overall_success = False
-
-        if overall_success:
-            self.poutput("Finalization completed.")
-            self.logger.info("Finalization completed")
-        else:
-            self.poutput("Finalization completed with errors (see log).")
-            self.logger.error("Finalization completed with errors")
-
-        return overall_success
+        return all(results.values())
 
     def run_hardware_stop_and_flush_detailed(
         self,
-        client_ids: List[bytes],
+        client_ids: list[bytes],
         reason: str,
         reset_trigger_config: bool = True,
     ) -> dict[bytes, bool]:
 
         self.poutput(f"Finalizing: {reason}")
-        self.logger.info(f"Finalizing: {reason}")
 
-        if not client_ids:
-            self.poutput("No active clients. Nothing to close.")
-            return {}
+        results = {}
+        disabled_clients = []
 
-        client_results: dict[bytes, bool] = {
-            client_id: True
-            for client_id in client_ids
-        }
-
-        
+        # Disabilitiamo tutti i client prima di attendere
+        # la finalizzazione del primo.
         for client_id in client_ids:
+            results[client_id] = False
 
-            client_name = client_id.decode(errors="ignore")
-
-            ok = self.command_service.write_rc_register(
-                client_id=client_id,
-                address=19,
-                value=0,
-                plane=CommandPlane.ACQUISITION,
-            )
-
-            if not ok:
-                client_results[client_id] = False
-
-                self.logger.warning(
-                    f"Failed to disable RC acquisition channels "
-                    f"for client {client_name}"
+            try:
+                disabled = self.disable_rc_channels(
+                    client_ids=[client_id]
                 )
 
-                self.poutput(
-                    f"Client {client_name}: failed to disable "
-                    "RC acquisition channels."
+                if disabled:
+                    disabled_clients.append(client_id)
+
+            except Exception:
+                self.logger.exception(
+                    "RC19 disable failed for %r",
+                    client_id,
                 )
 
-        
-        self.poutput("Pushing FIFO flush via register 15...")
-        time.sleep(10.0)
-
-        
-        for client_id in client_ids:
-
-            if not self.flush_client(
-                client_id=client_id
-            ):
-                client_results[client_id] = False
-
-        
-        if reset_trigger_config:
-
-            for client_id in client_ids:
-
-                if not self.configure_acquisition_end_client(
+        for client_id in disabled_clients:
+            try:
+                if not self.flush_client(
                     client_id=client_id
                 ):
-                    client_results[client_id] = False
+                    self.logger.error(
+                        "Finalization interrupted for %r; "
+                        "file left open",
+                        client_id,
+                    )
+                    continue
 
-        else:
+                trigger_ok = True
 
-            self.poutput(
-                "Trigger configuration preserved "
-                "(multi-step acquisition, not the final point)."
-            )
+                if reset_trigger_config:
+                    trigger_ok = (
+                        self.configure_acquisition_end_client(
+                            client_id=client_id
+                        )
+                    )
 
-        
-        for client_id in client_ids:
-
-            client_name = client_id.decode(
-                errors="ignore"
-            )
-
-            if not self.close_file_for_client(
-                client_id=client_id
-            ):
-                client_results[client_id] = False
-
-                self.logger.warning(
-                    f"Failed to close file for client "
-                    f"{client_name}"
+                closed = self.close_file_for_client(
+                    client_id=client_id
                 )
 
-        
-        successful_clients = [
-            client_id
-            for client_id, success in client_results.items()
-            if success
-        ]
+                results[client_id] = bool(
+                    trigger_ok and closed
+                )
 
-        failed_clients = [
-            client_id
-            for client_id, success in client_results.items()
-            if not success
-        ]
+            except Exception:
+                self.logger.exception(
+                    "Finalization failed for %r",
+                    client_id,
+                )
 
-        if failed_clients:
+        failed = sum(
+            not success
+            for success in results.values()
+        )
 
-            self.poutput(
-                "Finalization completed with errors "
-                f"for {len(failed_clients)} client(s)."
-            )
+        self.poutput(
+            "Finalization completed; "
+            f"failed clients: {failed}."
+        )
 
+        return results
+
+
+    def _enter_acquisition_finalization(
+        self,
+        reason: str,
+    ) -> bool:
+
+        state = self.server_state.get_server_state()
+
+        if state == ServerFSM.FINALIZING:
+            return True
+
+        if state != ServerFSM.ACQUIRING:
             self.logger.error(
-                "Detailed acquisition finalization completed "
-                f"with errors: failed_clients={failed_clients!r}"
+                "Cannot enter acquisition finalization "
+                "from %s",
+                state,
             )
+            return False
 
-        else:
-
-            self.poutput(
-                "Finalization completed successfully."
+        return bool(
+            self.server_state.process_event(
+                event=ServerFSMEvent.STOP_REQUESTED,
+                reason=reason,
+                source=(
+                    "acquisition_service."
+                    "run_acquisition_session"
+                ),
             )
-
-            self.logger.info(
-                "Detailed acquisition finalization completed "
-                f"successfully for {len(successful_clients)} client(s)"
-            )
-
-        return client_results
-
-
+        )
 
 
 
@@ -1595,94 +1761,416 @@ class AcquisitionService:
         return metadata_by_client
 
 
+    # def flush_client(self, client_id: bytes) -> bool:
+    #     client_name = client_id.decode(errors="ignore")
+    #     plane = CommandPlane.ACQUISITION
+
+    #     for attempt in range(1, 4):
+    #         read_prev = self.command_service.read_rc_register(client_id=client_id, address=15, plane=plane,)
+
+    #         if read_prev is None:
+    #             self.logger.warning(
+    #                 f"Client {client_name}: missing initial RC15 read "
+    #                 f"on flush attempt {attempt}/3."
+    #             )
+    #             if attempt < 3:
+    #                 time.sleep(1.0)
+    #             continue
+
+    #         completed = False
+
+    #         write_ok = self.command_service.write_rc_register(client_id=client_id, address=15, value=read_prev + 32, plane=plane,)
+
+    #         if write_ok:
+    #             for check in range(1, 4):
+    #                 time.sleep(1.0)
+
+    #                 read_now = self.command_service.read_rc_register(client_id=client_id, address=15, plane=plane,)
+
+    #                 if read_now is None:
+    #                     self.logger.warning(
+    #                         f"Client {client_name}: missing RC15 read, "
+    #                         f"attempt {attempt}/3, check {check}/3."
+    #                     )
+    #                     continue
+
+    #                 flush_result = read_now - read_prev - 32
+
+    #                 self.logger.info(
+    #                     f"Client {client_name}: "
+    #                     f"flush attempt {attempt}/3, check {check}/3, "
+    #                     f"prev={read_prev}, now={read_now}, "
+    #                     f"result={flush_result}, expected=64."
+    #                 )
+
+    #                 if flush_result == 64:
+    #                     completed = True
+    #                     break
+    #         else:
+    #             self.logger.warning(
+    #                 f"Client {client_name}: flush request write failed "
+    #                 f"on attempt {attempt}/3."
+    #             )
+
+    #         restore_ok = self.command_service.write_rc_register(client_id=client_id, address=15, value=read_prev, plane=plane,)
+
+    #         if not restore_ok:
+    #             self.poutput(
+    #                 f"Client {client_name}: "
+    #                 "flush failed while restoring register 15."
+    #             )
+    #             return False
+
+    #         if completed:
+    #             self.poutput(
+    #                 f"Client {client_name}: data flushing ended "
+    #                 f"successfully on attempt {attempt}/3."
+    #             )
+    #             return True
+
+    #         self.logger.warning(
+    #             f"Client {client_name}: flush not confirmed "
+    #             f"on attempt {attempt}/3."
+    #         )
+
+    #         if attempt < 3:
+    #             time.sleep(1.0)
+
+    #     self.poutput(
+    #         f"Client {client_name}: flush error "
+    #         "after 3 attempts. Please check."
+    #     )
+    #     return False
+
+
+    # def flush_client(self, client_id: bytes) -> bool:
+    #     """Temporary test: stop/reset producer, then reset both FIFOs."""
+    #     client_name = client_id.decode(errors="ignore")
+    #     plane = CommandPlane.ACQUISITION
+
+    #     reset_mask = 1 << 3       # RC15 bit 3: EN_GATE(3)
+    #     flush_request_mask = 1 << 5
+    #     flush_status_mask = 1 << 6
+    #     writable_mask = 0x1BF     # RC15 bits 0–5 and 7–8
+
+    #     # Reset only after acquisition channels have been disabled.
+    #     rc19 = self.command_service.read_rc_register(
+    #         client_id=client_id,
+    #         address=19,
+    #         plane=plane,
+    #     )
+
+    #     if rc19 is None or (rc19 & 0x1FF) != 0:
+    #         self.poutput(
+    #             f"Client {client_name}: FIFO reset refused, "
+    #             "RC19 must be readable and acquisition channels disabled."
+    #         )
+    #         return False
+
+    #     numeric_id = self._resolve_numeric_id(client_id)
+
+    #     if numeric_id is None:
+    #         return False
+
+    #     self.poutput(
+    #         f"Client {client_name}: "
+    #         "publishing producer STOP; output file remains open."
+    #     )
+
+    #     if not self.data_receiver_service.stop_producer(
+    #         client_id=numeric_id,
+    #     ):
+    #         return False
+
+    #     # Temporary test delay:
+    #     # control thread keeps its 500 ms pause after a command.
+    #     time.sleep(1.0)
+
+    #     self.poutput(
+    #         f"Client {client_name}: "
+    #         "publishing producer RESET."
+    #     )
+
+    #     if not self.data_receiver_service.reset_producer(
+    #         client_id=numeric_id,
+    #     ):
+    #         return False
+
+    #     # Temporary test delay for worker shutdown and DMA reset.
+    #     # This is not a completion acknowledgement.
+    #     time.sleep(3.0)
+
+    #     self.poutput(
+    #         f"Client {client_name}: "
+    #         "producer reset command published; "
+    #         "verify RESET COMPLETE on the board. "
+    #         "Applying FIFO reset."
+    #     )
+
+
+    #     previous = self.command_service.read_rc_register(
+    #         client_id=client_id,
+    #         address=15,
+    #         plane=plane,
+    #     )
+
+    #     if previous is None:
+    #         self.poutput(
+    #             f"Client {client_name}: FIFO reset failed, "
+    #             "cannot read RC15."
+    #         )
+    #         return False
+
+    #     # Preserve trigger settings; clear reset and flush control/status.
+    #     base_value = previous & writable_mask
+    #     base_value &= ~(
+    #         reset_mask | flush_request_mask | flush_status_mask
+    #     )
+
+    #     asserted_ok = False
+    #     released_ok = False
+
+    #     try:
+    #         # Establish an inactive request before generating the pulse.
+    #         cleared_ok = self.command_service.write_rc_register(
+    #             client_id=client_id,
+    #             address=15,
+    #             value=base_value,
+    #             plane=plane,
+    #         )
+
+    #         if cleared_ok:
+    #             time.sleep(0.1)
+
+    #             asserted_ok = self.command_service.write_rc_register(
+    #                 client_id=client_id,
+    #                 address=15,
+    #                 value=base_value | reset_mask,
+    #                 plane=plane,
+    #             )
+
+    #             # Test pulse duration; much longer than FPGA clock periods.
+    #             time.sleep(0.1)
+
+    #     except Exception:
+    #         self.logger.exception(
+    #             f"Client {client_name}: error asserting FIFO reset."
+    #         )
+
+    #     finally:
+    #         # Always attempt to release reset, even after a write error.
+    #         try:
+    #             released_ok = self.command_service.write_rc_register(
+    #                 client_id=client_id,
+    #                 address=15,
+    #                 value=base_value,
+    #                 plane=plane,
+    #             )
+    #         except Exception:
+    #             self.logger.exception(
+    #                 f"Client {client_name}: error releasing FIFO reset."
+    #             )
+
+    #     if not asserted_ok or not released_ok:
+    #         self.poutput(
+    #             f"Client {client_name}: FIFO reset command failed "
+    #             f"(asserted={asserted_ok}, released={released_ok})."
+    #         )
+    #         return False
+
+    #     time.sleep(0.1)
+
+    #     readback = self.command_service.read_rc_register(
+    #         client_id=client_id,
+    #         address=15,
+    #         plane=plane,
+    #     )
+
+    #     if (
+    #         readback is None
+    #         or (readback & writable_mask) != base_value
+    #     ):
+    #         self.poutput(
+    #             f"Client {client_name}: unexpected RC15 "
+    #             f"after FIFO reset: {readback}, expected={base_value}."
+    #         )
+    #         return False
+
+    #     self.poutput(
+    #         f"Client {client_name}: FIFO reset pulse completed; "
+    #         "RC15 configuration restored."
+    #     )
+    #     return True
+
+
     def flush_client(self, client_id: bytes) -> bool:
+        """Stop confirmed producer and reset DMA/FIFOs."""
+
         client_name = client_id.decode(errors="ignore")
         plane = CommandPlane.ACQUISITION
 
-        for attempt in range(1, 4):
-            read_prev = self.command_service.read_rc_register(client_id=client_id, address=15, plane=plane,)
+        reset_mask = 1 << 3
+        writable_mask = 0x1BF
 
-            if read_prev is None:
-                self.logger.warning(
-                    f"Client {client_name}: missing initial RC15 read "
-                    f"on flush attempt {attempt}/3."
-                )
-                if attempt < 3:
-                    time.sleep(1.0)
-                continue
+        rc19 = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=19,
+            plane=plane,
+        )
 
-            completed = False
+        if rc19 is None or rc19 & 0x1FF:
+            self.logger.error(
+                "Reset refused for %s: RC19=%r",
+                client_name,
+                rc19,
+            )
+            return False
 
-            write_ok = self.command_service.write_rc_register(client_id=client_id, address=15, value=read_prev + 32, plane=plane,)
+        numeric_id = self._resolve_numeric_id(client_id)
 
-            if write_ok:
-                for check in range(1, 4):
-                    time.sleep(1.0)
+        if numeric_id is None:
+            return False
 
-                    read_now = self.command_service.read_rc_register(client_id=client_id, address=15, plane=plane,)
+        # STOP comprende il drain previsto dal producer.
+        # Procediamo soltanto dopo il relativo ACK.
+        if not self.data_receiver_service.stop_producer(
+            client_id=numeric_id
+        ):
+            return False
 
-                    if read_now is None:
-                        self.logger.warning(
-                            f"Client {client_name}: missing RC15 read, "
-                            f"attempt {attempt}/3, check {check}/3."
-                        )
-                        continue
+        previous = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=15,
+            plane=plane,
+        )
 
-                    flush_result = read_now - read_prev - 32
+        # Il primo reset software richiede hardware fuori reset.
+        if previous is None or previous & reset_mask:
+            self.logger.error(
+                "Reset refused for %s: RC15=%r",
+                client_name,
+                previous,
+            )
+            return False
 
-                    self.logger.info(
-                        f"Client {client_name}: "
-                        f"flush attempt {attempt}/3, check {check}/3, "
-                        f"prev={read_prev}, now={read_now}, "
-                        f"result={flush_result}, expected=64."
-                    )
+        # Conserviamo i bit scrivibili della configurazione,
+        # escludendo richiesta di reset e vecchio flush.
+        base_value = (
+            previous
+            & writable_mask
+            & ~(reset_mask | (1 << 5))
+        )
 
-                    if flush_result == 64:
-                        completed = True
-                        break
-            else:
-                self.logger.warning(
-                    f"Client {client_name}: flush request write failed "
-                    f"on attempt {attempt}/3."
-                )
+        held_value = base_value | reset_mask
 
-            restore_ok = self.command_service.write_rc_register(client_id=client_id, address=15, value=read_prev, plane=plane,)
+        # Primo RESET software, con hardware accessibile.
+        if not self.data_receiver_service.reset_producer(
+            client_id=numeric_id
+        ):
+            return False
 
-            if not restore_ok:
-                self.poutput(
-                    f"Client {client_name}: "
-                    "flush failed while restoring register 15."
-                )
+        hardware_ok = False
+        released_ok = False
+
+        try:
+            if not self.command_service.write_rc_register(
+                client_id=client_id,
+                address=15,
+                value=base_value,
+                plane=plane,
+            ):
                 return False
 
-            if completed:
-                self.poutput(
-                    f"Client {client_name}: data flushing ended "
-                    f"successfully on attempt {attempt}/3."
-                )
-                return True
+            time.sleep(0.1)
 
-            self.logger.warning(
-                f"Client {client_name}: flush not confirmed "
-                f"on attempt {attempt}/3."
+            if not self.command_service.write_rc_register(
+                client_id=client_id,
+                address=15,
+                value=held_value,
+                plane=plane,
+            ):
+                return False
+
+            # Durata dell'impulso hardware già collaudata.
+            time.sleep(0.1)
+
+            held = self.command_service.read_rc_register(
+                client_id=client_id,
+                address=15,
+                plane=plane,
             )
 
-            if attempt < 3:
-                time.sleep(1.0)
+            hardware_ok = (
+                held is not None
+                and (held & writable_mask) == held_value
+            )
+
+        except Exception:
+            self.logger.exception(
+                "Hardware reset failed for %s",
+                client_name,
+            )
+
+        finally:
+            # Tentiamo sempre il rilascio del reset hardware.
+            try:
+                released_ok = (
+                    self.command_service.write_rc_register(
+                        client_id=client_id,
+                        address=15,
+                        value=base_value,
+                        plane=plane,
+                    )
+                )
+
+            except Exception:
+                self.logger.exception(
+                    "Hardware reset release failed for %s",
+                    client_name,
+                )
+
+        if not hardware_ok or not released_ok:
+            return False
+
+        time.sleep(0.1)
+
+        released = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=15,
+            plane=plane,
+        )
+
+        if (
+            released is None
+            or (released & writable_mask) != base_value
+        ):
+            return False
+
+        # Secondo RESET software dopo il rilascio hardware.
+        if not self.data_receiver_service.reset_producer(
+            client_id=numeric_id
+        ):
+            return False
 
         self.poutput(
-            f"Client {client_name}: flush error "
-            "after 3 attempts. Please check."
+            f"Client {client_name}: "
+            "producer and hardware reset confirmed."
         )
-        return False
 
-    def flush_clients(self, client_ids: List[bytes]) -> bool:
-        time.sleep(10.0)
-        overall_success = True
+        return True
+
+    def flush_clients(
+        self,
+        client_ids: list[bytes],
+    ) -> bool:
+
+        success = True
+
         for client_id in client_ids:
             if not self.flush_client(client_id=client_id):
-                overall_success = False
-        return overall_success
+                success = False
+
+        return success
 
 
     def enable_rc_channels(self, client_id: bytes, channels: List[int]) -> bool:

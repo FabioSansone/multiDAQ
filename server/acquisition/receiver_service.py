@@ -25,7 +25,7 @@ ACQUISITION_FOLDERS = {
 }
 
 CONTROL_LISTENER_PORT = "5556"
-CONTROL_COMMAND_TIMEOUT_MS = 10000
+CONTROL_COMMAND_TIMEOUT_MS = 15000
 
 METRICS_LISTENER_PORT = "5557"
 METRICS_POLL_TIMEOUT_MS = 500
@@ -53,6 +53,8 @@ class DataReceiverService:
         self._metrics_ready_event = threading.Event()
 
         self._metrics_thread = None
+
+        self._control_lock = threading.RLock()
 
 
         if self.receiver_ready:
@@ -185,49 +187,235 @@ class DataReceiverService:
         return True
 
     def _bind_control_socket(self) -> bool:
-        if self.socket is not None:
-            self.socket.setsockopt(zmq.LINGER, 0)
-            self.socket.close()
-            self.socket = None
+        with self._control_lock:
+            if self.socket is not None:
+                self.socket.setsockopt(zmq.LINGER, 0)
+                self.socket.close()
+                self.socket = None
 
-        try:
-            self.socket = self.context.socket(zmq.REQ)
-            self.socket.setsockopt(zmq.LINGER, 0)
-            self.socket.setsockopt(zmq.RCVTIMEO, CONTROL_COMMAND_TIMEOUT_MS)
-            self.socket.bind(f"tcp://*:{CONTROL_LISTENER_PORT}")
-            self.logger.debug(f"Control channel bound on port {CONTROL_LISTENER_PORT}")
-            return True
-        except zmq.ZMQError as e:
-            self.socket = None
-            self.logger.error(f"ZMQ error binding control socket on port {CONTROL_LISTENER_PORT}: {e}")
-            return False
-        except Exception as e:
-            self.socket = None
-            self.logger.error(f"Unexpected error binding control socket on port {CONTROL_LISTENER_PORT}: {e}")
-            return False
+            try:
+                self.socket = self.context.socket(zmq.REQ)
+                self.socket.setsockopt(zmq.LINGER, 0)
+                self.socket.setsockopt(zmq.SNDTIMEO, CONTROL_COMMAND_TIMEOUT_MS)
+                self.socket.setsockopt(zmq.RCVTIMEO, CONTROL_COMMAND_TIMEOUT_MS)
+                self.socket.bind(f"tcp://*:{CONTROL_LISTENER_PORT}")
+                self.logger.debug(f"Control channel bound on port {CONTROL_LISTENER_PORT}")
+                return True
+            except zmq.ZMQError as e:
+                self.socket = None
+                self.logger.error(f"ZMQ error binding control socket on port {CONTROL_LISTENER_PORT}: {e}")
+                return False
+            except Exception as e:
+                self.socket = None
+                self.logger.error(f"Unexpected error binding control socket on port {CONTROL_LISTENER_PORT}: {e}")
+                return False
 
     def _send_command(self, frames: list[str]) -> tuple[bool, str]:
-        if self.socket is None:
-            return False, "control socket not initialized"
 
-        try:
-            self.socket.send_multipart(
-                [frame.encode("utf-8") for frame in frames]
-            )
-            reply = self.socket.recv_string()
-        except zmq.Again:
-            self.logger.error(f"Timeout waiting for reply to command '{frames}'")
-            return False, "timeout waiting for reply"
-        except zmq.ZMQError as e:
-            self.logger.error(f"ZMQ error sending command '{frames}': {e}")
-            return False, str(e)
+        if not frames:
+            return False, "Empty receiver command"
 
-        if reply == "OK":
+        with self._control_lock:
+            if self.socket is None:
+                return False, "control socket not initialized"
+
+            command = frames[0]
+
+            try:
+                self.socket.send_multipart(
+                    [frame.encode("utf-8") for frame in frames]
+                )
+                reply = self.socket.recv_string()
+            except zmq.Again:
+
+                error_text = (
+                    f"Timeout waiting for {command}: "
+                    "command outcome is unknown"
+                )
+
+                self.logger.error(error_text)
+
+                if not self._bind_control_socket():
+                    self.logger.error(
+                        "Receiver control channel unavailable"
+                    )
+
+                return False, error_text
+            
+            except zmq.ZMQError as e:
+                error_text = (
+                    f"Control communication failed for {command}: "
+                    f"{e}; command outcome is unknown"
+                )
+
+                self.logger.error(error_text)
+
+                if not self._bind_control_socket():
+                    self.logger.error(
+                        "Receiver control channel unavailable"
+                    )
+
+                return False, error_text
+
+            if reply != "OK":
+                self.logger.error(
+                    "Receiver command %s failed: %s",
+                    command,
+                    reply,
+                )
+
+                return False, reply
+
             return True, reply
 
-        self.logger.error(f"Command '{frames}' failed: {reply}")
-        return False, reply
 
+    def _send_producer_command(
+        self,
+        command: str,
+        client_id: str | int, #integer identifier of the client not the zmq identity
+    ) -> bool:
+
+        allowed_commands = {
+            "START_PRODUCER",
+            "STOP_PRODUCER",
+            "RESET_PRODUCER",
+        }
+
+        if command not in allowed_commands:
+            raise ValueError(
+                f"Unsupported producer command: {command}"
+            )
+
+        source = str(client_id).strip()
+
+        if not source:
+            self.logger.error(
+                "Missing producer ID"
+            )
+            return False
+
+        if not self.is_running():
+            self.logger.error(
+                "Cannot send %s: evreceiver is not running",
+                command,
+            )
+            return False
+
+        success, reply = self._send_command(
+            [
+                command,
+                source,
+            ]
+        )
+
+        if not success:
+            self.logger.error(
+                "%s not confirmed for producer %s: %s",
+                command,
+                source,
+                reply,
+            )
+            return False
+
+        self.logger.info(
+            "%s completed and confirmed for producer %s",
+            command,
+            source,
+        )
+
+        return True
+
+
+    def start_producer(
+        self,
+        client_id: str | int,
+    ) -> bool:
+
+        return self._send_producer_command(
+            command="START_PRODUCER",
+            client_id=client_id,
+        )
+
+
+    def stop_producer(
+        self,
+        client_id: str | int,
+    ) -> bool:
+
+        return self._send_producer_command(
+            command="STOP_PRODUCER",
+            client_id=client_id,
+        )
+
+
+    def reset_producer(
+        self,
+        client_id: str | int,
+    ) -> bool:
+
+        return self._send_producer_command(
+            command="RESET_PRODUCER",
+            client_id=client_id,
+        )
+
+    # def _publish_producer_command(
+    #     self,
+    #     command: str,
+    #     client_id: str | int,
+    # ) -> bool:
+    #     if command not in {
+    #         "STOP_PRODUCER",
+    #         "RESET_PRODUCER",
+    #     }:
+    #         raise ValueError(
+    #             f"Unsupported producer command: {command}"
+    #         )
+
+    #     if not self.is_running():
+    #         self.logger.error(
+    #             f"Cannot publish {command}: "
+    #             "evreceiver is not running"
+    #         )
+    #         return False
+
+    #     success, reply = self._send_command([
+    #         command,
+    #         str(client_id),
+    #     ])
+
+    #     if not success:
+    #         self.logger.error(
+    #             f"{command} publication failed "
+    #             f"for source {client_id}: {reply}"
+    #         )
+    #         return False
+
+    #     self.logger.info(
+    #         f"{command} published for source {client_id}; "
+    #         "producer completion is not acknowledged"
+    #     )
+    #     return True
+
+    # def stop_producer(
+    #     self,
+    #     client_id: str | int,
+    # ) -> bool:
+    #     return self._publish_producer_command(
+    #         "STOP_PRODUCER",
+    #         client_id,
+    #     )
+
+    # def reset_producer(
+    #     self,
+    #     client_id: str | int,
+    # ) -> bool:
+    #     return self._publish_producer_command(
+    #         "RESET_PRODUCER",
+    #         client_id,
+    #     )
+
+
+    
     def start_persistent_receiver(self) -> bool:
         if self.is_running():
             self.logger.warning(f"evreceiver already running with PID {self.process.pid}")
@@ -306,6 +494,7 @@ class DataReceiverService:
         suffix: str = "",
         run_id: str | int | None = None,
         run_folder: Path | None = None,
+        confirmed: bool = False,
     ) -> dict | None:
         if not self.is_running():
             self.logger.error(f"Cannot open file for client {client_id}: evreceiver is not running")
@@ -322,7 +511,7 @@ class DataReceiverService:
         metadata_wire = self._serialize_metadata(metadata)
 
         success, reply = self._send_command([
-            "OPEN",
+            "OPEN_READY" if confirmed else "OPEN",
             client_id_str,
             str(filepath),
             file_format,
@@ -344,23 +533,39 @@ class DataReceiverService:
             "run_id": run_id,
         }
 
-    def close_file(self, client_id: str | int) -> bool:
-        client_id_str = str(client_id)
-
+    def close_file(self, client_id: str | int, confirmed: bool = False,) -> bool:
         if not self.is_running():
-            self.logger.warning(f"Cannot close file for client {client_id_str}: evreceiver is not running")
+            self.logger.error(
+                "Cannot close file for %s: "
+                "evreceiver is not running",
+                client_id,
+            )
             return False
 
+        command = (
+            "CLOSE_READY" if confirmed else "CLOSE"
+        )
+
         success, reply = self._send_command([
-            "CLOSE",
-            client_id_str,
+            command,
+            str(client_id),
         ])
 
         if not success:
-            self.logger.error(f"CLOSE failed for client {client_id_str}: {reply}")
+            self.logger.error(
+                "%s failed for source %s: %s",
+                command,
+                client_id,
+                reply,
+            )
             return False
 
-        self.logger.info(f"Closed file for client {client_id_str}")
+        self.logger.info(
+            "%s completed for source %s",
+            command,
+            client_id,
+        )
+
         return True
 
     def status(self) -> dict:

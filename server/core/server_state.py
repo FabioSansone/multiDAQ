@@ -17,6 +17,7 @@ class ServerFSM(str, Enum):
     CONFIGURING = "configuring"
     READY = "ready"
     CALIBRATING = "calibrating"
+    CALIBRATION_SEQUENCE = "calibration_sequence"
     CALIBRATION_FINALIZING = "calibration_finalizing"
     ACQUIRING = "acquiring"
     FINALIZING = "finalizing"
@@ -33,7 +34,9 @@ class ServerFSMEvent(str, Enum):
     CONTROL_CONNECTION_LOST = "control_connection_lost"
 
     CALIBRATION_STARTED = "calibration_started"
+    CALIBRATION_SEQUENCE_STARTED = "calibration_sequence_started"
     CALIBRATION_COMPLETED = "calibration_completed"
+    CALIBRATION_SEQUENCE_FINISHED = "calibration_sequence_finished"
     CALIBRATION_FAILED = "calibration_failed"
     CALIBRATION_STOP_REQUESTED = "calibration_stop_requested"
 
@@ -132,6 +135,7 @@ TRANSITION_TABLE: dict[tuple[ServerFSM, ServerFSMEvent], ServerFSM] = {
     (ServerFSM.READY, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.DISCONNECTED,
     (ServerFSM.READY, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
     (ServerFSM.READY, ServerFSMEvent.CALIBRATION_STARTED): ServerFSM.CALIBRATING,
+    (ServerFSM.READY, ServerFSMEvent.CALIBRATION_SEQUENCE_STARTED): ServerFSM.CALIBRATION_SEQUENCE,
 
     # Data taking is active.
     (ServerFSM.ACQUIRING, ServerFSMEvent.STOP_REQUESTED): ServerFSM.FINALIZING,
@@ -158,12 +162,21 @@ TRANSITION_TABLE: dict[tuple[ServerFSM, ServerFSMEvent], ServerFSM] = {
     (ServerFSM.CALIBRATING, ServerFSMEvent.CALIBRATION_STOP_REQUESTED): ServerFSM.CALIBRATION_FINALIZING,
     (ServerFSM.CALIBRATING, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.CALIBRATION_FINALIZING,
     (ServerFSM.CALIBRATING, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
+    
 
     #Calibration Finalization
     (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.CALIBRATION_FINALIZATION_SUCCEEDED): ServerFSM.READY,
     (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.CALIBRATION_FINALIZATION_FAILED): ServerFSM.READY,
     (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.CALIBRATION_FINALIZING,
     (ServerFSM.CALIBRATION_FINALIZING, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
+
+    # Between calibration phases: hardware finalization has completed.
+    (ServerFSM.CALIBRATION_SEQUENCE, ServerFSMEvent.CALIBRATION_STARTED): ServerFSM.CALIBRATING,
+    (ServerFSM.CALIBRATION_SEQUENCE, ServerFSMEvent.CALIBRATION_SEQUENCE_FINISHED): ServerFSM.READY,
+    (ServerFSM.CALIBRATION_SEQUENCE, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.DISCONNECTED,
+    (ServerFSM.CALIBRATION_SEQUENCE, ServerFSMEvent.CONTROL_CONNECTION_LOST): ServerFSM.DISCONNECTED,
+    (ServerFSM.CALIBRATION_SEQUENCE, ServerFSMEvent.ACQUISITION_CONNECTION_LOST): ServerFSM.CONTROL_CONNECTED,
+    (ServerFSM.CALIBRATION_SEQUENCE, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
 
 }
 
@@ -337,6 +350,7 @@ class ServerState:
 
     _ALLOWED_PENDING_TERMINAL_STATES = {
         ServerFSM.READY,
+        ServerFSM.CALIBRATION_SEQUENCE,
         ServerFSM.DISCONNECTED,
         ServerFSM.CONTROL_CONNECTED,
         ServerFSM.CONNECTED,
@@ -572,7 +586,10 @@ class ServerState:
                 elif next_state == ServerFSM.FINALIZING and event == ServerFSMEvent.ACQUISITION_CONNECTION_LOST:
                     terminal_state = ServerFSM.CONTROL_CONNECTED
                 else:
-                    terminal_state = requested_terminal_state or ServerFSM.READY or self.pending_terminal_state
+                    if (present_state == next_state and self.pending_terminal_state is not None):
+                        terminal_state = self.pending_terminal_state
+                    else:
+                        terminal_state = requested_terminal_state or ServerFSM.READY
 
                 self.pending_event = event
                 self.pending_terminal_state = terminal_state
@@ -974,12 +991,16 @@ class ServerState:
 
                 if terminal_state == ServerFSM.DISCONNECTED:
                     next_state = ServerFSM.DISCONNECTED
+                elif terminal_state == ServerFSM.CONTROL_CONNECTED:
+                    next_state = ServerFSM.CONTROL_CONNECTED
                 elif terminal_state == ServerFSM.ERROR:
                     next_state = ServerFSM.ERROR
-                elif self._operational_client_ids_locked():
-                    next_state = ServerFSM.READY
-                else:
+                elif not self._operational_client_ids_locked():
                     next_state = ServerFSM.ERROR
+                elif terminal_state == ServerFSM.CALIBRATION_SEQUENCE:
+                    next_state = ServerFSM.CALIBRATION_SEQUENCE
+                else:
+                    next_state = ServerFSM.READY
 
             self.previous_state = present_state
             self.run_state = next_state

@@ -4,6 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 import time
+from argparse import Namespace
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from server.services.client_command_service import CommandPlane
 from server.core.server_state import ServerFSM, ServerFSMEvent
@@ -48,7 +54,12 @@ class CalibrationOrchestrator:
         self._calibration_stop_requested = threading.Event()
         self._calibration_thread: threading.Thread | None = None
 
+        self._spe_gain_thread: threading.Thread | None = None
+        self._spe_gain_stop_requested = threading.Event()
+
         self._calibration_lifecycle_lock = threading.Lock()
+
+        self.console = Console()
         
         self.logger = get_logger("calibration_orchestrator")
         self.logger.debug("Calibration Orchestrator initialized")
@@ -265,6 +276,61 @@ class CalibrationOrchestrator:
                 )
 
         return overall_success
+
+    ################
+    #OPTICAL STATUS#
+    ################
+
+    def show_optical_status(self) -> None:
+        if not self.optical_service.is_initialized():
+            self.console.print(Panel(
+                Text("Optical instruments are not initialized.", style="yellow"),
+                title="Optical status", border_style="yellow", expand=False,
+            ))
+            return
+
+        try:
+            status = self.optical_service.get_status()
+        except Exception:
+            self.logger.exception("Failed to read optical status")
+            self.console.print(Panel(
+                Text("Failed to read optical instruments. See log.", style="red"),
+                title="Optical status", border_style="red", expand=False,
+            ))
+            return
+
+        table = Table(show_header=True, header_style="bold cyan", expand=False)
+        table.add_column("Instrument", style="bold")
+        table.add_column("Parameter")
+        table.add_column("Value", overflow="fold")
+
+        for role, label in (
+            ("near_wheel", "Near wheel"),
+            ("far_wheel", "Far wheel"),
+            ("polarizer", "Polarizer"),
+        ):
+            info = status.get(role)
+            if info is None:
+                table.add_row(label, "Readout", Text("Unavailable", style="red"))
+                continue
+            if isinstance(info, dict):
+                if not info:
+                    table.add_row(label, "Readout", Text("No fields returned", style="yellow"))
+                for key, value in info.items():
+                    table.add_row(
+                        label,
+                        Text(str(key).replace("_", " ").capitalize()),
+                        Text("Unknown" if value is None else str(value),
+                             style="yellow" if value is None else "green"),
+                    )
+            else:
+                table.add_row(label, "Readout", Text(str(info)))
+
+        self.console.print(Panel(
+            table, title="Optical status",
+            subtitle="Current instrument readout",
+            border_style="cyan", expand=False,
+        ))
 
     
     ##############################
@@ -811,7 +877,7 @@ class CalibrationOrchestrator:
     #Pedestal Calibration Procedure#
     ################################
 
-    def _apply_pedestal_point(self, client_id: bytes) -> bool:
+    def _apply_pedestal_point(self, client_id: bytes, point: ScanPoint,) -> bool:
         client_name = client_id.decode(errors="ignore")
         session = self.calibration_service.get_session(client_id=client_id)
 
@@ -1112,9 +1178,9 @@ class CalibrationOrchestrator:
         )
 
 
-    ###########################
+    ############################
     #GAIN Calibration Procedure#
-    ###########################
+    ############################
 
 
     def _build_gain_run_id(self, args) -> str:
@@ -1327,7 +1393,331 @@ class CalibrationOrchestrator:
             run_id=self._build_gain_run_id(args),
             use_calibration_trigger_defaults=False,
         )
-        
+
+
+    ##################################
+    #SPE + GAIN Calibration Procedure#
+    ##################################
+
+    def _run_spe_gain(self, args):
+        self.poutput("SPE+GAIN calibration requested.")
+
+        if (self.server_state.get_server_state() != ServerFSM.CALIBRATION_SEQUENCE):
+            self.poutput("SPE+GAIN sequence is no longer active.")
+            return False
+
+        spe_args = Namespace(**vars(args))
+        spe_args.near_wheel = args.spe_near_wheel
+        spe_args.far_wheel = args.spe_far_wheel
+        spe_args.polarizer = args.spe_polarizer
+        spe_args.voltage = args.spe_voltage
+        spe_args.threshold = args.spe_threshold
+        spe_args.duration = args.spe_duration
+
+        gain_args = Namespace(**vars(args))
+        gain_args.near_wheel = args.gain_near_wheel
+        gain_args.far_wheel = args.gain_far_wheel
+        gain_args.polarizer = args.gain_polarizer
+        gain_args.threshold = args.gain_threshold
+        gain_args.duration = args.gain_duration
+
+        try:
+            voltages = list(
+                range(args.start, args.stop + 1, args.step)
+            )
+
+            if self._calibration_thread is not None and self._calibration_thread.is_alive():
+                self.poutput("Another calibration worker is already running.")
+                return False
+
+            all_clients = bool(getattr(args, "all_clients", False))
+            multipmt_id = getattr(args, "multipmt_id", None)
+            batch_id = getattr(args, "batch_id", None)
+
+            if multipmt_id is None and batch_id is None and not all_clients:
+                all_clients = True
+
+            targets = self._resolve_calibration_targets(
+                multipmt_id=multipmt_id,
+                batch_id=batch_id,
+                all_clients=all_clients,
+                channels=args.channels,
+                require_acquisition_plane=True,
+            )
+
+            if not targets:
+                return False
+
+            #Trigger configuration must be the same for both calibrations
+            trigger_config = TriggerConfiguration(
+                mode="external",
+                input_type=args.trigger_input,
+                polarity=args.polarity,
+                window_ns=args.window_ns,
+                delay_ns=args.delay_ns,
+                save_external=True,
+                save_auto=False,
+            )
+
+            snapshot_spec = HardwareSnapshotSpec(
+                rc_register=(
+                    15,
+                    16,
+                    18,
+                    19
+                ),
+                hv_voltage=True,
+                hv_threshold=True,
+                hv_power_state=True,
+            )
+
+
+            spe_point = ScanPoint(
+                index=0,
+                parameter_name="spe",
+                value=1,
+                suffix=args.suffix,
+                metadata={
+                    "near_wheel": args.spe_near_wheel,
+                    "far_wheel": args.spe_far_wheel,
+                    "polarizer": args.spe_polarizer,
+                    "spe_voltage": args.spe_voltage,
+                    "spe_threshold": args.spe_threshold,
+                    "trigger_input": args.trigger_input,
+                    "trigger_polarity": args.polarity,
+                    "delay_ns": args.delay_ns,
+                    "window_ns": args.window_ns,
+                    "duration_s": args.spe_duration,
+                },
+            )
+
+
+            gain_points = [
+                ScanPoint(
+                    index=index,
+                    parameter_name="gain_voltage",
+                    value=voltage,
+                    suffix=f"{args.suffix}_{voltage}",
+                    metadata={
+                        "near_wheel": args.gain_near_wheel,
+                        "far_wheel": args.gain_far_wheel,
+                        "polarizer": args.gain_polarizer,
+                        "gain_voltage": voltage,
+                        "gain_threshold": args.gain_threshold,
+                        "trigger_input": args.trigger_input,
+                        "trigger_polarity": args.polarity,
+                        "delay_ns": args.delay_ns,
+                        "window_ns": args.window_ns,
+                        "duration_s": args.gain_duration,
+                    },
+                )
+                for index, voltage in enumerate(voltages)
+            ]
+
+            spe_scan_spec = CalibrationScanSpec(
+                calibration_type="spe",
+                points=(spe_point,),
+                snapshot_spec=snapshot_spec,
+                prepare_point=self._prepare_optics,
+                apply_point=self._apply_spe_point,
+            )
+
+            spe_completion = {}
+
+            with self._calibration_lifecycle_lock:
+                spe_started = self.start_calibration_scan(
+                    scan_spec=spe_scan_spec,
+                    execution_mode=CalibrationMode.SAFE,
+                    targets=targets,
+                    trigger_config=trigger_config,
+                    acq_type=args.acq_type,
+                    file_format=args.file_format,
+                    duration=args.duration,
+                    run_id=self._build_spe_run_id(spe_args),
+                    use_calibration_trigger_defaults=False,
+                    completion_result=spe_completion,
+                    sequence_phase=True,
+                )
+
+            if not spe_started:
+                self.poutput("Cannot start SPE. GAIN will not be started.")
+                return False
+
+            spe_thread = self._calibration_thread
+            spe_thread.join()
+
+            if self._spe_gain_stop_requested.is_set():
+                self.poutput("SPE+GAIN sequence stopped.")
+                return False
+
+            if not spe_completion["success"]:
+                outcome = spe_completion["outcome"]
+                outcome_text = outcome.value if outcome is not None else "unavailable"
+
+                self.poutput(
+                    f"SPE did not complete successfully "
+                    f"(outcome={outcome_text}). GAIN will not be started."
+                )
+                return False
+            
+            gain_scan_spec = CalibrationScanSpec(
+                calibration_type="gain",
+                points=tuple(gain_points),
+                snapshot_spec=snapshot_spec,
+                prepare_point=self._prepare_gain_optics,
+                apply_point=self._apply_gain_point,
+            )
+
+            gain_completion = {}
+
+            with self._calibration_lifecycle_lock:
+                gain_started = self.start_calibration_scan(
+                    scan_spec=gain_scan_spec,
+                    execution_mode=CalibrationMode.SAFE,
+                    targets=targets,
+                    trigger_config=trigger_config,
+                    acq_type=args.acq_type,
+                    file_format=args.file_format,
+                    duration=args.duration,
+                    run_id=self._build_gain_run_id(gain_args),
+                    use_calibration_trigger_defaults=False,
+                    completion_result=gain_completion,
+                    sequence_phase=True,
+                )
+
+
+            if not gain_started:
+                self.logger.error("GAIN calibration failed.")
+                self.poutput("GAIN calibration failed.")
+                return False
+
+            gain_thread = self._calibration_thread
+            gain_thread.join()
+
+            if self._spe_gain_stop_requested.is_set():
+                self.poutput("SPE+GAIN sequence stopped.")
+                return False
+
+            if not gain_completion["success"]:
+                outcome = gain_completion["outcome"]
+                outcome_text = outcome.value if outcome is not None else "unavailable"
+
+                self.poutput(
+                    f"GAIN did not complete successfully "
+                    f"(outcome={outcome_text})."
+                )
+                return False
+
+            return True
+
+        except:
+            self.logger.exception("Unexpected SPE+GAIN sequence error")
+        finally:
+            if (self.server_state.get_server_state() != ServerFSM.CALIBRATION_SEQUENCE):
+
+                self.server_state.process_event(
+                    event=ServerFSMEvent.CALIBRATION_SEQUENCE_FINISHED,
+                    reason="Calibration sequence coordinator finished",
+                    source="calibration_orchestrator",
+                )
+
+
+    def spe_gain(self, args) -> bool:
+
+        if args.spe_duration <= 0 or args.gain_duration <= 0:
+            self.logger.error("SPE or GAIN duration must be greater than zero.")
+            self.poutput("SPE or GAIN duration must be greater than zero.")
+            return False
+
+        #Window and Delay of trigger must be the same for both calibration types
+        if args.window_ns <= 0 or args.window_ns % 5 != 0:
+            self.logger.error("SPE and GAIN trigger window must be positive "
+                            "and a multiple of 5 ns.")
+            self.poutput(
+                "SPE and GAIN trigger window must be positive "
+                "and a multiple of 5 ns."
+            )
+            return False
+
+        if args.delay_ns < 0 or args.delay_ns % 5 != 0:
+            self.logger.error("SPE and GAIN trigger delay must be non-negative "
+                            "and a multiple of 5 ns.")
+            self.poutput(
+                "SPE and GAIN trigger delay must be non-negative "
+                "and a multiple of 5 ns."
+            )
+            return False
+
+        if args.step <= 0:
+            self.logger.error("GAIN voltage step must be greater than zero.")
+            self.poutput("GAIN voltage step must be greater than zero.")
+            return False
+
+        if args.start > args.stop:
+            self.logger.error("GAIN initial voltage must not exceed the final voltage.")
+            self.poutput(
+                "GAIN initial voltage must not exceed the final voltage."
+            )
+            return False
+
+        if self.get_mode() != "calibration":
+            self.poutput("SPE+GAIN requires calibration mode.")
+            return False
+
+        if (self._spe_gain_thread is not None and self._spe_gain_thread.is_alive()):
+            self.logger.warning(
+                "Cannot start SPE+GAIN calibration: "
+                "SPE+GAIN worker already running"
+            )
+            return False
+
+
+        started = self.server_state.process_event(
+            event=ServerFSMEvent.CALIBRATION_SEQUENCE_STARTED,
+            reason="SPE+GAIN sequence requested",
+            source="calibration_orchestrator",
+        )
+
+        if not started:
+            self.poutput("Cannot start SPE+GAIN in the current server state.")
+            return False
+
+
+        self._spe_gain_stop_requested.clear()
+
+
+        self._spe_gain_thread = threading.Thread(
+            target=self._run_spe_gain,
+            args=(args,),
+            daemon=True,
+            name=f"calibration-SPE+GAIN",
+        )
+
+        try:
+            self._spe_gain_thread.start()
+
+        except Exception:
+            self.logger.exception(
+                "Failed to start calibration worker"
+            )
+
+            if (self.server_state.get_server_state() != ServerFSM.CALIBRATION_SEQUENCE):
+                return False
+
+            self.server_state.process_event(
+                event=ServerFSMEvent.CALIBRATION_SEQUENCE_FINISHED,
+                reason="Calibration sequence coordinator finished",
+                source="calibration_orchestrator",
+            )
+
+            self._spe_gain_thread = None
+            return False
+
+        self.poutput(
+            "Calibration 'SPE+GAIN' started"
+        )
+
+        return True
 
         
     ####################################
@@ -1907,7 +2297,7 @@ class CalibrationOrchestrator:
         return resolution.targets
 
 
-    def _prepare_calibration_client(self, client_id: bytes, trigger_config=None, use_calibration_trigger_defaults: bool = True, ) -> bool:
+    def _prepare_calibration_client(self, client_id: bytes, trigger_config=None, use_calibration_trigger_defaults: bool = True, pending_rc19_by_client: dict[bytes, int] | None = None,) -> bool:
         client_name = client_id.decode(errors="ignore")
 
         session = self.calibration_service.get_session(client_id=client_id)
@@ -1917,6 +2307,15 @@ class CalibrationOrchestrator:
                 "no calibration session"
             )
             return False
+
+        if pending_rc19_by_client is None:
+            self.logger.error(
+                "Deferred RC19 map required for client %r",
+                client_id,
+            )
+            return False
+
+        pending_rc19_by_client.pop(client_id, None)
 
         effective_channels = list(session.effective_channels)
         if not effective_channels:
@@ -2106,62 +2505,59 @@ class CalibrationOrchestrator:
         for channel in effective_channels:
             channel_mask |= 1 << channel
 
-        
         if effective_trigger_config is None:
+            snapshot = session.hardware_snapshot
 
             current_reg19 = (
-                self.command_service.read_rc_register(
-                    client_id=client_id,
-                    address=19,
-                    plane=CommandPlane.ACQUISITION,
-                )
+                snapshot.rc_registers.get(19)
+                if snapshot is not None
+                else None
             )
 
-            if current_reg19 is None:
-
+            if type(current_reg19) is not int:
                 self.logger.error(
-                    f"Cannot prepare calibration client {client_name}: "
-                    "failed to read RC register 19"
+                    "Missing RC19 snapshot for client %r",
+                    client_id,
                 )
-
                 return False
 
+            # Conserviamo i bit di salvataggio dei trigger
+            # presenti prima della calibrazione.
             non_channel_bits = current_reg19 & ~0x7F
-
-            reg19_value = (
-                non_channel_bits | channel_mask
-            )
+            reg19_value = non_channel_bits | channel_mask
 
         else:
-
             reg19_value = channel_mask
 
-            if (
-                effective_trigger_config is not None
-                and effective_trigger_config.save_external
-            ):
+            if effective_trigger_config.save_external:
                 reg19_value |= 1 << 7
 
-            if (
-                effective_trigger_config is not None
-                and effective_trigger_config.save_auto
-            ):
+            if effective_trigger_config.save_auto:
                 reg19_value |= 1 << 8
+
+
+        value_to_write = 0
 
         if not self.command_service.write_rc_register(
             client_id=client_id,
             address=19,
-            value=reg19_value,
+            value=value_to_write,
             plane=CommandPlane.ACQUISITION,
         ):
-
             self.logger.error(
                 f"Failed to configure RC19 for "
                 f"calibration client {client_name}"
             )
+            return False
 
-            return False  
+        if pending_rc19_by_client is not None:
+            pending_rc19_by_client[client_id] = reg19_value
 
+            self.logger.info(
+                f"Calibration acquisition deferred: "
+                f"client={client_name}, "
+                f"RC19=0, planned_RC19={reg19_value}"
+            )
 
         self.logger.info(
             f"Calibration client prepared: "
@@ -2170,30 +2566,47 @@ class CalibrationOrchestrator:
             f"effective_channels={effective_channels}"
         )
 
-        return True  
+        return True
 
-    def _prepare_active_calibration_clients(self, trigger_config: TriggerConfiguration | None = None, use_calibration_trigger_defaults: bool = True, ) -> list[bytes]:
+    def _prepare_active_calibration_clients(
+        self,
+        trigger_config: TriggerConfiguration | None = None,
+        use_calibration_trigger_defaults: bool = True,
+        pending_rc19_by_client: dict[bytes, int] | None = None,
+    ) -> list[bytes]:
 
-        active_clients = self.calibration_service.get_active_clients()
+        active_clients = (
+            self.calibration_service.get_active_clients()
+        )
 
         ready_clients: list[bytes] = []
 
         for client_id in active_clients:
             client_name = client_id.decode(errors="ignore")
-            ok = self._prepare_calibration_client(client_id=client_id, trigger_config=trigger_config, use_calibration_trigger_defaults=use_calibration_trigger_defaults, )
+
+            ok = self._prepare_calibration_client(
+                client_id=client_id,
+                trigger_config=trigger_config,
+                use_calibration_trigger_defaults=(
+                    use_calibration_trigger_defaults
+                ),
+                pending_rc19_by_client=pending_rc19_by_client,
+            )
 
             if not ok:
-                self.calibration_service.mark_client_failed(client_id=client_id, error="calibration hardware preparation failed")
+                self.calibration_service.mark_client_failed(
+                    client_id=client_id,
+                    error="calibration hardware preparation failed",
+                )
+
                 self.logger.warning(
                     f"Calibration preparation failed for "
                     f"client {client_name}; "
                     "client removed from subsequent scan points"
                 )
-
                 continue
 
             ready_clients.append(client_id)
-
 
         return ready_clients
 
@@ -2289,7 +2702,7 @@ class CalibrationOrchestrator:
     #     return False
 
 
-    def _handle_start_error_calibration(self, target_clients: list[bytes], reason: str) -> bool:
+    def _handle_start_error_calibration(self, target_clients: list[bytes], reason: str, finalization_target: ServerFSM = ServerFSM.READY,) -> bool:
 
         roolback_completed = False
         session_closed = False
@@ -2297,6 +2710,7 @@ class CalibrationOrchestrator:
         try:
             calib_failed = self.server_state.process_event(
                 event=ServerFSMEvent.CALIBRATION_FAILED,
+                requested_terminal_state=finalization_target,
                 reason=reason,
                 source="calibration_orchestrator",
                 metadata={
@@ -2402,6 +2816,7 @@ class CalibrationOrchestrator:
                 if self.server_state.get_server_state() == ServerFSM.CALIBRATING:
                     self.server_state.process_event(
                         event=ServerFSMEvent.CALIBRATION_FAILED,
+                        requested_terminal_state=finalization_target,
                         reason=reason,
                         source="calibration_orchestrator",
                     )
@@ -2450,20 +2865,39 @@ class CalibrationOrchestrator:
         file_format: str = "csv",
         duration: float | None = None,
         run_id=None,
+        completion_result: dict | None = None,
+        sequence_phase: bool = False,
     ) -> bool:
+
+        if completion_result is not None:
+            completion_result.clear()
+            completion_result.update(outcome=None, success=False, aborted=False)
 
         calibration_type = scan_spec.calibration_type
         points = list(scan_spec.points)
         snapshot_spec = scan_spec.snapshot_spec
 
-        current_state = self.server_state.get_server_state()
+        if sequence_phase:
+            if threading.current_thread() is not self._spe_gain_thread:
+                self.logger.error(
+                    "Only the SPE+GAIN coordinator can start a sequence phase"
+                )
+                return False
 
-        if current_state != ServerFSM.READY:
+            if self._spe_gain_stop_requested.is_set():
+                return False
+
+        current_state = self.server_state.get_server_state()
+        expected_state = ServerFSM.CALIBRATION_SEQUENCE if sequence_phase else ServerFSM.READY
+
+        if current_state != expected_state:
             self.logger.warning(
                 f"Cannot start calibration scan: "
-                f"server is {current_state.value}, expected READY"
+                f"server is {current_state.value}, expected {expected_state}"
             )
             return False
+
+        finalization_target = expected_state
 
         if not targets:
             self.logger.error(
@@ -2564,7 +2998,8 @@ class CalibrationOrchestrator:
 
             self._handle_start_error_calibration(
                 target_clients=target_clients,
-                reason="Failed to begin acquisition session"
+                reason="Failed to begin acquisition session",
+                finalization_target=finalization_target,
             )
 
             return False
@@ -2586,6 +3021,8 @@ class CalibrationOrchestrator:
                 "run_id": run_id,
                 "run_folder_clients": run_folder_clients,
                 "prepare_point": scan_spec.prepare_point,
+                "completion_result": completion_result,
+                "finalization_target": finalization_target,
             },
             daemon=True,
             name=f"calibration-{calibration_type}",
@@ -2601,7 +3038,8 @@ class CalibrationOrchestrator:
 
             self._handle_start_error_calibration(
                 target_clients=target_clients,
-                reason="Failed to start calibration worker"
+                reason="Failed to start calibration worker",
+                finalization_target=finalization_target
             )
 
             self._calibration_thread = None
@@ -2634,6 +3072,8 @@ class CalibrationOrchestrator:
         duration: float | None = None,
         run_id=None,
         prepare_point: Callable[[ScanPoint], bool] | None = None,
+        completion_result: dict | None = None,
+        finalization_target: ServerFSM = ServerFSM.READY,
     ) -> None:
 
         run_clients = (
@@ -2668,6 +3108,22 @@ class CalibrationOrchestrator:
                             error="hardware snapshot failed",
                         )
 
+            for client_id in self.calibration_service.get_active_clients():
+                disabled = (
+                    self.acquisition_service.disable_rc_channels(
+                        client_ids=[client_id]
+                    )
+                )
+
+                if not disabled:
+                    self.calibration_service.mark_client_failed(
+                        client_id=client_id,
+                        error=(
+                            "Cannot disable RC19 before "
+                            "calibration preparation"
+                        ),
+                    )
+
             #
             # User may have requested stop while snapshots were being taken.
             #
@@ -2683,17 +3139,16 @@ class CalibrationOrchestrator:
                 # 2. FAST PREPARATION
                 # ========================================================
                 #
-                rc19_by_client = {}
+                rc19_by_client: dict[bytes, int] = {}
+
                 if execution_mode == CalibrationMode.FAST:
-
-                    ready_clients = self._prepare_active_calibration_clients(trigger_config=trigger_config, use_calibration_trigger_defaults=use_calibration_trigger_defaults,)
-                    for client_id in ready_clients:
-                        value = self.command_service.read_rc_register(client_id=client_id, address=19, plane=CommandPlane.ACQUISITION,)
-                        if value is None:
-                            self.calibration_service.mark_client_failed(client_id=client_id, error="Failed to read configured RC19",)
-                            continue
-
-                        rc19_by_client[client_id] = value
+                    self._prepare_active_calibration_clients(
+                        trigger_config=trigger_config,
+                        use_calibration_trigger_defaults=(
+                            use_calibration_trigger_defaults
+                        ),
+                        pending_rc19_by_client=rc19_by_client,
+                    )
                 #
                 # ========================================================
                 # 3. SCAN LOOP
@@ -2747,21 +3202,21 @@ class CalibrationOrchestrator:
 
                         if self._calibration_stop_requested.is_set():
                             break
+                  
+                        rc19_by_client.clear()
 
                         self._prepare_active_calibration_clients(
                             trigger_config=trigger_config,
-                            use_calibration_trigger_defaults=use_calibration_trigger_defaults
+                            use_calibration_trigger_defaults=(
+                                use_calibration_trigger_defaults
+                            ),
+                            pending_rc19_by_client=rc19_by_client,
                         )
 
                         if self._calibration_stop_requested.is_set():
                             break
 
-                    if execution_mode == CalibrationMode.FAST:
-                        for client_id in self.calibration_service.get_active_clients():
-                            value = rc19_by_client.get(client_id)
-                            if value is None or not self.command_service.write_rc_register(client_id=client_id, address=19, value=value, plane=CommandPlane.ACQUISITION,):
-                                self.calibration_service.mark_client_failed(client_id=client_id, error=f"Failed to restore RC19 at point {point.index}")
-                                
+                          
                     ready_clients = (
                         self.calibration_service
                         .get_active_clients()
@@ -2866,16 +3321,17 @@ class CalibrationOrchestrator:
                             acq_type_param=point.value,
                             suffix=point.suffix,
                             run_id=run_id,
-                            run_folder_clients=(
-                                run_folder_clients
-                            ),
+                            run_folder_clients=run_folder_clients,
                             duration=duration,
                             reason=(
                                 f"{calibration_type} point "
                                 f"{point.index} completed"
                             ),
                             reset_trigger_config=False,
-                            extra_metadata_by_client=extra_metadata_by_client
+                            extra_metadata_by_client=(
+                                extra_metadata_by_client
+                            ),
+                            rc19_after_open=rc19_by_client,
                         )
                     )
 
@@ -3048,6 +3504,7 @@ class CalibrationOrchestrator:
 
                     transitioned = self.server_state.process_event(
                         event=terminal_event,
+                        requested_terminal_state=finalization_target,
                         reason=reason,
                         source="calibration_orchestrator",
                     )
@@ -3331,6 +3788,13 @@ class CalibrationOrchestrator:
                 self._calibration_stop_requested.is_set()
             )
 
+            if completion_result is not None:
+                completion_result.update(
+                    outcome=outcome,
+                    aborted=was_aborted,
+                    success=outcome == CalibrationRunOutcome.COMPLETED and restore_success and accepted and not was_aborted
+                )
+
             self._calibration_stop_requested.clear()
 
             self.poutput(
@@ -3348,41 +3812,54 @@ class CalibrationOrchestrator:
             )
     
     def request_calibration_stop(self) -> bool:
+        stop_active_phase = False
 
         with self._calibration_lifecycle_lock:
-            if (
-                self.server_state.get_server_state()
-                != ServerFSM.CALIBRATING
-            ):
-                self.logger.warning(
-                    "Calibration stop requested while calibration "
-                    "is not running"
-                )
-                return False
+            state = self.server_state.get_server_state()
 
-            accepted = self.server_state.process_event(
-                event=ServerFSMEvent.CALIBRATION_STOP_REQUESTED,
-                reason="Calibration stop requested by user",
-                source="calibration_orchestrator",
+            sequence_running = (
+                self._spe_gain_thread is not None
+                and self._spe_gain_thread.is_alive()
             )
 
-            if not accepted:
+            if sequence_running:
+                self._spe_gain_stop_requested.set()
+
+            if state == ServerFSM.CALIBRATING:
+                accepted = self.server_state.process_event(
+                    event=ServerFSMEvent.CALIBRATION_STOP_REQUESTED,
+                    reason="Calibration stop requested by user",
+                    source="calibration_orchestrator",
+                    requested_terminal_state=(
+                        ServerFSM.CALIBRATION_SEQUENCE
+                        if sequence_running
+                        else ServerFSM.READY
+                    ),
+                )
+
+                if not accepted:
+                    return False
+
+                self._calibration_stop_requested.set()
+                stop_active_phase = True
+
+            elif sequence_running and state in {
+                ServerFSM.CALIBRATION_SEQUENCE,
+                ServerFSM.CALIBRATION_FINALIZING,
+            }:
+                # The spe_gain function will stop after the current cleanup.
+                pass
+
+            else:
+                self.poutput("No calibration is running.")
                 return False
 
+        if stop_active_phase:
+            self.acquisition_service.request_stop()
 
-            self._calibration_stop_requested.set()
-
-
-        self.acquisition_service.request_stop()
-        
-
-        self.poutput(
-            "Calibration stop requested. "
-            "The active calibration is stopping "
-            "and hardware finalization is in progress."
-        )
-
+        self.poutput("Calibration stop requested.")
         return True
+
 
     def show_status(self) -> None:
 

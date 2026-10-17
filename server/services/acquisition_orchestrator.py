@@ -58,6 +58,38 @@ class AcquisitionOrchestrator:
             self.logger.error("CONFIGURATION_STARTED rejected by FSM in acquisition start")
             return
 
+        target_client_ids = list(client_ids)
+        preparation_clients = []
+
+        for client_id in target_client_ids:
+            disabled = (
+                self.acquisition_service.disable_rc_channels(
+                    client_ids=[client_id]
+                )
+            )
+
+            if disabled:
+                preparation_clients.append(client_id)
+            else:
+                self.logger.error(
+                    "Cannot prepare client %r: "
+                    "RC19 disable failed",
+                    client_id,
+                )
+
+        client_ids = preparation_clients
+
+        if not client_ids:
+            self.server_state.process_event(
+                event=ServerFSMEvent.CONFIGURATION_FAILED,
+                reason="Cannot disable RC19 on any target client",
+                source="acquisition_orchestrator",
+                metadata={
+                    "failed_clients": target_client_ids,
+                },
+            )
+            return
+
         rc_ready_clients = []
         mode = self.get_mode()
 
@@ -90,7 +122,7 @@ class AcquisitionOrchestrator:
 
         else:
             enabled_channels_by_client = (
-                self.channel_selection_service.prepare_hv_channels_for_acquisition(plane=CommandPlane.ACQUISITION)
+                self.channel_selection_service.prepare_hv_channels_for_acquisition(plane=CommandPlane.ACQUISITION, target_client_ids=client_ids,)
             )
 
             if not enabled_channels_by_client:
@@ -163,7 +195,7 @@ class AcquisitionOrchestrator:
                 rc_ready_clients.append(client_id)
 
 
-        failed_clients = [cid for cid in client_ids if cid not in rc_ready_clients]
+        failed_clients = [cid for cid in target_client_ids if cid not in rc_ready_clients]
 
         if not rc_ready_clients:
             self.server_state.process_event(
@@ -213,6 +245,7 @@ class AcquisitionOrchestrator:
                 "suffix": args.suffix,
                 "run_id": args.run_id,
                 "duration": args.duration,
+                "session_already_started": True,
             },
             daemon=True,
         )

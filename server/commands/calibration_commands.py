@@ -1144,6 +1144,11 @@ def do_calibration(
             return
 
 
+    if args.command == "optical_status":
+        self.calibration_orchestrator.show_optical_status()
+        return
+
+
     self.poutput(
         f"Unsupported calibration command: {args.command}"
     )
