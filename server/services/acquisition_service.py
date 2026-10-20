@@ -1186,47 +1186,65 @@ class AcquisitionService:
             self.logger.warning("Acquisition session requested without clients")
             return AcquisitionSessionResult(clients=client_results)
 
-        metadata_by_client = self.build_run_metadata(
-            client_ids=client_ids,
-            acq_mode=self.server_state.get_mode(),
-            acq_type=acq_type,
-            acq_type_param=acq_type_param,
-        )
+        try:
+            metadata_by_client = self.build_run_metadata(
+                client_ids=client_ids,
+                acq_mode=self.server_state.get_mode(),
+                acq_type=acq_type,
+                acq_type_param=acq_type_param,
+            )
 
-        opened_client_ids, acquiring_client_ids, start_errors = self._open_and_start_prepared_clients(
-            client_ids=client_ids,
-            metadata_by_client=metadata_by_client,
-            acq_type=acq_type,
-            file_format=file_format,
-            suffix=suffix,
-            run_id=run_id,
-            run_folder=run_folder_clients,
-        )
+            opened_client_ids, acquiring_client_ids, start_errors = self._open_and_start_prepared_clients(
+                client_ids=client_ids,
+                metadata_by_client=metadata_by_client,
+                acq_type=acq_type,
+                file_format=file_format,
+                suffix=suffix,
+                run_id=run_id,
+                run_folder=run_folder_clients,
+            )
 
-        for client_id, client_result in client_results.items():
-            client_result.opened = client_id in opened_client_ids
-            client_result.error = start_errors.get(client_id)
+            for client_id, client_result in client_results.items():
+                client_result.opened = client_id in opened_client_ids
+                client_result.error = start_errors.get(client_id)
 
-        if not opened_client_ids:
-            self.poutput("No clients ready for acquisition (all OPEN failed).")
-            return AcquisitionSessionResult(clients=client_results)
+            if not opened_client_ids:
+                self.poutput("No clients ready for acquisition (all OPEN failed).")
+                return AcquisitionSessionResult(clients=client_results)
 
-        # La durata parte solo dopo l'abilitazione; se nessun client è partito
-        # si passa direttamente alla finalizzazione.
-        if acquiring_client_ids:
-            if duration is not None and duration > 0:
-                stopped_early = self._stop_requested.wait(timeout=duration)
-                if stopped_early:
-                    self.logger.info("Acquisition stopped early by request, before duration elapsed")
+            # La durata parte solo dopo l'abilitazione; se nessun client è partito
+            # si passa direttamente alla finalizzazione.
+            if acquiring_client_ids:
+                if duration is not None and duration > 0:
+                    stopped_early = self._stop_requested.wait(timeout=duration)
+                    if stopped_early:
+                        self.logger.info("Acquisition stopped early by request, before duration elapsed")
+                    else:
+                        self.logger.info(f"Acquisition duration ({duration}s) elapsed naturally")
+                        if on_duration_elapsed is not None:
+                            try:
+                                on_duration_elapsed()
+                            except Exception:
+                                self.logger.exception("on_duration_elapsed callback failed")
                 else:
-                    self.logger.info(f"Acquisition duration ({duration}s) elapsed naturally")
-                    if on_duration_elapsed is not None:
-                        try:
-                            on_duration_elapsed()
-                        except Exception:
-                            self.logger.exception("on_duration_elapsed callback failed")
-            else:
-                self._stop_requested.wait()
+                    self._stop_requested.wait()
+
+        except Exception:
+            # Un errore imprevisto dopo l'apertura dei file o l'abilitazione di RC19
+            # non deve lasciare canali abilitati né file aperti: finalizziamo
+            # tutti i client richiesti e lasciamo propagare l'errore a chi chiama.
+            self.logger.exception("Unexpected error during acquisition: finalizing the hardware")
+
+            try:
+                self.run_hardware_stop_and_flush(
+                    client_ids=client_ids,
+                    reason="unexpected error",
+                    reset_trigger_config=reset_trigger_config,
+                )
+            except Exception:
+                self.logger.exception("Hardware finalization after an unexpected error failed")
+
+            raise
 
         finalize_results = self.run_hardware_stop_and_flush(client_ids=opened_client_ids, reason=reason, reset_trigger_config=reset_trigger_config)
 
