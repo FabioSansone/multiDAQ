@@ -48,6 +48,7 @@ class PrometheusRuntimeCollector:
         "client_id",
         "multipmt_id",
         "batch_id",
+        "configuration_id",
     )
 
     def __init__(
@@ -112,6 +113,13 @@ class PrometheusRuntimeCollector:
             or {}
         )
 
+        configuration_id = (
+            self.server_state.get_configuration_id(
+                client_id
+            )
+            or ""
+        )
+
         return [
             self._client_id_to_string(
                 client_id
@@ -128,6 +136,7 @@ class PrometheusRuntimeCollector:
                     "",
                 )
             ),
+            configuration_id,
         ]
 
 
@@ -368,6 +377,91 @@ class PrometheusRuntimeCollector:
         yield acquisition_metric
         yield monitoring_metric
         yield operational_metric
+
+    # ================================================================
+    # Collect Client Configuration
+    # ================================================================
+
+    def _collect_client_configuration(
+        self,
+    ):
+
+        metric = GaugeMetricFamily(
+            "multidaq_client_configuration_info",
+            (
+                "Active detector configuration selected "
+                "for each registered client."
+            ),
+            labels=[
+                "client_id",
+                "multipmt_id",
+                "batch_id",
+                "configuration_id",
+                "configuration_multipmt_id",
+                "configuration_batch_id",
+            ],
+        )
+
+        for client_id in self._get_known_clients():
+
+            identity = (
+                self.server_state.get_identity(
+                    client_id
+                )
+                or {}
+            )
+
+            configuration = (
+                self.server_state
+                .get_configuration_identity(
+                    client_id
+                )
+                or {}
+            )
+
+            configuration_id = (
+                self.server_state.get_configuration_id(
+                    client_id
+                )
+                or ""
+            )
+
+            metric.add_metric(
+                [
+                    self._client_id_to_string(
+                        client_id
+                    ),
+                    str(
+                        identity.get(
+                            "multipmt_id",
+                            "",
+                        )
+                    ),
+                    str(
+                        identity.get(
+                            "batch_id",
+                            "",
+                        )
+                    ),
+                    configuration_id,
+                    str(
+                        configuration.get(
+                            "multipmt_id",
+                            "",
+                        )
+                    ),
+                    str(
+                        configuration.get(
+                            "batch_id",
+                            "",
+                        )
+                    ),
+                ],
+                1,
+            )
+
+        yield metric
+    
 
 
     # ================================================================
@@ -907,6 +1001,7 @@ class PrometheusRuntimeCollector:
             self._collect_server_state,
             self._collect_client_counts,
             self._collect_client_connectivity,
+            self._collect_client_configuration,
             self._collect_client_states,
             self._collect_time_sync,
             self._collect_monitor_streams,

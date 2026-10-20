@@ -217,9 +217,12 @@ class ChannelSelectionService:
 
         return final_rc_channels
 
-    def prepare_hv_channels_for_acquisition(self, plane: CommandPlane = CommandPlane.ACQUISITION,) -> dict[bytes, List[int]]:
+    def prepare_hv_channels_for_acquisition(self, plane: CommandPlane = CommandPlane.ACQUISITION, target_client_ids: list[bytes] | None = None,) -> dict[bytes, List[int]]:
         """
         Synchronize HV status and switch ON all OK+OFF channels.
+
+        If target_client_ids is given, only those clients are prepared:
+        clients on the plane that are not targets are left untouched.
 
         Returns:
             dict[client_id, list[int]]
@@ -239,6 +242,10 @@ class ChannelSelectionService:
         else:
             self.logger.error(f"Unsupported plane: {plane}")
             return {}
+
+        if target_client_ids is not None:
+            targets = set(target_client_ids)
+            client_ids = [client_id for client_id in client_ids if client_id in targets]
 
         if not client_ids:
             self.poutput(

@@ -146,6 +146,7 @@ class MonitoringOrchestrator:
         self,
         client_id: bytes,
         identity: dict,
+        configuration_identity: dict,
     ) -> None:
 
         client_name = client_id.decode(errors="ignore")
@@ -153,12 +154,29 @@ class MonitoringOrchestrator:
         multipmt_id = identity.get("multipmt_id", "—")
         batch_id = identity.get("batch_id", "—")
 
+        configuration_multipmt_id = configuration_identity.get("multipmt_id", "-")
+        configuration_batch_id = configuration_identity.get("batch_id", "-")
+
         text = Text()
-        text.append(client_name, style="bold")
+        text.append(
+            client_name,
+            style="bold",
+        )
+
         text.append("\n")
-        text.append(f"multiPMT ID: {multipmt_id}")
-        text.append("    ")
-        text.append(f"Batch ID: {batch_id}")
+
+        text.append(
+            f"Identity: "
+            f"{multipmt_id}/{batch_id}"
+        )
+
+        text.append("\n")
+
+        text.append(
+            f"Configuration: "
+            f"{configuration_multipmt_id}/"
+            f"{configuration_batch_id}"
+        )
 
         self.console.print(
             Panel(
@@ -290,6 +308,8 @@ class MonitoringOrchestrator:
             or {}
         )
 
+        configuration_identity = self.server_state.get_configuration_identity(client_id)or {}
+
         command_service = (
             self.monitoring_service
             .command_service
@@ -345,6 +365,9 @@ class MonitoringOrchestrator:
                 ),
                 "identity": copy.deepcopy(
                     identity
+                ),
+                "configuration_identity": copy.deepcopy(
+                    configuration_identity
                 ),
             },
 
@@ -424,6 +447,9 @@ class MonitoringOrchestrator:
                         client_id
                     )
                     or {}
+                ),
+                "configuration_identity": (
+                    self.server_state.get_configuration_identity(client_id) or {}
                 )
             }
 
@@ -999,9 +1025,15 @@ class MonitoringOrchestrator:
                 "identity", {}
             )
 
+            configuration_identity = snapshot.get(
+                "configuration_identity",
+                {},
+            )
+
             self._print_client_header(
                 client_id=client_id,
                 identity=identity,
+                configuration_identity=configuration_identity,
             )
 
             if "main" in snapshot:

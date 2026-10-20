@@ -129,6 +129,7 @@ typedef struct
     char path[256];                     // valido solo se type == ITEM_OPEN
     meta_data_t metainfo;
     int output_format;
+    uint64_t open_request;
 }queue_item_t;
 
 
@@ -179,6 +180,16 @@ typedef struct __attribute__((packed)) {
     uint16_t energia;
 } event_record_t;
 
+
+static pthread_mutex_t open_ack_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t open_ack_cond = PTHREAD_COND_INITIALIZER;
+
+static uint64_t open_serial = 0;
+static uint64_t open_waiting = 0;
+
+static int open_done = 0;
+static int open_success = 0;
+
 //event_t event_queue[QUEUE_SIZE]; //array di 4096 strutture di tipo event_t per ospitare tutte le parole
 
 // int queue_head = 0;
@@ -225,7 +236,57 @@ static uint64_t monotonic_now_ns(void){
     return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 }
 
+static uint64_t begin_open_ack(void){
+    pthread_mutex_lock(&open_ack_mutex);
+    uint64_t token = ++open_serial;
 
+    open_waiting = token;
+    open_done = 0;
+    open_success = 0;
+
+    pthread_mutex_unlock(&open_ack_mutex);
+    return token;
+}
+
+static void complete_open_ack(uint64_t token, int success){
+    if(token == 0){
+        return;
+    }
+
+    pthread_mutex_lock(&open_ack_mutex);
+    if(open_waiting == token){
+        open_success = success;
+        open_done = 1;
+
+        pthread_cond_signal(&open_ack_cond);
+    }
+
+    pthread_mutex_unlock(&open_ack_mutex);
+}
+
+
+static int wait_open_ack(uint64_t token){
+    struct timespec deadline;
+
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 5;
+
+    pthread_mutex_lock(&open_ack_mutex);
+
+    while(!open_done && keep_running){
+        int result = pthread_cond_timedwait(&open_ack_cond, &open_ack_mutex, &deadline);
+
+        if(result!=0) break;
+
+
+    }
+
+    int success = open_waiting == token && open_done && open_success;
+    open_waiting = 0;
+    pthread_mutex_unlock(&open_ack_mutex);
+
+    return success;
+}
 
 static int schedule_delayed_close(const char *source_id, int worker_idx){
     pthread_mutex_lock(&delayed_close_lock);
@@ -810,6 +871,58 @@ static void maybe_publish_source_metrics(void *metrics_socket, tank_node *node){
 }
 
 
+static int publish_and_wait(void *pub, void *pull, const char *source, const char *command, char *error, size_t error_size){
+
+    static unsigned long serial = 0;
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    char request_id[64], topic[128];
+    snprintf(request_id, sizeof(request_id), "%ld-%ld-%lu", (long)getpid(), (long)start.tv_nsec, ++serial);
+    snprintf(topic, sizeof(topic), "%s|%s", source, request_id);
+    if (zmq_send(pub, topic, strlen(topic), ZMQ_SNDMORE) < 0 || zmq_send(pub, command, strlen(command), 0) < 0){
+        snprintf(error, error_size, "ERROR: command publication failed");
+        return 0;
+    }
+
+    while(keep_running){
+        zmq_pollitem_t item = {pull, 0, ZMQ_POLLIN, 0};
+        if(zmq_poll(&item, 1, 100) > 0 && (item.revents & ZMQ_POLLIN)){
+            char frames[5][256] = {{0}};
+            int count = 0, more = 0, invalid = 0;
+            size_t more_size = sizeof(more);
+            do{
+                zmq_msg_t msg;
+                zmq_msg_init(&msg);
+                if(zmq_msg_recv(&msg, pull, 0) < 0){
+                    zmq_msg_close(&msg);
+                    return 0;
+                }
+                size_t length = zmq_msg_size(&msg);
+                if(count >= 5 || length >= sizeof(frames[0])) invalid = 1;
+                else memcpy(frames[count], zmq_msg_data(&msg), length);
+                zmq_getsockopt(pull, ZMQ_RCVMORE, &more, &more_size);
+                zmq_msg_close(&msg);
+                count++;
+            }while(more);
+
+            if(invalid || count != 5 || strcmp(frames[0], source) || strcmp(frames[1], request_id) || strcmp(frames[2], command)) continue;
+            if (!strcmp(frames[3], "OK")) return 1;
+            snprintf(error, error_size, "ERROR: producer %s", frames[4]);
+            return 0;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec - start.tv_sec >= 10) {
+            snprintf(error, error_size, "ERROR: producer ACK timeout; result unknown");
+            return 0;
+        }
+
+    }
+
+    snprintf(error, error_size, "ERROR: receiver stopping");
+    return 0;
+    
+}
+
 
 void *control_listener(void *args){
 
@@ -842,6 +955,19 @@ void *control_listener(void *args){
         return NULL;
     }
     printf("RC binded on port 4444\n");
+
+
+    void *ack_socket = zmq_socket(context_rc, ZMQ_PULL);
+    assert(ack_socket != NULL);
+    int linger = 0;
+    zmq_setsockopt(ack_socket, ZMQ_LINGER, &linger, sizeof(linger));
+    int check_ack_bind = zmq_bind(ack_socket, "tcp://*:4445");
+    if(check_ack_bind != 0){
+        printf("ACK Bind Error: %s\n", zmq_strerror(zmq_errno()));
+        return NULL;
+    }
+    printf("ACK binded on port 4445\n");
+
 
     while (keep_running)
     {
@@ -897,11 +1023,17 @@ void *control_listener(void *args){
 
         const char *reply_msg = NULL;
 
-        if (strcmp(command, "OPEN") == 0 && n_matched < 3) {
+        if ((strcmp(command, "OPEN") == 0 || strcmp(command, "OPEN_READY") == 0) && n_matched < 3) {
             reply_msg = "ERROR: OPEN parsing failed";
-        } else if (strcmp(command, "CLOSE") == 0 && n_matched < 2) {
+        }else if (strcmp(command, "CLOSE_READY") == 0 && (n_matched != 2 || id_str[0] == '\0')) {
+            reply_msg = "ERROR: CLOSE_READY parsing failed";
+        }else if (strcmp(command, "CLOSE") == 0 && n_matched < 2) {
             reply_msg = "ERROR: CLOSE parsing failed";
-        } else if (strcmp(command, "OPEN") != 0 && strcmp(command, "CLOSE") != 0) {
+        } else if(strcmp(command, "START_PRODUCER") == 0 || strcmp(command, "STOP_PRODUCER") == 0 || strcmp(command, "RESET_PRODUCER") == 0){
+            if (n_matched != 2 || id_str[0] == '\0'){
+                reply_msg = "ERROR: producer command parsing failed";
+            }
+        } else if (strcmp(command, "OPEN") != 0 && strcmp(command, "CLOSE") != 0 && strcmp(command, "OPEN_READY") != 0 && strcmp(command, "CLOSE_READY") != 0) {
             reply_msg = "ERROR: command not recognized";
         }
 
@@ -910,10 +1042,72 @@ void *control_listener(void *args){
             continue;
         }
 
+        if (strcmp(command, "START_PRODUCER") == 0 || strcmp(command, "STOP_PRODUCER") == 0 || strcmp(command, "RESET_PRODUCER") == 0){
+            const char *producer_command = !strcmp(command, "START_PRODUCER") ? "start" : !strcmp(command, "STOP_PRODUCER") ? "stop" : "reset";
+            char error[384] = "ERROR: could not read ACK";
+            int ok = publish_and_wait(rc_socket, ack_socket, id_str, producer_command, error, sizeof(error));
+            const char *reply = ok ? "OK" : error;
+            zmq_send(cl_socket, reply, strlen(reply), 0);
+            continue;
+        }
+
+
         uint64_t h = hash_fnv1a((const unsigned char *)id_str, strlen(id_str));
         int worker_idx = (int)(h % N_WORKERS);
         worker_node_t *wn = &worker_nodes[worker_idx];
 
+        if (strcmp(command, "CLOSE_READY") == 0) {
+            wait_for_pending_close(id_str);
+
+            pthread_mutex_lock(&wn->lock);
+
+            while (wn->count >= QUEUE_SIZE && keep_running)
+                pthread_cond_wait(
+                    &wn->space_available,
+                    &wn->lock
+                );
+
+            if (!keep_running) {
+                pthread_mutex_unlock(&wn->lock);
+
+                const char *error = "ERROR: receiver stopping";
+                zmq_send(cl_socket, error, strlen(error), 0);
+
+                break;
+            }
+
+            queue_item_t event = {0};
+
+            event.item = ITEM_CLOSE;
+
+            snprintf(
+                event.source_id,
+                sizeof(event.source_id),
+                "%s",
+                id_str
+            );
+
+            event.open_request = begin_open_ack();
+
+            wn->items[wn->tail] = event;
+            wn->tail = (wn->tail + 1) % QUEUE_SIZE;
+            wn->count++;
+
+            pthread_cond_signal(&wn->data_available);
+            pthread_mutex_unlock(&wn->lock);
+
+            int ok = wait_open_ack(event.open_request);
+
+            const char *reply = (
+                ok
+                ? "OK"
+                : "ERROR: file CLOSE not confirmed"
+            );
+
+            zmq_send(cl_socket, reply, strlen(reply), 0);
+
+            continue;
+        }
 
         if (strcmp(command, "CLOSE") == 0) {
 
@@ -953,7 +1147,7 @@ void *control_listener(void *args){
             break;
         }
 
-        queue_item_t command_event;
+        queue_item_t command_event = {0};
         meta_data_t meta;
 
         if (metadata[0] != '\0') {
@@ -981,11 +1175,16 @@ void *control_listener(void *args){
             }
         }
 
-        char topic_buf[MAX_SOURCE_ID_LEN + 1];
-        snprintf(topic_buf, sizeof(topic_buf), "%s|", id_str);
-        zmq_send(rc_socket, topic_buf, strlen(topic_buf), ZMQ_SNDMORE);
-        zmq_send(rc_socket, "start", 5, 0);
-        printf("Sent START message to id='%s'\n", id_str);
+        int ready_open = strcmp(command, "OPEN_READY") == 0;
+        if(ready_open){
+            command_event.open_request = begin_open_ack();
+        }else{
+            char topic_buf[MAX_SOURCE_ID_LEN + 1];
+            snprintf(topic_buf, sizeof(topic_buf), "%s|", id_str);
+            zmq_send(rc_socket, topic_buf, strlen(topic_buf), ZMQ_SNDMORE);
+            zmq_send(rc_socket, "start", 5, 0);
+            printf("Sent START message to id='%s'\n", id_str);
+        }
 
         wn->items[wn->tail] = command_event;
         wn->tail = (wn->tail + 1) % QUEUE_SIZE;
@@ -994,9 +1193,12 @@ void *control_listener(void *args){
         pthread_cond_signal(&wn->data_available);
         pthread_mutex_unlock(&wn->lock);
 
-        zmq_send(cl_socket, "OK", 2, 0);
+        int open_ok = !ready_open || wait_open_ack(command_event.open_request);
+        const char *open_reply = open_ok ? "OK" : "ERROR: file OPEN not confirmed";
+        zmq_send(cl_socket, open_reply, strlen(open_reply), 0);
     }
 
+    zmq_close(ack_socket);
     zmq_close(cl_socket);
     zmq_ctx_destroy(context_cl);
     zmq_close(rc_socket);
@@ -1273,6 +1475,147 @@ void *receive_data(void *args) {
 
 
 
+static int open_worker_file(worker_node_t *wn, const queue_item_t *event){
+
+    tank_node *previous = get_node(
+        wn->worker_table,
+        event->source_id
+    );
+
+    if (previous != NULL && previous->output_file != NULL)
+        return 0;
+
+    FILE *file = fopen(event->path, "w");
+
+    if (file == NULL)
+        return 0;
+
+    meta_data_t metadata = event->metainfo;
+
+    int ok = write_header(file, &metadata) == 0;
+
+    if (ok && event->output_format == 0) {
+        ok = fprintf(
+            file,
+            "Channel,Unix_time_16_bit,Coarse_time,TDC_time,"
+            "ToT_time,TDC_trigger_end,Energy\n"
+        ) >= 0;
+    }
+
+    if (ok)
+        ok = fflush(file) == 0;
+
+    if (!ok) {
+        fclose(file);
+        return 0;
+    }
+
+    add_node(
+        wn->worker_table,
+        event->source_id,
+        file,
+        event->metainfo,
+        event->output_format,
+        event->path
+    );
+
+    tank_node *node = get_node(
+        wn->worker_table,
+        event->source_id
+    );
+
+    if (node == NULL || node->output_file != file) {
+        fclose(file);
+        return 0;
+    }
+
+    printf(
+        "Opened file '%s' for tank '%s'\n",
+        event->path,
+        event->source_id
+    );
+
+    return 1;
+}
+
+
+static int close_worker_file(
+    worker_node_t *wn,
+    const queue_item_t *event,
+    void *metrics_socket
+)
+{
+    tank_node *node = get_node(
+        wn->worker_table,
+        event->source_id
+    );
+
+    if (node == NULL)
+        return 0;
+
+    if (node->output_file == NULL)
+        return 1;
+
+    FILE *file = node->output_file;
+
+    int ok = !ferror(file);
+
+    if (node->buffer_used > 0) {
+        size_t expected = node->buffer_used;
+
+        size_t written = fwrite(
+            node->write_buffer,
+            1,
+            expected,
+            file
+        );
+
+        node->bytes_written += written;
+
+        if (written != expected)
+            ok = 0;
+
+        node->buffer_used = 0;
+    }
+
+    if (fflush(file) != 0)
+        ok = 0;
+
+    if (fclose(file) != 0)
+        ok = 0;
+
+    node->output_file = NULL;
+
+    publish_source_metrics(metrics_socket, node);
+
+    char message[128];
+
+    int length = snprintf(
+        message,
+        sizeof(message),
+        "SOURCE_STOP|%s",
+        node->source_id
+    );
+
+    if (length > 0 && (size_t)length < sizeof(message))
+        send_acquisition_metric(metrics_socket, message);
+
+    if (ok) {
+        printf(
+            "Closed file for tank '%s'\n",
+            event->source_id
+        );
+    } else {
+        fprintf(
+            stderr,
+            "ERROR: file CLOSE failed for '%s'\n",
+            event->source_id
+        );
+    }
+
+    return ok;
+}
+
 
 void *process_data(void *args_void) {
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
@@ -1462,55 +1805,24 @@ void *process_data(void *args_void) {
                 free(data_batch.payload);   
             } else{
                 if (current_event.item == ITEM_OPEN){
-                    file = fopen(current_event.path, "w");
-
-                    if (file == NULL) {
-                        printf("ERROR: failed to open file '%s' for tank '%s'\n",
-                            current_event.path, current_event.source_id);
-                    } else {
-                        if (write_header(file, &current_event.metainfo) != 0) {
-                            printf("ERROR: failed to write header for tank '%s'\n", current_event.source_id);
-                            fclose(file);
-                            continue;
-                        }
-                        if (current_event.output_format == 0){
-                            fprintf(file, "Channel,Unix_time_16_bit,Coarse_time,TDC_time,ToT_time,TDC_trigger_end,Energy\n");
-                        } 
-                        fflush(file);
-
-                        add_node(wn->worker_table, current_event.source_id, file, current_event.metainfo, current_event.output_format, current_event.path);
-                        printf("Opened file '%s' for tank '%s'\n",
-                            current_event.path, current_event.source_id);
+                    int ok = open_worker_file(wn, &current_event);
+                    complete_open_ack(current_event.open_request, ok);
+                    if(!ok){
+                        fprintf(stderr, "ERROR: file OPEN failed for '%s'\n", current_event.source_id);
                     }
                 }
 
-                else if (current_event.item == ITEM_CLOSE){
-                    tank_node *node = get_node(wn->worker_table, (const char *)(current_event.source_id));
-                    if (node == NULL) {
-                        printf("WARNING: CLOSE received for unknown tank '%s'\n", current_event.source_id);
-                        continue;
-                    }
-                    else if (node->output_file == NULL) {
-                        printf("WARNING: CLOSE received for tank '%s', but no file is open\n", current_event.source_id);
-                    }
-                    else {
-                        if (node->buffer_used > 0) {
-                            fwrite(node->write_buffer, 1, node->buffer_used, node->output_file);
-                            fflush(node->output_file);
-                            node->bytes_written += node->buffer_used;
-                            node->buffer_used = 0;
-                        }
-                        publish_source_metrics(metrics_socket, node);
-                        char message_source [128];
-                        int written_source = snprintf(message_source, sizeof(message_source), "SOURCE_STOP|%s", node->source_id);
-                        if (written_source > 0 && (size_t)written_source < sizeof(message_source)){
-                            send_acquisition_metric(metrics_socket, message_source);
-                        }
-                        fclose(node->output_file);
-                        node->output_file = NULL;
-                        printf("Closed file for tank '%s'\n", current_event.source_id);
-                    } 
+                else if (current_event.item == ITEM_CLOSE) {
+                    int ok = close_worker_file(
+                        wn,
+                        &current_event,
+                        metrics_socket
+                    );
 
+                    complete_open_ack(
+                        current_event.open_request,
+                        ok
+                    );
                 }
             }
         }

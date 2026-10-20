@@ -188,25 +188,9 @@ class CalibrationOrchestrator:
                 self.poutput(f"No clients accepted TTP={ttp_value}. Skipping point.")
                 continue
 
-            rc_ready_clients = []
-            for client_id in ttp_ready_clients:
-                client_name = client_id.decode(errors="ignore")
-
-                rc_ok = self.acquisition_service.enable_rc_channels(
-                    client_id=client_id, channels=channels_by_client[client_id],
-                )
-
-                if not rc_ok:
-                    self.poutput(f"Client {client_name}: RC channel re-enable failed for TTP={ttp_value}")
-                    continue
-                rc_ready_clients.append(client_id)
-
-            if not rc_ready_clients:
-                self.poutput(f"No clients ready (RC re-enable failed) for TTP={ttp_value}. Skipping point.")
-                continue
-
-            point_success = self.acquisition_service.run_acquisition_session(
-                client_ids=rc_ready_clients,
+            # RC19 viene abilitato dalla sessione, dopo apertura file e START producer.
+            point_result = self.acquisition_service.run_acquisition_session(
+                client_ids=ttp_ready_clients,
                 acq_type=args.acq_type,
                 file_format=args.file_format,
                 acq_type_param=ttp_value,
@@ -215,11 +199,10 @@ class CalibrationOrchestrator:
                 run_folder_clients=client_run_folders,
                 duration=args.duration,
                 reason=f"TTP scan point completed, ttp={ttp_value}",
-                manage_session=False,
-                reset_trigger_config=is_last_point,   
+                reset_trigger_config=is_last_point,
             )
 
-            if not point_success:
+            if not point_result.success:
                 overall_success = False
 
         if self.server_state.get_server_state() == ServerFSM.ACQUIRING:

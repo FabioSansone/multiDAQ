@@ -1,9 +1,9 @@
 import threading
-from typing import List
+from typing import Callable, List
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
@@ -37,7 +37,34 @@ class TriggerConfiguration:
     save_external: bool = False
     save_auto: bool = False
 
-    
+
+@dataclass
+class AcquisitionClientResult:
+    """One client acquisition status"""
+
+    opened: bool = False
+    finalized: bool = False
+    success: bool = False
+    error: str | None = None
+
+
+@dataclass
+class AcquisitionSessionResult:
+    """All clients results for a single acquisition session"""
+
+    clients: dict[bytes, AcquisitionClientResult] = field(default_factory=dict)
+
+    @property
+    def successful_clients(self) -> list[bytes]:
+        return [cid for cid, result in self.clients.items() if result.success]
+
+    @property
+    def failed_clients(self) -> list[bytes]:
+        return [cid for cid, result in self.clients.items() if not result.success]
+
+    @property
+    def success(self) -> bool:
+        return bool(self.clients) and not self.failed_clients
 
 
 class AcquisitionService:
@@ -67,6 +94,10 @@ class AcquisitionService:
         self._last_finalize_success = True
 
         self._stop_requested = threading.Event()
+
+        # Maschera RC19 prevista per ciascun client, calcolata in preparazione
+        # e scritta nel registro solo dopo OPEN_READY e START del producer.
+        self._prepared_rc19: dict[bytes, int] = {}
     
     def _parse_channel_value_map(self, value: str, value_type: float) -> dict[int, float] | None:
         
@@ -87,17 +118,17 @@ class AcquisitionService:
         return result
     
     def _convert_pe_map_to_mv(self, client_id: bytes, pe_by_channel: dict[int, float]) -> dict[int, float] | None:
-        identity = self.server_state.get_identity(client_id)
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
         
-        if identity is None:
-            self.logger.error(f"Cannot resolve PE calibration: no identity for client {client_id!r}")
+        if configuration_identity is None:
+            self.logger.error(f"Cannot resolve PE calibration: no configuration identity for client {client_id!r}")
             return None
         
-        multipmt_id = identity.get("multipmt_id")
-        batch_id = identity.get("batch_id")
+        multipmt_id = configuration_identity.get("multipmt_id")
+        batch_id = configuration_identity.get("batch_id")
         
         if not multipmt_id or not batch_id:
-            self.logger.error(f"Cannot resolve PE calibration: incomplete identity for client {client_id!r}")
+            self.logger.error(f"Cannot resolve PE calibration: incomplete configuration identity for client {client_id!r}")
             return None
         
         parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
@@ -266,17 +297,17 @@ class AcquisitionService:
     
     def build_multipmt_configuration(self, client_id: bytes, pe_thr: int | float) -> dict[int, dict[str, float]] | None:
         client_name = client_id.decode(errors="ignore")
-        identity = self.server_state.get_identity(client_id)
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
                 
-        if identity is None:
-            self.logger.error(f"Cannot build multipmt configuration: no identity for client {client_name}")
+        if configuration_identity is None:
+            self.logger.error(f"Cannot build multipmt configuration: no configuration identity for client {client_name}")
             return None
         
-        multipmt_id = identity.get("multipmt_id")
-        batch_id = identity.get("batch_id")
+        multipmt_id = configuration_identity.get("multipmt_id")
+        batch_id = configuration_identity.get("batch_id")
         
         if not multipmt_id or not batch_id:
-            self.logger.error(f"Cannot build multipmt configuration: incomplete identity for client {client_name}")
+            self.logger.error(f"Cannot build multipmt configuration: incomplete configuration identity for client {client_name}")
             return None
         
         parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
@@ -788,6 +819,17 @@ class AcquisitionService:
             )
             return False
 
+        with self._session_lock:
+            self._prepared_rc19.pop(client_id, None)
+
+        # Il registro 19 resta a zero finché file e producer non sono pronti:
+        # la maschera prevista viene conservata e scritta dopo lo START.
+        if not self.disable_rc_channels(client_ids=[client_id]):
+            return False
+
+        intended_rc19 = register_configuration["registers"][19]
+        register_configuration["registers"][19] = 0
+
         success = self.command_service.set_rc_acquisition_registers(
             client_id=client_id,
             rc_acq_dict=register_configuration,
@@ -802,11 +844,15 @@ class AcquisitionService:
             )
             return False
 
+        with self._session_lock:
+            self._prepared_rc19[client_id] = intended_rc19
+
         self.logger.info(
             f"Acquisition RC registers configured successfully "
             f"for client {client_name}: "
             f"channels={effective_channels}, "
-            f"trigger_mode={trigger_config.mode}"
+            f"trigger_mode={trigger_config.mode}, "
+            f"intended RC19={intended_rc19}"
         )
 
         return True
@@ -894,6 +940,7 @@ class AcquisitionService:
             suffix=suffix,
             run_id=run_id,
             run_folder=run_folder,
+            confirmed=True,
         )
 
     def close_file_for_client(self, client_id: bytes) -> bool:
@@ -901,9 +948,9 @@ class AcquisitionService:
         if numeric_id is None:
             return False
 
-        return self.data_receiver_service.close_file(numeric_id)
+        return self.data_receiver_service.close_file(numeric_id, confirmed=True)
 
-    def open_acq_all_clients(
+    def _open_and_start_prepared_clients(
         self,
         client_ids: List[bytes],
         metadata_by_client: dict[bytes, dict],
@@ -912,52 +959,119 @@ class AcquisitionService:
         suffix: str = "",
         run_id=None,
         run_folder: dict[bytes, Path] | None = None,
-    ) -> dict[bytes, dict | None]:
+    ) -> tuple[list[bytes], list[bytes], dict[bytes, str]]:
+        """Avvia i client già preparati nell'ordine verificato:
+        file aperto e header scritto (OPEN_READY), START confermato del
+        producer e, solo dopo, RC19 con la maschera prevista.
 
-        results = {}
+        Restituisce (client con file aperto, client con RC19 abilitato,
+        errore per i client che non sono partiti)."""
 
+        opened = []
+        acquiring = []
+        errors = {}
+        masks = {}
+
+        # Verifica della preparazione prima di aprire file o avviare producer.
         for client_id in client_ids:
-            client_name = client_id.decode(errors="ignore")
+            with self._session_lock:
+                mask = self._prepared_rc19.get(client_id)
 
-            client_run_folder = (
-                run_folder.get(client_id)
-                if run_folder is not None
-                else None
+            if type(mask) is not int or not 0 < mask <= 0x1FF:
+                errors[client_id] = "missing or invalid prepared RC19 mask"
+                continue
+
+            current = self.command_service.read_rc_register(
+                client_id=client_id, address=19, plane=CommandPlane.ACQUISITION,
             )
 
-            metadata = metadata_by_client.get(client_id)
+            if current is None or current & 0x1FF:
+                errors[client_id] = "RC19 must be disabled before OPEN_READY"
+                continue
 
-            if metadata is None:
-                self.logger.error(
-                    f"Missing run metadata for client {client_name}"
-                )
-                results[client_id] = None
+            if client_id not in metadata_by_client:
+                errors[client_id] = "missing run metadata"
+                continue
+
+            masks[client_id] = mask
+
+            # L'header descrive la misura prevista, non lo zero della preparazione.
+            metadata_by_client[client_id]["status_reg19"] = mask
+
+        for client_id, mask in masks.items():
+            if self._stop_requested.is_set():
+                errors[client_id] = "stopped before OPEN_READY"
                 continue
 
             result = self.open_file_for_client(
                 client_id=client_id,
-                metadata=metadata,
-                file_format=file_format,
+                metadata=metadata_by_client[client_id],
                 acq_type=acq_type,
+                file_format=file_format,
                 suffix=suffix,
                 run_id=run_id,
-                run_folder=client_run_folder,
+                run_folder=run_folder.get(client_id) if run_folder is not None else None,
             )
 
-            results[client_id] = result
+            if result is None:
+                errors[client_id] = "OPEN_READY failed or not confirmed"
 
-        return results
+                # Se la risposta è andata persa il file potrebbe essersi aperto.
+                self.close_file_for_client(client_id=client_id)
+                continue
 
-    def stop_acq_all_clients(self, client_ids: List[bytes]) -> bool:
-        overall_success = True
+            opened.append(client_id)
+
+            if self._stop_requested.is_set():
+                errors[client_id] = "stopped before producer START"
+                continue
+
+            numeric_id = self._resolve_numeric_id(client_id)
+
+            if numeric_id is None or not self.data_receiver_service.start_producer(client_id=numeric_id):
+                errors[client_id] = "producer START failed or not confirmed"
+                continue
+
+            if self._stop_requested.is_set():
+                errors[client_id] = "stopped before RC19 enable"
+                continue
+
+            if not self.command_service.write_rc_register(
+                client_id=client_id, address=19, value=mask, plane=CommandPlane.ACQUISITION,
+            ):
+                errors[client_id] = "RC19 enable failed after producer START"
+                continue
+
+            acquiring.append(client_id)
+            self.logger.info(f"Acquisition enabled: client={client_id!r}, RC19={mask}")
+
+        for client_id, error in errors.items():
+            self.logger.error(f"Acquisition start failed: client={client_id!r}, reason={error}")
+
+        return opened, acquiring, errors
+
+    def _run_client_step(self, description: str, action: Callable[[bytes], bool], client_id: bytes) -> bool:
+        """Esegue un passo di finalizzazione su un client: un'eccezione
+        conta come fallimento di quel client e non interrompe gli altri."""
+        try:
+            return bool(action(client_id))
+        except Exception:
+            self.logger.exception(f"{description} raised for client {client_id!r}")
+            return False
+
+    def stop_acq_all_clients(self, client_ids: List[bytes]) -> dict[bytes, bool]:
+        results = {}
 
         for client_id in client_ids:
-            if not self.close_file_for_client(client_id=client_id):
+            ok = self._run_client_step("File close", lambda cid: self.close_file_for_client(client_id=cid), client_id)
+
+            if not ok:
                 client_name = client_id.decode(errors="ignore")
                 self.logger.warning(f"Failed to close file for client {client_name}")
-                overall_success = False
 
-        return overall_success
+            results[client_id] = ok
+
+        return results
 
 
     def begin_session(self) -> None:
@@ -976,6 +1090,13 @@ class AcquisitionService:
         return self._last_finalize_success
 
     def close_session(self, success: bool, reason: str) -> None:
+        if self.server_state.get_server_state() == ServerFSM.ACQUIRING:
+            self.server_state.process_event(
+                event=ServerFSMEvent.STOP_REQUESTED,
+                reason=f"{reason} (stop requested)",
+                source="acquisition_service.close_session",
+            )
+            
         if self.server_state.get_server_state() == ServerFSM.FINALIZING:
             if success:
                 self.server_state.process_event(
@@ -1006,13 +1127,25 @@ class AcquisitionService:
         run_folder_clients: dict[bytes, "Path"] | None = None,
         duration: float | None = None,
         reason: str = "acquisition session completed",
-        manage_session: bool = True,
-        reset_trigger_config: bool = True
-    ) -> bool:
+        reset_trigger_config: bool = True,
+        on_duration_elapsed: Callable[[], None] | None = None,
+    ) -> AcquisitionSessionResult:
+        """Esegue una acquisizione (apertura file, attesa, finalizzazione) e
+        restituisce l'esito per ciascun client.
 
-        if manage_session:
-            self.begin_session()
-        
+        Non gestisce il ciclo di vita della sessione (begin/close_session) né
+        la FSM: spetta a chi la chiama. `on_duration_elapsed` viene invocata,
+        nel thread corrente, solo se la durata termina senza uno STOP."""
+
+        client_results = {
+            client_id: AcquisitionClientResult()
+            for client_id in client_ids
+        }
+
+        if not client_ids:
+            self.logger.warning("Acquisition session requested without clients")
+            return AcquisitionSessionResult(clients=client_results)
+
         metadata_by_client = self.build_run_metadata(
             client_ids=client_ids,
             acq_mode=self.server_state.get_mode(),
@@ -1020,81 +1153,105 @@ class AcquisitionService:
             acq_type_param=acq_type_param,
         )
 
-        open_results = self.open_acq_all_clients(
-            client_ids=client_ids, acq_type=acq_type, metadata_by_client=metadata_by_client, file_format=file_format, suffix=suffix, run_id=run_id, run_folder=run_folder_clients
+        opened_client_ids, acquiring_client_ids, start_errors = self._open_and_start_prepared_clients(
+            client_ids=client_ids,
+            metadata_by_client=metadata_by_client,
+            acq_type=acq_type,
+            file_format=file_format,
+            suffix=suffix,
+            run_id=run_id,
+            run_folder=run_folder_clients,
         )
-        opened_client_ids = [cid for cid, result in open_results.items() if result is not None]
+
+        for client_id, client_result in client_results.items():
+            client_result.opened = client_id in opened_client_ids
+            client_result.error = start_errors.get(client_id)
 
         if not opened_client_ids:
             self.poutput("No clients ready for acquisition (all OPEN failed).")
-            if manage_session:
-                self.close_session(success=False, reason="no clients opened")
-            return False
+            return AcquisitionSessionResult(clients=client_results)
 
-        if duration is not None and duration > 0:
-            stopped_early = self._stop_requested.wait(timeout=duration)
-            if stopped_early:
-                self.logger.info("Acquisition stopped early by request, before duration elapsed")
+        # La durata parte solo dopo l'abilitazione; se nessun client è partito
+        # si passa direttamente alla finalizzazione.
+        if acquiring_client_ids:
+            if duration is not None and duration > 0:
+                stopped_early = self._stop_requested.wait(timeout=duration)
+                if stopped_early:
+                    self.logger.info("Acquisition stopped early by request, before duration elapsed")
+                else:
+                    self.logger.info(f"Acquisition duration ({duration}s) elapsed naturally")
+                    if on_duration_elapsed is not None:
+                        try:
+                            on_duration_elapsed()
+                        except Exception:
+                            self.logger.exception("on_duration_elapsed callback failed")
             else:
-                self.logger.info(f"Acquisition duration ({duration}s) elapsed naturally")
-                if manage_session:
-                    self.server_state.process_event(
-                        event=ServerFSMEvent.RECEIVER_COMPLETED,
-                        reason="Acquisition duration elapsed",
-                        source="acquisition_service.run_acquisition_session",
-                    )
-        else:
-            self._stop_requested.wait()  
+                self._stop_requested.wait()
 
-        success = self.run_hardware_stop_and_flush(client_ids=opened_client_ids, reason=reason, reset_trigger_config=reset_trigger_config)
-        if manage_session:
-            self.close_session(success=success, reason=reason)
-        return success
+        finalize_results = self.run_hardware_stop_and_flush(client_ids=opened_client_ids, reason=reason, reset_trigger_config=reset_trigger_config)
+
+        for client_id in opened_client_ids:
+            finalized = finalize_results.get(client_id, False)
+            client_results[client_id].finalized = finalized
+
+            # Una finalizzazione riuscita non nasconde un errore di avvio.
+            client_results[client_id].success = finalized and client_results[client_id].error is None
+
+            if not finalized:
+                client_results[client_id].error = "acquisition finalization failed"
+
+        result = AcquisitionSessionResult(clients=client_results)
+
+        self.logger.info(
+            f"Acquisition session completed: requested={len(client_ids)}, "
+            f"opened={len(opened_client_ids)}, "
+            f"successful={len(result.successful_clients)}, "
+            f"failed={len(result.failed_clients)}"
+        )
+
+        return result
 
 
-    def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str, reset_trigger_config: bool = True) -> bool:
+    def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str, reset_trigger_config: bool = True) -> dict[bytes, bool]:
         self.poutput(f"Finalizing: {reason}")
         self.logger.info(f"Finalizing: {reason}")
 
-
         if not client_ids:
             self.poutput("No active clients. Nothing to close.")
-            return True
-        
-        overall_success = True
+            return {}
 
-        disable_results = self.disable_rc_channels(client_ids=client_ids)
+        results = {client_id: True for client_id in client_ids}
 
-        if not disable_results:
-            overall_success = False
+        for client_id in client_ids:
+            if not self._run_client_step("RC19 disable", lambda cid: self.disable_rc_channels(client_ids=[cid]), client_id):
+                results[client_id] = False
 
         self.poutput("Pushing FIFO flush via register 15...")
-        flush_results = self.flush_clients(client_ids=client_ids)
-        if not flush_results:
-            overall_success = False
+        for client_id, ok in self.flush_clients(client_ids=client_ids).items():
+            if not ok:
+                results[client_id] = False
 
         if reset_trigger_config:
             for client_id in client_ids:
-                ok = self.configure_acquisition_end_client(client_id=client_id)
-
-                if not ok:
-                    overall_success = False
+                if not self._run_client_step("Trigger reset", lambda cid: self.configure_acquisition_end_client(client_id=cid), client_id):
+                    results[client_id] = False
         else:
             self.poutput("Trigger configuration preserved (multi-step acquisition, not the final point).")
 
-        success = self.stop_acq_all_clients(client_ids=client_ids)
+        for client_id, ok in self.stop_acq_all_clients(client_ids=client_ids).items():
+            if not ok:
+                results[client_id] = False
 
-        if not success:
-            overall_success = False
+        failed = [client_id for client_id, ok in results.items() if not ok]
 
-        if overall_success:
+        if not failed:
             self.poutput("Finalization completed.")
             self.logger.info("Finalization completed")
         else:
-            self.poutput("Finalization completed with errors (see log).")
-            self.logger.error("Finalization completed with errors")
+            self.poutput(f"Finalization completed with errors on {len(failed)} client(s) (see log).")
+            self.logger.error(f"Finalization completed with errors: failed clients {failed!r}")
 
-        return overall_success
+        return results
 
     def check_acquisition_busy(self) -> bool:
         state = self.server_state.get_server_state()
@@ -1186,83 +1343,167 @@ class AcquisitionService:
 
 
     def flush_client(self, client_id: bytes) -> bool:
+        """Stop confirmed producer and reset DMA/FIFOs."""
+
         client_name = client_id.decode(errors="ignore")
+        plane = CommandPlane.ACQUISITION
 
-        read_prev = self.command_service.read_rc_register(
-            client_id=client_id, address=15, plane=CommandPlane.ACQUISITION
+        reset_mask = 1 << 3
+        writable_mask = 0x1BF
+
+        rc19 = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=19,
+            plane=plane,
         )
 
-        if read_prev is None:
-            self.poutput(f"Client {client_name}: flush skipped, no valid read from register 15.")
-            return False
-
-        if not self.command_service.write_rc_register(
-            client_id=client_id, address=15, value=read_prev + 32, plane=CommandPlane.ACQUISITION
-        ):
-            self.poutput(f"Client {client_name}: flush failed while writing register 15.")
-            return False
-
-        time.sleep(2.0)
-
-        read_now = self.command_service.read_rc_register(
-            client_id=client_id, address=15, plane=CommandPlane.ACQUISITION
-        )
-
-        if read_now is None:
-            self.poutput(f"Client {client_name}: flush failed, missing final read.")
-            return False
-
-        if read_now - read_prev - 32 == 64:
-            self.poutput(f"Client {client_name}: data flushing ended successfully.")
-            self.command_service.write_rc_register(
-                client_id=client_id, address=15, value=read_prev, plane=CommandPlane.ACQUISITION
+        if rc19 is None or rc19 & 0x1FF:
+            self.logger.error(
+                "Reset refused for %s: RC19=%r",
+                client_name,
+                rc19,
             )
-            return True
-
-        self.poutput(f"Client {client_name}: flush error. Please check.")
-        self.logger.error(f"Flush check failed for client {client_name}: prev={read_prev}, now={read_now}")
-        return False
-
-    def flush_clients(self, client_ids: List[bytes]) -> bool:
-        time.sleep(10.0)
-        overall_success = True
-        for client_id in client_ids:
-            if not self.flush_client(client_id=client_id):
-                overall_success = False
-        return overall_success
-
-
-    def enable_rc_channels(self, client_id: bytes, channels: List[int]) -> bool:
-        client_name = client_id.decode(errors="ignore")
-
-        if not channels:
-            self.poutput(f"Client {client_name}: no RC channels selected for acquisition.")
-            self.logger.warning(f"Cannot enable RC channels for client {client_name}: empty channel list")
             return False
 
-        register_address = 19
-        register_value = 0
+        numeric_id = self._resolve_numeric_id(client_id)
 
-        for ch in channels:
-            if ch < 0 or ch >= 7:
-                self.poutput(f"Client {client_name}: invalid RC channel: {ch}")
-                self.logger.error(f"Invalid RC channel requested for acquisition: {ch}")
-                return False
-            register_value |= 1 << ch
+        if numeric_id is None:
+            return False
 
-        ok = self.command_service.write_rc_register(
-            client_id=client_id, address=register_address, value=register_value, plane=CommandPlane.ACQUISITION
+        # STOP comprende il drain previsto dal producer.
+        # Procediamo soltanto dopo il relativo ACK.
+        if not self.data_receiver_service.stop_producer(
+            client_id=numeric_id
+        ):
+            return False
+
+        previous = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=15,
+            plane=plane,
         )
 
-        if not ok:
-            self.poutput(f"Client {client_name}: failed to enable RC channels.")
+        # Il primo reset software richiede hardware fuori reset.
+        if previous is None or previous & reset_mask:
+            self.logger.error(
+                "Reset refused for %s: RC15=%r",
+                client_name,
+                previous,
+            )
+            return False
+
+        # Conserviamo i bit scrivibili della configurazione,
+        # escludendo richiesta di reset e vecchio flush.
+        base_value = (
+            previous
+            & writable_mask
+            & ~(reset_mask | (1 << 5))
+        )
+
+        held_value = base_value | reset_mask
+
+        # Primo RESET software, con hardware accessibile.
+        if not self.data_receiver_service.reset_producer(
+            client_id=numeric_id
+        ):
+            return False
+
+        hardware_ok = False
+        released_ok = False
+
+        try:
+            if not self.command_service.write_rc_register(
+                client_id=client_id,
+                address=15,
+                value=base_value,
+                plane=plane,
+            ):
+                return False
+
+            time.sleep(0.1)
+
+            if not self.command_service.write_rc_register(
+                client_id=client_id,
+                address=15,
+                value=held_value,
+                plane=plane,
+            ):
+                return False
+
+            # Durata dell'impulso hardware già collaudata.
+            time.sleep(0.1)
+
+            held = self.command_service.read_rc_register(
+                client_id=client_id,
+                address=15,
+                plane=plane,
+            )
+
+            hardware_ok = (
+                held is not None
+                and (held & writable_mask) == held_value
+            )
+
+        except Exception:
+            self.logger.exception(
+                "Hardware reset failed for %s",
+                client_name,
+            )
+
+        finally:
+            # Tentiamo sempre il rilascio del reset hardware.
+            try:
+                released_ok = (
+                    self.command_service.write_rc_register(
+                        client_id=client_id,
+                        address=15,
+                        value=base_value,
+                        plane=plane,
+                    )
+                )
+
+            except Exception:
+                self.logger.exception(
+                    "Hardware reset release failed for %s",
+                    client_name,
+                )
+
+        if not hardware_ok or not released_ok:
+            return False
+
+        time.sleep(0.1)
+
+        released = self.command_service.read_rc_register(
+            client_id=client_id,
+            address=15,
+            plane=plane,
+        )
+
+        if (
+            released is None
+            or (released & writable_mask) != base_value
+        ):
+            return False
+
+        # Secondo RESET software dopo il rilascio hardware.
+        if not self.data_receiver_service.reset_producer(
+            client_id=numeric_id
+        ):
             return False
 
         self.poutput(
-            f"Client {client_name}: RC register {register_address} written with "
-            f"value {register_value} (enabled channels: {channels})"
+            f"Client {client_name}: "
+            "producer and hardware reset confirmed."
         )
+
         return True
+
+    def flush_clients(self, client_ids: List[bytes]) -> dict[bytes, bool]:
+        return {
+            client_id: self._run_client_step("Flush", lambda cid: self.flush_client(client_id=cid), client_id)
+            for client_id in client_ids
+        }
+
 
     def disable_rc_channels(self, client_ids: List[bytes] | None = None) -> bool:
         if client_ids is None:
@@ -1294,16 +1535,16 @@ class AcquisitionService:
             return None
 
         client_id = client_ids[0]
-        identity = self.server_state.get_identity(client_id) or {}
+        configuration_identity = self.server_state.get_configuration_identity(client_id) or {}
 
-        batch_id = identity.get("batch_id")
+        batch_id = configuration_identity.get("batch_id")
         if batch_id:
-            self.poutput(f"Using batch_id from client identity: {batch_id}")
+            self.poutput(f"Using batch_id from client configuration: {batch_id}")
             return batch_id
 
-        multipmt_id = identity.get("multipmt_id")
+        multipmt_id = configuration_identity.get("multipmt_id")
         if multipmt_id:
-            self.poutput(f"No batch_id in client identity. Using multipmt_id as acquisition folder id: {multipmt_id}")
+            self.poutput(f"No batch_id in client configuration. Using multipmt_id as acquisition folder id: {multipmt_id}")
             return multipmt_id
 
         return None

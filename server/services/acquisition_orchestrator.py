@@ -80,7 +80,6 @@ class AcquisitionOrchestrator:
 
                 rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
 
-                #rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
 
                 if not rc_ok:
                     self.poutput(f"Client {client_name}: RC channel enable failed. Skipping acquisition start.")
@@ -90,7 +89,7 @@ class AcquisitionOrchestrator:
 
         else:
             enabled_channels_by_client = (
-                self.channel_selection_service.prepare_hv_channels_for_acquisition(plane=CommandPlane.ACQUISITION)
+                self.channel_selection_service.prepare_hv_channels_for_acquisition(plane=CommandPlane.ACQUISITION, target_client_ids=client_ids)
             )
 
             if not enabled_channels_by_client:
@@ -154,7 +153,6 @@ class AcquisitionOrchestrator:
                         continue
 
                 rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
-                #rc_ok = self.acquisition_service.enable_rc_channels(client_id=client_id, channels=channels)
 
                 if not rc_ok:
                     self.poutput(f"Client {client_name}: RC channel enable failed. Skipping acquisition start.")
@@ -205,7 +203,7 @@ class AcquisitionOrchestrator:
         self.acquisition_service.begin_session()
 
         owner_thread = threading.Thread(
-            target=self.acquisition_service.run_acquisition_session,
+            target=self._run_session,
             kwargs={
                 "client_ids": rc_ready_clients,
                 "acq_type": args.acq_type,
@@ -223,8 +221,54 @@ class AcquisitionOrchestrator:
             "use 'acquisition stop' to stop it."
         )
 
+    def _on_duration_elapsed(self) -> None:
+        self.server_state.process_event(
+            event=ServerFSMEvent.RECEIVER_COMPLETED,
+            reason="Acquisition duration elapsed",
+            source="acquisition_orchestrator",
+        )
+
+    def _run_session(self, client_ids, acq_type, file_format, suffix, run_id, duration) -> None:
+        """Thread della sessione: esegue l'acquisizione e chiude sempre la
+        sessione, anche in caso di eccezione."""
+        reason = "acquisition session completed"
+        success = False
+
+        try:
+            result = self.acquisition_service.run_acquisition_session(
+                client_ids=client_ids,
+                acq_type=acq_type,
+                file_format=file_format,
+                suffix=suffix,
+                run_id=run_id,
+                duration=duration,
+                reason=reason,
+                on_duration_elapsed=self._on_duration_elapsed,
+            )
+            success = result.success
+
+            for client_id in result.failed_clients:
+                client_name = client_id.decode(errors="ignore")
+                self.poutput(f"Client {client_name}: acquisition failed ({result.clients[client_id].error}).")
+
+            if not success:
+                self.poutput(
+                    "Acquisition ended with errors. The server returns to READY: "
+                    "check the log and the hardware state before starting a new run."
+                )
+
+        except Exception as exc:
+            self.logger.exception("Acquisition session aborted by an unexpected error")
+            self.poutput(
+                f"Acquisition session aborted by an internal error: {exc}. "
+                "The server returns to READY: check the hardware state before starting a new run."
+            )
+
+        finally:
+            self.acquisition_service.close_session(success=success, reason=reason)
+
     def stop(self) -> None:
-    
+
         current_state = self.server_state.get_server_state()
         
         if current_state == ServerFSM.FINALIZING:

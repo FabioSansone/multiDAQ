@@ -223,6 +223,7 @@ class Server(cmd2.Cmd):
         self.do_quit = app_commands.do_quit.__get__(self, Server)
         self.do_force = app_commands.do_force.__get__(self, Server)
         self.do_snapshot = app_commands.do_snapshot.__get__(self, Server)
+        self.do_configuration = app_commands.do_configuration.__get__(self, Server)
         self.do_list_clients = app_commands.do_list_clients.__get__(self, Server)
         
         #HV COMMANDS#

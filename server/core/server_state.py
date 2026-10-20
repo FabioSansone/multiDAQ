@@ -130,10 +130,15 @@ TRANSITION_TABLE: dict[tuple[ServerFSM, ServerFSMEvent], ServerFSM] = {
     (ServerFSM.ACQUIRING, ServerFSMEvent.ACQUISITION_CONNECTION_LOST): ServerFSM.FINALIZING,
     (ServerFSM.ACQUIRING, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
 
-    # The static target is READY. process_event() may replace it with the
-    # validated pending terminal state (normally DISCONNECTED).
+    # The static target is READY, also when finalization reports errors: the
+    # user is notified and ERROR is reserved to unrecoverable failures.
+    # process_event() may replace it with the validated pending terminal state
+    # (normally DISCONNECTED).
     (ServerFSM.FINALIZING, ServerFSMEvent.FINALIZATION_SUCCEEDED): ServerFSM.READY,
-    (ServerFSM.FINALIZING, ServerFSMEvent.FINALIZATION_FAILED): ServerFSM.ERROR,
+    (ServerFSM.FINALIZING, ServerFSMEvent.FINALIZATION_FAILED): ServerFSM.READY,
+    # A shutdown request during finalization only updates the pending terminal
+    # state: the finalization in progress is completed first.
+    (ServerFSM.FINALIZING, ServerFSMEvent.DISCONNECT_REQUESTED): ServerFSM.FINALIZING,
     (ServerFSM.FINALIZING, ServerFSMEvent.FATAL_ERROR): ServerFSM.ERROR,
 
     # Error recovery.
@@ -199,6 +204,9 @@ class ClientRecord:
     last_event_context: dict | None = None
     error_context: dict | None = None
     identity: dict | None = None
+    # Rivelatore (multipmt_id/batch_id) la cui configurazione è applicata al client.
+    # Se assente vale l'identità del client.
+    configuration_identity: dict | None = None
     hv_parameters: dict[int, dict] = field(default_factory=dict)
     calibration_excluded_channels: list[int] = field(default_factory=list)
     connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -567,7 +575,10 @@ class ServerState:
 
             if (
                 present_state == ServerFSM.FINALIZING
-                and event == ServerFSMEvent.FINALIZATION_SUCCEEDED
+                and event in {
+                    ServerFSMEvent.FINALIZATION_SUCCEEDED,
+                    ServerFSMEvent.FINALIZATION_FAILED,
+                }
                 and self.pending_terminal_state is not None
             ):
                 next_state = self.pending_terminal_state
@@ -765,7 +776,10 @@ class ServerState:
 
             elif (
                 present_state == ServerFSM.FINALIZING
-                and event == ServerFSMEvent.FINALIZATION_SUCCEEDED
+                and event in {
+                    ServerFSMEvent.FINALIZATION_SUCCEEDED,
+                    ServerFSMEvent.FINALIZATION_FAILED,
+                }
             ):
                 operational_clients = list(
                     self._operational_client_ids_locked()
@@ -856,19 +870,6 @@ class ServerState:
                             ClientFSM.ERROR,
                             event_context,
                         )
-
-            elif (
-                present_state == ServerFSM.FINALIZING
-                and event == ServerFSMEvent.FINALIZATION_FAILED
-            ):
-                for failed_client in self._operational_client_ids_locked():
-                    self._set_client_state_locked(
-                        failed_client,
-                        ClientFSM.ERROR,
-                        event_context,
-                    )
-
-                self._clear_operational_locked()
 
             self.previous_state = present_state
             self.run_state = next_state
@@ -1208,6 +1209,10 @@ class ServerState:
                 if self.error_context
                 else None,
                 "client_states": {cid: record.state for cid, record in self.clients.items()},
+                "configuration_identities": {
+                    cid.decode(errors="ignore"): self._configuration_identity_locked(record)
+                    for cid, record in self.clients.items()
+                },
             }
 
     def set_client_hv_parameters(self, client_id: bytes, acq_info: dict[int, dict]) -> None:
@@ -1379,3 +1384,63 @@ class ServerState:
             return self.client_id_by_mac.get(
                 mac
             )
+
+    @staticmethod
+    def _configuration_identity_locked(record: ClientRecord) -> dict | None:
+        if record.configuration_identity is not None:
+            return dict(record.configuration_identity)
+
+        if record.identity is not None:
+            return {
+                "multipmt_id": record.identity.get("multipmt_id"),
+                "batch_id": record.identity.get("batch_id"),
+            }
+
+        return None
+
+    def get_configuration_identity(self, client_id: bytes) -> dict | None:
+        """Rivelatore la cui configurazione vale per il client: quello scelto
+        esplicitamente, altrimenti quello dell'identità del client."""
+        with self._lock:
+            record = self.clients.get(client_id)
+            return self._configuration_identity_locked(record) if record else None
+
+    def set_configuration_identity(
+        self,
+        client_id: bytes,
+        *,
+        multipmt_id: str,
+        batch_id: str,
+    ) -> bool:
+        if not multipmt_id or not batch_id:
+            self.logger.error("Incomplete configuration identity")
+            return False
+
+        with self._lock:
+            record = self.clients.get(client_id)
+
+            if record is None:
+                self.logger.error(f"Cannot set configuration identity: unknown client {client_id!r}")
+                return False
+
+            record.configuration_identity = {
+                "multipmt_id": str(multipmt_id),
+                "batch_id": str(batch_id),
+            }
+
+        return True
+
+    def get_configuration_id(self, client_id: bytes) -> str | None:
+        """Etichetta "multipmt_id:batch_id" della configurazione del client."""
+        configuration = self.get_configuration_identity(client_id)
+
+        if not configuration:
+            return None
+
+        multipmt_id = configuration.get("multipmt_id")
+        batch_id = configuration.get("batch_id")
+
+        if not multipmt_id or not batch_id:
+            return None
+
+        return f"{multipmt_id}:{batch_id}"
