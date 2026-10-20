@@ -1719,6 +1719,66 @@ class CalibrationOrchestrator:
 
         return True
 
+
+    ##################################
+    #Threshold Calibration Procedure#
+    ##################################
+
+    def _apply_threshold_calib_point(self, client_id: bytes, point: ScanPoint) -> bool:
+        client_name = client_id.decode(errors="ignore")
+        session = self.calibration_service.get_session(client_id=client_id)
+
+        #This is a dictionary of the type {ch: voltage:ch,} for all the channels
+        voltage_info = point.metadata["acq_info"]
+        common_threshold = point.metadata["common_threshold"]
+
+        if session is None:
+            self.logger.error(
+                f"Cannot prepare threshold calibration for "
+                f"client {client_name}: no calibration session"
+            )
+            return False
+
+
+        reply, reason = (
+            self.command_service.send_calibration_command(
+                client_id=client_id,
+                command="threshold_calibration",
+                payload={
+                    "channels": list(
+                        session.effective_channels
+                    ),
+                    "thr_voltage_by_ch": voltage_info,
+                    "thr_threshold": common_threshold,
+                },
+                plane=CommandPlane.ACQUISITION,
+                timeout_s=320.0,
+            )
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"THR preparation failed for "
+                f"client {client_name}: {reason}"
+            )
+            return False
+
+        payload = reply.payload or {}
+
+        if payload.get("status") != "ok":
+            self.logger.error(
+                f"THR preparation rejected by "
+                f"client {client_name}: "
+                f"{payload.get('error')}"
+            )
+            return False
+
+        return True
+
+
+    def threshold_calibration(self):
+        pass
+
         
     ####################################
     #Time-To-Peak Calibration Procedure#

@@ -845,6 +845,404 @@ gain_target_group.add_argument(
 
 #
 # ==========================
+# SPE+GAIN CALIBRATION
+# ==========================
+#
+
+spe_gain_parser = calibration_subparsers.add_parser(
+    "spe_gain",
+    help="Acquire PMT spe and gain spectra while scanning HV voltage.",
+)
+
+#SPE voltage
+
+spe_gain_parser.add_argument(
+    "--spe-voltage",
+    type=int,
+    default=1450,
+    help="PMT voltage for SPE acquisition in V. Default: 1450.",
+)
+
+# Voltage scan.
+
+spe_gain_parser.add_argument(
+    "--start",
+    type=int,
+    default=950,
+    help="Initial PMT voltage in V. Default: 950.",
+)
+
+spe_gain_parser.add_argument(
+    "--stop",
+    type=int,
+    default=1450,
+    help="Final voltage limit in V, inclusive if reached. Default: 1450.",
+)
+
+spe_gain_parser.add_argument(
+    "--step",
+    type=int,
+    default=50,
+    help="Voltage step in V. Default: 50.",
+)
+
+spe_gain_parser.add_argument(
+    "--spe-threshold",
+    type=float,
+    default=45.0,
+    help="Common PMT threshold for every scan point. Default: 400.",
+)
+
+spe_gain_parser.add_argument(
+    "--gain-threshold",
+    type=float,
+    default=400.0,
+    help="Common PMT threshold for every scan point. Default: 400.",
+)
+
+# Acquisition configuration.
+
+spe_gain_parser.add_argument(
+    "--spe-duration",
+    type=float,
+    default=1800.0,
+    help="Acquisition duration per voltage point in seconds. Default: 60.",
+)
+
+spe_gain_parser.add_argument(
+    "--gain-duration",
+    type=float,
+    default=60.0,
+    help="Acquisition duration per voltage point in seconds. Default: 60.",
+)
+
+spe_gain_parser.add_argument(
+    "--type",
+    dest="acq_type",
+    type=str,
+    default="spe_gain",
+    help="Acquisition type folder name. Default: spe_gain.",
+)
+
+spe_gain_parser.add_argument(
+    "--suffix",
+    type=str,
+    default="",
+    help="Base output suffix; voltage is appended for each point. Default: gain.",
+)
+
+spe_gain_parser.add_argument(
+    "--run-id",
+    type=str,
+    default=None,
+    help=(
+        "Optional run ID. If omitted, an automatic ID "
+        "is generated from GAIN configuration parameters."
+    ),
+)
+
+spe_gain_parser.add_argument(
+    "--file-format",
+    choices=["csv", "bin"],
+    default="csv",
+    help="Output file format. Default: csv.",
+)
+
+spe_gain_parser.add_argument(
+    "--channels",
+    type=str,
+    default="all",
+    help='PMT channels selected: "all" or a comma-separated list.',
+)
+
+# Optical configuration, identical for every voltage point.
+
+spe_gain_parser.add_argument(
+    "--spe-near-wheel",
+    type=int,
+    default=10,
+    help="Near filter-wheel position. Default: 9.",
+)
+
+spe_gain_parser.add_argument(
+    "--spe-far-wheel",
+    type=int,
+    default=8,
+    help="Far filter-wheel position. Default: 9.",
+)
+
+spe_gain_parser.add_argument(
+    "--spe-polarizer",
+    type=float,
+    default=50.0,
+    help="Polarizer position in degrees. Default: 20.",
+)
+
+spe_gain_parser.add_argument(
+    "--gain-near-wheel",
+    type=int,
+    default=9,
+    help="Near filter-wheel position. Default: 9.",
+)
+
+spe_gain_parser.add_argument(
+    "--gain-far-wheel",
+    type=int,
+    default=9,
+    help="Far filter-wheel position. Default: 9.",
+)
+
+spe_gain_parser.add_argument(
+    "--gain-polarizer",
+    type=float,
+    default=20.0,
+    help="Polarizer position in degrees. Default: 20.",
+)
+
+# GAIN always uses an external trigger.
+
+spe_gain_parser.add_argument(
+    "--input",
+    dest="trigger_input",
+    choices=["differential", "single-ended"],
+    default="single-ended",
+    help="External trigger electrical input. Default: single-ended.",
+)
+
+spe_gain_parser.add_argument(
+    "--polarity",
+    choices=["default", "inverted"],
+    default="default",
+    help="External trigger polarity. Default: default.",
+)
+
+spe_gain_parser.add_argument(
+    "--delay-ns",
+    type=int,
+    default=800,
+    help="Trigger delay in ns. Hardware resolution: 5 ns. Default: 800.",
+)
+
+spe_gain_parser.add_argument(
+    "--window-ns",
+    type=int,
+    default=400,
+    help="Acquisition window in ns. Hardware resolution: 5 ns. Default: 400.",
+)
+
+# Target selection.
+
+spe_gain_target_group = spe_gain_parser.add_mutually_exclusive_group()
+
+spe_gain_target_group.add_argument(
+    "--multipmt-id",
+    type=str,
+    default=None,
+    help="Target client by multiPMT ID.",
+)
+
+spe_gain_target_group.add_argument(
+    "--batch-id",
+    type=str,
+    default=None,
+    help="Target client by batch ID.",
+)
+
+spe_gain_target_group.add_argument(
+    "--all-clients",
+    action="store_true",
+    help=(
+        "Run GAIN calibration on all eligible clients. "
+        "This is also the default when no target selector is specified."
+    ),
+)
+
+
+#
+# ==========================
+# THRESHOLD
+# ==========================
+#
+
+threshold_parser = calibration_subparsers.add_parser(
+    "threshold",
+    help="Threshold calibration and scan procedures.",
+)
+
+threshold_subparsers = threshold_parser.add_subparsers(
+    dest="threshold_command",
+    required=True,
+)
+
+threshold_calibration_parser = threshold_subparsers.add_parser(
+    "calibration",
+    help=(
+        "Acquire spectra while scanning a common threshold. "
+        "In calibration/multipmt mode, use calibrated HV "
+        "values for each PMT."
+    ),
+)
+
+# Common threshold scan.
+
+threshold_calibration_parser.add_argument(
+    "--start",
+    type=int,
+    default=30,
+    help="Initial common threshold value. Default: 30.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--stop",
+    type=int,
+    default=80,
+    help="Final threshold limit, inclusive if reached. Default: 80.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--step",
+    type=int,
+    default=10,
+    help="Positive threshold increment. Default: 10.",
+)
+
+# Acquisition configuration.
+
+threshold_calibration_parser.add_argument(
+    "--duration",
+    type=float,
+    default=60.0,
+    help="Acquisition duration per threshold point in seconds. Default: 60.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--execution-mode",
+    choices=["safe", "fast"],
+    default="safe",
+    help="Calibration execution policy. Default: safe.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--type",
+    dest="acq_type",
+    type=str,
+    default="threshold_calibration",
+    help="Acquisition type folder name. Default: threshold_calibration.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--suffix",
+    type=str,
+    default="threshold",
+    help="Base output suffix; append the threshold value for each point.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--run-id",
+    type=str,
+    default=None,
+    help="Optional run ID. If omitted, generate an automatic ID.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--file-format",
+    choices=["csv", "bin"],
+    default="csv",
+    help="Output file format. Default: csv.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--channels",
+    type=str,
+    default="all",
+    help='PMT channels selected: "all" or a comma-separated list.',
+)
+
+# Optical configuration: same defaults as standalone SPE.
+
+threshold_calibration_parser.add_argument(
+    "--near-wheel",
+    type=int,
+    default=10,
+    help="Near filter-wheel position. Default: 10.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--far-wheel",
+    type=int,
+    default=8,
+    help="Far filter-wheel position. Default: 8.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--polarizer",
+    type=float,
+    default=50.0,
+    help="Polarizer position in degrees. Default: 50.",
+)
+
+# Trigger configuration: same defaults as SPE and GAIN.
+
+threshold_calibration_parser.add_argument(
+    "--input",
+    dest="trigger_input",
+    choices=["differential", "single-ended"],
+    default="single-ended",
+    help="External trigger electrical input. Default: single-ended.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--polarity",
+    choices=["default", "inverted"],
+    default="default",
+    help="External trigger polarity. Default: default.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--delay-ns",
+    type=int,
+    default=800,
+    help="Trigger delay in ns. Hardware resolution: 5 ns. Default: 800.",
+)
+
+threshold_calibration_parser.add_argument(
+    "--window-ns",
+    type=int,
+    default=400,
+    help="Acquisition window in ns. Hardware resolution: 5 ns. Default: 400.",
+)
+
+# Target selection.
+
+threshold_target_group = (
+    threshold_calibration_parser.add_mutually_exclusive_group()
+)
+
+threshold_target_group.add_argument(
+    "--multipmt-id",
+    type=str,
+    default=None,
+    help="Target client by multiPMT ID.",
+)
+
+threshold_target_group.add_argument(
+    "--batch-id",
+    type=str,
+    default=None,
+    help="Target client by batch ID.",
+)
+
+threshold_target_group.add_argument(
+    "--all-clients",
+    action="store_true",
+    help=(
+        "Run on all eligible clients. "
+        "Also the default when no target selector is specified."
+    ),
+)
+
+#
+# ==========================
 # OPTICAL STATUS
 # ==========================
 #
@@ -888,6 +1286,7 @@ calibration_subparsers.add_parser(
     ServerFSM.READY,
     ServerFSM.CALIBRATING,
     ServerFSM.CALIBRATION_FINALIZING,
+    ServerFSM.CALIBRATION_SEQUENCE,
 ])
 @acquisition_guard([
     AcquisitionMode.TEST,
@@ -937,18 +1336,7 @@ def do_calibration(
         return
 
     if args.command == "stop":
-
-        if (
-            self.server_state.get_server_state()
-            != ServerFSM.CALIBRATING
-        ):
-            self.poutput(
-                "No calibration is currently running."
-            )
-            return
-
         self.calibration_orchestrator.request_calibration_stop()
-
         return
 
 
@@ -1147,6 +1535,27 @@ def do_calibration(
     if args.command == "optical_status":
         self.calibration_orchestrator.show_optical_status()
         return
+
+    if args.command == "spe_gain":
+        if self.server_state.get_server_state() != ServerFSM.READY:
+            self.poutput(
+                "Cannot start SPE+GAIN: another operation is active."
+            )
+            return
+
+        self.calibration_orchestrator.spe_gain(args)
+        return
+
+    if args.command == "threshold":
+        if args.threshold_command == "calibration":
+            if self.server_state.get_server_state() != ServerFSM.READY:
+                self.poutput(
+                    "Cannot start SPE+GAIN: another operation is active."
+                )
+                return
+    
+            self.calibration_orchestrator.threshold_calibration(args)
+            return
 
 
     self.poutput(

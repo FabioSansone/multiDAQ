@@ -423,6 +423,99 @@ class AcquisitionService:
             return None
         
         return acq_info
+
+
+    def build_gain_voltage_configuration(self, client_id: bytes,) -> dict[int, float] | None:
+        client_name = client_id.decode(errors="ignore")
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
+                
+        if configuration_identity is None:
+            self.logger.error(f"Cannot build multipmt voltage configuration: no identity for client {client_name}")
+            return None
+        
+        multipmt_id = configuration_identity.get("multipmt_id")
+        batch_id = configuration_identity.get("batch_id")
+        
+        if not multipmt_id or not batch_id:
+            self.logger.error(f"Cannot build multipmt voltage configuration: incomplete identity for client {client_name}")
+            return None
+        
+        parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
+        
+        if parser.config_file is None:
+            self.logger.error(f"Cannot build multipmt voltage configuration: no calibration file loaded for client {client_name}")
+            return None
+        
+        json_serial_by_channel = parser.get_json_serial_channel_map()
+        json_ch_configuration = parser.load_voltage_gain_data()
+        
+        if json_serial_by_channel is None or json_ch_configuration is None:
+            self.logger.error(f"Cannot build multipmt voltage configuration: incomplete calibration data for client {client_name}")
+            return None
+        
+        analysis_channel_by_serial: dict[str, int] = {}
+        for analysis_ch, serial in json_serial_by_channel.items():
+            if not serial or serial == "0":
+                continue
+            if serial in analysis_channel_by_serial:
+                self.logger.error(
+                    f"Duplicate serial {serial!r} in calibration JSON: "
+                    f"channels {analysis_channel_by_serial[serial]} and {analysis_ch}"
+                )
+                return None
+            analysis_channel_by_serial[serial] = analysis_ch
+            
+        real_serial_map = self.command_service.get_pmt_serial_map_clients(
+            client_id=client_id, requested_channels="all", plane=CommandPlane.ACQUISITION,
+        ) or {}   
+        
+        if not real_serial_map:
+            self.logger.error(f"Cannot build multipmt voltage configuration: no real serial map for client {client_name}")
+            return None
+        
+        acq_info = {}
+        excluded_channels = []
+        
+        for real_ch, real_serial in real_serial_map.items():
+            if not real_serial:
+                excluded_channels.append(real_ch)
+                continue
+            
+            analysis_ch = analysis_channel_by_serial.get(real_serial)
+            
+            if analysis_ch is None:
+                self.logger.warning(
+                    f"Client {client_name}: real channel {real_ch} (serial {real_serial}) "
+                    "has no matching calibration entry. Channel excluded."
+                )
+                excluded_channels.append(real_ch)
+                continue
+            
+            if analysis_ch not in json_ch_configuration:
+                self.logger.warning(
+                    f"Client {client_name}: analysis channel {analysis_ch} (real channel "
+                    f"{real_ch}, serial {real_serial}) has no gain/threshold data. Channel excluded."
+                )
+                excluded_channels.append(real_ch)
+                continue
+            
+            voltage = json_ch_configuration[analysis_ch]
+            acq_info[real_ch] =  voltage
+        
+        if excluded_channels:
+            self.server_state.set_calibration_excluded_channels(client_id, excluded_channels)
+            self.poutput(
+                f"Client {client_name}: channels excluded from multiPMT configuration "
+                f"(no matching calibration): {sorted(excluded_channels)}"
+            )
+        else:
+            self.server_state.set_calibration_excluded_channels(client_id, [])
+        
+        if not acq_info:
+            self.logger.error(f"Cannot build multipmt voltage configuration: no channels matched for client {client_name}")
+            return None
+        
+        return acq_info
     
     def recheck_calibration(self, client_id: bytes) -> bool:
 

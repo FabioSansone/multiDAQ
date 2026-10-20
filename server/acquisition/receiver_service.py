@@ -14,6 +14,7 @@ ACQUISITION_FOLDERS = {
     "pedestal": "pedestal_characterisation",
     "spe": "single_photoelectron",
     "gain": "gain_curve",
+    "spe_gain": "spe_gain",
     "wheels_char": "wheels_characterisation",
     "fiber_char": "fiber_characterisation",
     "threshold": "threshold_calibration",

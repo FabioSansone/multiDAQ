@@ -244,4 +244,176 @@ class CalibrationService:
         )
 
 
+    def prepare_threshold_calibration(
+        self,
+        channels: list[int],
+        *,
+        voltage_by_channel: dict[int, float],
+        threshold: float,
+    ) -> dict:
+
+        requested_channels = sorted(set(channels))
+
+        result = {
+            "success": False,
+            "successful_channels": [],
+            "excluded_channels": requested_channels,
+            "error": None,
+        }
+
+        if self.runtime.acq_mode not in {"multipmt", "calibration"}:
+            result["error"] = (
+                "Threshold HV preparation requires "
+                "calibration or multipmt mode"
+            )
+            return result
+
+        if self.runtime.hv_service is None:
+            result["error"] = "HVService unavailable"
+            return result
+
+        if not requested_channels:
+            result["error"] = "No channels selected"
+            return result
+
+        missing_channels = [
+            ch
+            for ch in requested_channels
+            if ch not in voltage_by_channel
+        ]
+
+        if missing_channels:
+            result["error"] = (
+                f"Missing calibrated voltage for channels "
+                f"{missing_channels}"
+            )
+            return result
+
+        try:
+            hv_channels = {ch + 1 for ch in requested_channels}
+
+            acq_conf = {
+                ch: {
+                    "voltage": voltage_by_channel[ch],
+                    "threshold": threshold,
+                }
+                for ch in requested_channels
+            }
+
+            config_response = self.runtime.hv_service._submit_command(
+                command="set_acquisition_configuration",
+                payload={
+                    "channels": sorted(hv_channels),
+                    "acquisition_configuration": acq_conf,
+                },
+                sender="Threshold Scan",
+                priority=HVMessagePriority.ACQUISITION,
+                timeout_s=300.0,
+            )
+
+            if config_response.status != MessageStatus.OK:
+                result["error"] = (
+                    config_response.error or "HV configuration failed"
+                )
+                return result
+
+            config_result = config_response.result or {}
+
+            configured_channels = (
+                hv_channels
+                & set(config_result.get("successful_channels") or [])
+            )
+
+            configured_channels -= (
+                set(config_result.get("failed_channels") or [])
+                | set(config_result.get("skipped_channels") or [])
+            )
+
+            if not configured_channels:
+                result["error"] = (
+                    "HV configuration failed for all selected channels"
+                )
+                return result
+
+            if configured_channels != hv_channels:
+                self.logger.warning(
+                    f"THR HV configuration incomplete: {config_result}"
+                )
+
+            on_response = self.runtime.hv_service._submit_command(
+                command="hv_on_and_wait",
+                payload={
+                    "channels": sorted(configured_channels),
+                },
+                sender="Threshold Scan",
+                priority=HVMessagePriority.ACQUISITION,
+                timeout_s=300.0,
+            )
+
+            if on_response.status != MessageStatus.OK:
+                result["error"] = (
+                    on_response.error or "HV power-on failed"
+                )
+                return result
+
+            on_result = on_response.result or {}
+
+            ready_hv_channels = (
+                configured_channels
+                & set(on_result.get("successful_channels") or [])
+            )
+
+            ready_hv_channels -= (
+                set(on_result.get("failed_channels") or [])
+                | set(on_result.get("skipped_channels") or [])
+            )
+
+            if not ready_hv_channels:
+                result["error"] = (
+                    "HV power-on failed for all configured channels"
+                )
+                return result
+
+            if ready_hv_channels != configured_channels:
+                self.logger.warning(
+                    f"THR HV power-on incomplete: {on_result}"
+                )
+
+            ready_channels = {
+                ch - 1
+                for ch in ready_hv_channels
+            }
+
+            excluded_channels = (
+                set(requested_channels) - ready_channels
+            )
+
+            result.update(
+                success=True,
+                successful_channels=sorted(ready_channels),
+                excluded_channels=sorted(excluded_channels),
+                error=None,
+            )
+
+            self.logger.info(
+                "THR preparation completed: "
+                f"successful_channels={result['successful_channels']}, "
+                f"excluded_channels={result['excluded_channels']}, "
+                f"common_threshold={threshold}"
+            )
+
+            return result
+
+        except Exception as exc:
+            self.logger.exception(
+                "Unexpected error during THR preparation"
+            )
+            result["error"] = str(exc)
+            return result
+            
+
+        
+                
+
+
         
