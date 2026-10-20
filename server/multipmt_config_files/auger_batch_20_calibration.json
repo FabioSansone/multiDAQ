@@ -1,0 +1,127 @@
+{
+  "created_at": "2026-09-16T12:47:09.379042+00:00",
+  "detector": {
+    "multipmt_id": "auger",
+    "batch_id": "batch_20",
+    "fixed_bad_channels": [
+      0,
+      2,
+      3,
+      4,
+      5,
+      6
+    ]
+  },
+  "serials": {
+    "data": {
+      "1": "KM58241"
+    }
+  },
+  "pedestal": {
+    "updated_at": "2026-10-01T13:06:41.847574+00:00",
+    "data": {
+      "1": {
+        "mu": 902.3798727806449,
+        "sigma": 0.8722507679081883,
+        "entries": 126266
+      }
+    },
+    "metadata": {
+      "multipmt_id": "ToT",
+      "batch_id": "batch_20",
+      "pedestal_file": "/swgo/multiPMT/acquisition/batch_20/pedestal_characterisation/2026_09_30/acq_1/daq_2026_09_30_14_15_pedestal.csv"
+    }
+  },
+  "spe": {
+    "updated_at": "2026-10-01T13:06:41.971853+00:00",
+    "data": {
+      "1": {
+        "mu1": 25.461032096176197,
+        "sigma1": 4.183761321083203,
+        "amp_gauss1": 144.0466481870448,
+        "mu2": 137.89630986934236,
+        "sigma2": 56.947731511916025,
+        "amp_gauss2": 1288.5605660208175,
+        "tau": 266.70713763070535,
+        "amp_exp": 197821.25514887576,
+        "tau2": 76.60975813880013,
+        "amp_exp2": 1001699.8444466192,
+        "S": 20,
+        "R": 280,
+        "entries": 33113,
+        "Q_spe": 1.820231290275319
+      }
+    },
+    "metadata": {
+      "multipmt_id": "ToT",
+      "batch_id": "batch_20",
+      "single_photo_file": "/swgo/multiPMT/acquisition/batch_20/single_photoelectron/2026_09_16/run_spe_tesi_guarino/daq_2026_09_16_11_16_1450.csv"
+    }
+  },
+  "gain": {
+    "updated_at": "2026-09-16T19:18:46.504428+00:00",
+    "data": {
+      "1": {
+        "fixed_gain": 3500000.0,
+        "voltage": 1217.4164364528376,
+        "k": 6.7659104377393025,
+        "A": 4.658681505377582e-15
+      }
+    },
+    "metadata": {
+      "multipmt_id": "ToT",
+      "batch_id": "batch_20",
+      "gain_folder": "/swgo/multiPMT/acquisition/batch_20/gain_curve/2026_09_16/run_gain_start_950_end_1450_step_50_pol_20_wheels_9_9_thr_400_delay_800n_win_400n_2min"
+    }
+  },
+  "threshold": {
+    "updated_at": "2026-09-16T19:18:46.523044+00:00",
+    "data": {
+      "1": {
+        "m": 0.6028571677223643,
+        "m_err": 0.056004165802061724,
+        "q": -6.349706898870392,
+        "q_err": 3.2475362597521817,
+        "adc_cut": 16,
+        "threshold_at_adc_cut": 37.07297199983392
+      }
+    },
+    "metadata": {
+      "multipmt_id": "ToT",
+      "batch_id": "batch_20",
+      "gain_folder": "/swgo/multiPMT/acquisition/batch_20/threshold_calibration/2026_09_16/run_thr_start_20_end_80_step_10_pol_50_wheels_10_8_equ_gain_delay_800n_win_400n_2min"
+    }
+  },
+  "PE": {
+    "updated_at": "2026-09-16T19:18:46.544190+00:00",
+    "data": {
+      "1": {
+        "PE_ADC": 41.616631849018354,
+        "sigma": 20.21569781268876,
+        "entries": 29185
+      }
+    },
+    "metadata": {
+      "multipmt_id": "ToT",
+      "batch_id": "batch_20",
+      "gain_folder": "/swgo/multiPMT/acquisition/batch_20/spe_equal_gains/2026_09_16/run_spe_equ_gain_thr_45_pol_50_wheels_10_8_delay_800n_win_400n_30min/daq_2026_09_16_20_37_spe_equal_gains.csv"
+    }
+  },
+  "polarizer": {
+    "updated_at": "2026-09-16T19:18:46.319864+00:00",
+    "data": {
+      "1": {
+        "pol_max": 95.41770885442722,
+        "pol_min": 50.40520260130065,
+        "pol_50": 27.953976988494247,
+        "pol_20": 37.143571785892945,
+        "pol_70": 22.066033016508257
+      }
+    },
+    "metadata": {
+      "multipmt_id": "ToT",
+      "batch_id": "batch_20",
+      "gain_folder": "/swgo/multiPMT/acquisition/batch_20/polarizer_calibration/2026_09_15/run_polarizzatore"
+    }
+  }
+}

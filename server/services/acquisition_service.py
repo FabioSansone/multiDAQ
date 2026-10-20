@@ -295,6 +295,46 @@ class AcquisitionService:
             
 
     
+    def get_detector_fixed_bad_channels(self, client_id: bytes) -> list[int] | None:
+        """Canali fixed-bad (numerazione logica 0..6) del rivelatore associato
+        alla configurazione del client, letti dal JSON sul server."""
+
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
+
+        if configuration_identity is None:
+            return None
+
+        multipmt_id = configuration_identity.get("multipmt_id")
+        batch_id = configuration_identity.get("batch_id")
+
+        if not multipmt_id or not batch_id:
+            return None
+
+        parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
+
+        return parser.load_fixed_bad_channels()
+
+    def persist_detector_fixed_bad_channels(self, client_id: bytes, channels: list[int]) -> bool:
+        """Salva nel JSON del rivelatore (sul server) i canali fixed-bad
+        in numerazione logica 0..6."""
+
+        configuration_identity = self.server_state.get_configuration_identity(client_id)
+
+        if configuration_identity is None:
+            self.logger.error(f"Cannot persist fixed bad channels: no configuration identity for client {client_id!r}")
+            return False
+
+        multipmt_id = configuration_identity.get("multipmt_id")
+        batch_id = configuration_identity.get("batch_id")
+
+        if not multipmt_id or not batch_id:
+            self.logger.error(f"Cannot persist fixed bad channels: incomplete configuration identity for client {client_id!r}")
+            return False
+
+        parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
+
+        return parser.set_fixed_bad_channels(channels)
+
     def build_multipmt_configuration(self, client_id: bytes, pe_thr: int | float) -> dict[int, dict[str, float]] | None:
         client_name = client_id.decode(errors="ignore")
         configuration_identity = self.server_state.get_configuration_identity(client_id)

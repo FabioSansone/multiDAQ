@@ -165,6 +165,22 @@ class HV:
                 self.fixed_bad.remove(channel)
         self.moveToBad(channel)
     
+    def set_fixed_bad_channels(self, channels: list[int],) -> None:
+
+        new_fixed = set(self.hv_channels_definition(channels=list(channels),))
+
+        old_fixed = set(self.getFixedBad())
+
+        removed = sorted(old_fixed - new_fixed)
+
+        added = sorted(new_fixed - old_fixed)
+
+        for channel in removed:
+            self.removeFromFixedBad(channel)
+
+        for channel in added:
+            self.moveToFixedBad(channel)
+
     def removeFromMissingSerial(self, channel:int) -> None:
             with self.channels_lock:
                 if channel in self.missing_serial:

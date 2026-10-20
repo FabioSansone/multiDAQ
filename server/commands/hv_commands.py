@@ -302,6 +302,12 @@ def do_hv(self, args: argparse.Namespace) -> None:
     target_client_ids = client_ids
     
     if args.command_group == "on":
+
+        if self.server_state.get_mode() == "test":
+            self.poutput("Cannot power HV channels ON in TEST mode.")
+            logger.warning("HV ON blocked by TEST acquisition mode")
+            return
+
         command = "hv_on"
         value = None
         payload = {
@@ -430,6 +436,15 @@ def do_hv(self, args: argparse.Namespace) -> None:
             )
             self.poutput(f"No reply from client {client_name}. Reason: {reason}")
             continue
+
+        if args.command_group in {"mark_bad", "unmark_bad"} and (reply.payload or {}).get("status") == "ok":
+            # The fixed bad channels live in the detector JSON on the server.
+            fixed_bad_hv = reply.payload.get("result", {}).get("fixed_bad_channels", [])
+
+            if not self.acquisition_service.persist_detector_fixed_bad_channels(
+                client_id=client_id, channels=[ch - 1 for ch in fixed_bad_hv],
+            ):
+                self.poutput(f"Client {client_name}: FIXED BAD updated on hardware, but persistence failed.")
         
         if reply is not None and args.command_group == "set_common":  
             result = reply.payload.get("result", {})

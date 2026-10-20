@@ -169,13 +169,26 @@ class ChannelSelectionService:
             set(sync_result.get("bad_channels", []))
         )
 
+        fixed_bad_hv_channels = sorted(
+            set(sync_result.get("fixed_bad_channels", []))
+        )
+
         available_rc_channels = hv_to_user_channels(ok_hv_channels)
         bad_rc_channels = hv_to_user_channels(bad_hv_channels)
+        fixed_bad_rc_channels = hv_to_user_channels(fixed_bad_hv_channels)
+
+        available_rc_channels = sorted(set(available_rc_channels) - set(fixed_bad_rc_channels))
 
         if bad_rc_channels:
             self.poutput(
                 f"Client {client_name}: BAD HV/FEB channels excluded: "
                 f"{bad_rc_channels}"
+            )
+
+        if fixed_bad_rc_channels:
+            self.poutput(
+                f"Client {client_name}: FIXED BAD HV/FEB channels excluded: "
+                f"{fixed_bad_rc_channels}"
             )
 
         final_rc_channels = sorted(
