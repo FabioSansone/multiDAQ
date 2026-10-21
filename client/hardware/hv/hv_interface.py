@@ -362,7 +362,266 @@ class HV:
             "common_threshold": common_threshold,
         }
     
-    def set_acquisition_configuration(self, channels, acq_configuration: dict):
+    def get_voltage(self, channels: List[int] | str | int):
+    
+        list_channels_selected = self.hv_channels_definition(
+            channels=channels,
+        )
+
+        ok_ch_set = set(self.getOkChannels())
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+        volt_conf = {}
+
+        for ch in channels_good_selected:
+            try:
+                volt = self.hv.getVoltageSet(
+                    slave=ch,
+                )
+
+                if ch not in volt_conf:
+                    volt_conf[ch] = volt
+
+                successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Problem reading voltage setpoint on channel {ch}: {e}"
+                )
+
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+            "voltage_configuration": volt_conf
+        }
+    
+    def get_threshold(self, channels: List[int] | str | int):
+
+        list_channels_selected = self.hv_channels_definition(
+            channels=channels,
+        )
+
+        ok_ch_set = set(self.getOkChannels())
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+        thr_conf = {}
+
+        for ch in channels_good_selected:
+            try:
+                thr = self.hv.getThreshold(
+                    slave=ch,
+                )
+
+                if ch not in thr_conf:
+                    thr_conf[ch] = thr
+
+                successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Problem reading threshold on channel {ch}: {e}"
+                )
+
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+            "threshold_configuration": thr_conf
+        }
+
+
+    def get_volt_thr_configuration(self, channels: List[int] | str | int):
+    
+        list_channels_selected = self.hv_channels_definition(
+            channels=channels,
+        )
+
+        ok_ch_set = set(self.getOkChannels())
+
+        channels_good_selected = [
+            ch for ch in list_channels_selected if ch in ok_ch_set
+        ]
+
+        channels_skipped = [
+            ch for ch in list_channels_selected if ch not in ok_ch_set
+        ]
+
+        successful = []
+        failed = []
+        configuration = {}
+
+        for ch in channels_good_selected:
+            try:
+                
+                volt = self.hv.getVoltageSet(slave=ch)
+                thr = self.hv.getThreshold(
+                    slave=ch,
+                )
+
+                if ch not in configuration:
+                    configuration[ch] = {"voltage": volt, "threshold": thr}
+
+                successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Problem reading voltage/threshold configuration on channel {ch}: {e}"
+                )
+
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "used_channels": channels_good_selected,
+            "skipped_channels": channels_skipped,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+            "volt_thr_configuration": configuration
+        }
+
+
+    def get_power_state(
+        self,
+        channels: List[int] | str | int,
+        timeout_s: float = 300.0,
+        poll_s: float = 2.0,
+    ):
+
+        list_channels_selected = self.hv_channels_definition(
+            channels=channels,
+        )
+
+        successful = []
+        failed = []
+        power_state = {}
+
+        for ch in list_channels_selected:
+            deadline = time.monotonic() + timeout_s
+
+            try:
+                while True:
+                    status = self.hv.getStatus(slave=ch)
+
+                    if status in {"UP", "ON"}:
+                        state = "on"
+                        self.moveToOn(ch)
+                        break
+
+                    elif status in {"DOWN", "OFF"}:
+                        state = "off"
+                        self.moveToOff(ch)
+                        break
+
+                    elif status == "TRIP":
+                        self.logger.error(
+                            f"HV channel {ch} is in TRIP state"
+                        )
+                        failed.append(ch)
+                        self.moveToBad(ch)
+                        break
+
+                    elif status in {"RUP", "RDN", "TUP", "TDN"}:
+                        if time.monotonic() >= deadline:
+                            self.logger.error(
+                                f"Timeout waiting for stable HV power "
+                                f"state on channel {ch}: status={status}"
+                            )
+                            failed.append(ch)
+                            break
+
+                        time.sleep(poll_s)
+                        continue
+
+                    else:
+                        self.logger.error(
+                            f"Unknown HV power state on "
+                            f"channel {ch}: status={status}"
+                        )
+                        failed.append(ch)
+                        break
+
+                if status in {"UP", "ON", "DOWN", "OFF"}:
+                    power_state[ch] = state
+                    successful.append(ch)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Problem reading power state on HV channel {ch}: {e}"
+                )
+
+                failed.append(ch)
+                self.moveToBad(ch)
+
+        return {
+            "requested_channels": list_channels_selected,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "power_state": power_state,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+        }
+
+    def set_acquisition_configuration(
+        self,
+        channels,
+        acq_configuration: dict,
+        wait_ramp: bool = False,
+        ramp_timeout_s: float = 240.0,
+        poll_s: float = 2.0,
+    ):
+        """Set voltage and/or threshold. An entry of acq_configuration may hold only one of
+        the two: the other keeps the value the channel has on the hardware.
+
+        The result lists, for the channels set, the values the channel had before
+        ("previous") and the ones it has now ("applied"), keyed by HV channel.
+
+        With wait_ramp, the channels that are ON and whose voltage setpoint changes are
+        waited until they are UP again: the ones that do not make it (TRIP, alarm, timeout)
+        are switched off, marked BAD and reported as failed."""
         list_channels_selected = self.hv_channels_definition(channels=channels)
 
         ok_ch_set = set(self.getOkChannels())
@@ -377,6 +636,10 @@ class HV:
 
         successful = []
         failed = []
+        previous = {}
+        applied = {}
+        ramp_channels = []
+        on_ch_set = set(self.getOnChannels()) if wait_ramp else set()
 
         for ch in channels_good_selected:
             try:
@@ -397,24 +660,37 @@ class HV:
                 voltage = ch_config.get("voltage")
                 threshold = ch_config.get("threshold")
 
-                if voltage is None or threshold is None:
+                if voltage is None and threshold is None:
                     self.logger.error(
-                        f"Incomplete acquisition configuration for external channel {external_ch}: {ch_config}"
+                        f"Empty acquisition configuration for external channel {external_ch}: {ch_config}"
                     )
                     failed.append(ch)
                     continue
 
-                self.hv.setVoltageSet(
-                    value=int(round(voltage)),
-                    slave=ch,
-                )
+                previous_voltage = self.hv.getVoltageSet(slave=ch)
+                previous_threshold = self.hv.getThreshold(slave=ch)
 
-                self.hv.setThreshold(
-                    value=int(round(threshold)),
-                    slave=ch,
-                )
+                new_voltage = previous_voltage if voltage is None else int(round(voltage))
+                new_threshold = previous_threshold if threshold is None else int(round(threshold))
+
+                if voltage is not None:
+                    self.hv.setVoltageSet(
+                        value=new_voltage,
+                        slave=ch,
+                    )
+
+                if threshold is not None:
+                    self.hv.setThreshold(
+                        value=new_threshold,
+                        slave=ch,
+                    )
 
                 successful.append(ch)
+                previous[ch] = {"voltage": previous_voltage, "threshold": previous_threshold}
+                applied[ch] = {"voltage": new_voltage, "threshold": new_threshold}
+
+                if ch in on_ch_set and new_voltage != previous_voltage:
+                    ramp_channels.append(ch)
 
             except Exception as e:
                 self.logger.error(
@@ -422,6 +698,15 @@ class HV:
                 )
                 failed.append(ch)
                 self.moveToBad(ch)
+
+        if ramp_channels:
+            ramp_failed = self._wait_ramp_end(ramp_channels, ramp_timeout_s, poll_s)
+            successful = [ch for ch in successful if ch not in ramp_failed]
+            failed.extend(sorted(ramp_failed))
+
+            for ch in ramp_failed:
+                previous.pop(ch, None)
+                applied.pop(ch, None)
 
         return {
             "requested_channels": list_channels_selected,
@@ -433,7 +718,58 @@ class HV:
             "ok_channels": self.getOkChannels(),
             "on_channels": self.getOnChannels(),
             "off_channels": self.getOffChannels(),
+            "previous": previous,
+            "applied": applied,
         }
+
+    def _wait_ramp_end(self, channels: list[int], timeout_s: float, poll_s: float) -> set[int]:
+        """Wait for the channels (ON, with a new voltage setpoint) to be UP again.
+        Returns the channels that did not make it: they are switched off and marked BAD."""
+
+        # Give the channels the time to leave the UP state before reading it.
+        time.sleep(0.5)
+
+        pending = list(channels)
+        failed = set()
+        deadline = time.time() + timeout_s
+
+        while pending and time.time() < deadline:
+            for ch in list(pending):
+                try:
+                    status = self.hv.getStatus(slave=ch)
+                    alarm = self.hv.getAlarm(slave=ch)
+                except Exception as e:
+                    self.logger.error(f"Problem checking the ramp of channel {ch}: {e}")
+                    failed.add(ch)
+                    pending.remove(ch)
+                    continue
+
+                if status == "UP":
+                    pending.remove(ch)
+
+                # getAlarm() returns "none" or a string such as " OV UV ": any other value is an alarm.
+                elif status == "TRIP" or alarm != "none":
+                    self.logger.error(f"Channel {ch} unsafe during the ramp: status={status}, alarm={alarm}")
+                    failed.add(ch)
+                    pending.remove(ch)
+
+            if pending:
+                time.sleep(poll_s)
+
+        for ch in pending:
+            self.logger.error(f"Timeout waiting for channel {ch} to complete the ramp")
+            failed.add(ch)
+
+        for ch in failed:
+            try:
+                self.hv.reset(slave=ch)
+                self.hv.powerOff(slave=ch)
+            except Exception as e:
+                self.logger.error(f"Problem resetting/off channel {ch} after a failed ramp: {e}")
+
+            self.moveToBad(ch)
+
+        return failed
 
     def get_ch_status(self, channels: List[int] | str | int):
 

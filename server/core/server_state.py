@@ -1129,6 +1129,14 @@ class ServerState:
                 )
             self._set_operational_locked(requested)
 
+    def remove_operational_client(self, client_id: bytes) -> None:
+        """The client is no longer admitted to the next acquisitions, until a new
+        configuration admits it again."""
+        with self._lock:
+            record = self.clients.get(client_id)
+            if record is not None:
+                record.operational = False
+
     def get_operational_clients(self) -> list[bytes]:
         with self._lock:
             return self._operational_client_ids_locked()
@@ -1225,6 +1233,8 @@ class ServerState:
                     entry["voltage"] = params["voltage"]
                 if "threshold" in params:
                     entry["threshold"] = params["threshold"]
+                if "power_state" in params:
+                    entry["power_state"] = params["power_state"]
 
     def get_client_hv_parameters(self, client_id: bytes) -> dict[int, dict]:
         with self._lock:

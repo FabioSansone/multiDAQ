@@ -86,6 +86,26 @@ def handle_hv_set_acquisition_configuration(manager, message):
     )
 
 
+def handle_hv_get_voltage_channels(manager, message):
+    _handle_hv_command(manager=manager, message=message, hv_command="get_voltage_channels", timeout_s=30.0)
+
+
+def handle_hv_get_threshold_channels(manager, message):
+    _handle_hv_command(manager=manager, message=message, hv_command="get_threshold_channels", timeout_s=30.0)
+
+def handle_hv_get_volt_thr_channels(manager, message):
+    _handle_hv_command(manager=manager, message=message, hv_command="get_volt_thr_channels", timeout_s=40.0)
+
+
+def handle_hv_get_power_state_channels(manager, message):
+    _handle_hv_command(
+        manager=manager,
+        message=message,
+        hv_command="get_power_state_channels",
+        timeout_s=300.0,
+    )
+
+
 def handle_hv_on(manager, message):
     _handle_hv_command(
         manager,

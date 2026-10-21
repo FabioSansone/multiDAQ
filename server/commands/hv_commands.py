@@ -458,7 +458,7 @@ def do_hv(self, args: argparse.Namespace) -> None:
             ):
                 self.poutput(f"Client {client_name}: FIXED BAD updated on hardware, but persistence failed.")
         
-        if reply is not None and args.command_group == "set_common":  
+        if reply is not None and args.command_group in {"set_common", "on", "off"}:  
             result = reply.payload.get("result", {})
             self.acquisition_service.record_hv_parameters_from_reply(
                 client_id=client_id, command=command, payload=payload, reply_result=result,

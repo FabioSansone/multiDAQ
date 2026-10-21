@@ -58,6 +58,38 @@ class AcquisitionOrchestrator:
             self.logger.error("CONFIGURATION_STARTED rejected by FSM in acquisition start")
             return
 
+        # Values the overridden channels had before, per client: put back at the end
+        # of the run, or at once if the run does not start (also on an unexpected error).
+        hv_previous: dict[bytes, dict[int, dict]] = {}
+
+        try:
+            self._prepare_and_start(args, client_ids, trigger_config, hv_previous)
+
+        except Exception as exc:
+            self.logger.exception("Unexpected error while preparing the acquisition")
+            self.poutput(f"Acquisition not started: internal error while preparing it ({exc}).")
+
+            try:
+                self._restore_hv_overrides(hv_previous)
+            except Exception:
+                self.logger.exception("Restoring the HV override failed unexpectedly")
+
+            state = self.server_state.get_server_state()
+
+            if state == ServerFSM.CONFIGURING:
+                self.server_state.process_event(
+                    event=ServerFSMEvent.CONFIGURATION_FAILED,
+                    reason=f"Unexpected error while preparing the acquisition: {exc}",
+                    source="acquisition_orchestrator",
+                )
+
+            elif state == ServerFSM.ACQUIRING:
+                # The session thread did not start: close the session that was opened.
+                self.acquisition_service.close_session(success=False, reason="acquisition could not start")
+
+    def _prepare_and_start(self, args, client_ids, trigger_config, hv_previous) -> None:
+        """Prepare RC/HV channels step by step and start the session thread. The caller
+        puts back the HV override recorded in hv_previous if this raises."""
         mode = self.get_mode()
 
         # The preparation is a sequence of steps. Each step removes the channels that
@@ -130,7 +162,7 @@ class AcquisitionOrchestrator:
             client_name = client_id.decode(errors="ignore")
             channels = channels_by_client[client_id]
 
-            hv_override, override_error = self.acquisition_service.resolve_hv_overrides(
+            hv_override, override_excluded, override_error = self.acquisition_service.resolve_hv_overrides(
                 client_id=client_id, args=args,
             )
 
@@ -139,7 +171,22 @@ class AcquisitionOrchestrator:
                 self._drop_client(client_id, "HV override", override_error)
                 continue
 
-            if hv_override is None:
+            # A channel that cannot be overridden is left out alone, with its reason.
+            for reason in sorted(set(override_excluded.values())):
+                channels = self._exclude_channels(
+                    client_id, channels,
+                    [ch for ch, ch_reason in override_excluded.items() if ch_reason == reason],
+                    "HV override", reason,
+                )
+
+            if not channels:
+                del channels_by_client[client_id]
+                self._drop_client(client_id, "HV override", "no channel left after the override")
+                continue
+
+            channels_by_client[client_id] = channels
+
+            if not hv_override:
                 continue
 
             if mode == "multipmt":
@@ -153,14 +200,19 @@ class AcquisitionOrchestrator:
                         "to include them."
                     )
 
-            configured = self.acquisition_service.apply_hv_override(
-                client_id=client_id, acq_info=hv_override,
+            outcome = self.acquisition_service.apply_hv_override(
+                client_id=client_id, acq_info=hv_override, wait_ramp=True,
             )
 
-            if configured is None:
+            if outcome is None:
                 del channels_by_client[client_id]
                 self._drop_client(client_id, "HV override", "voltage/threshold could not be applied")
                 continue
+
+            configured, previous = outcome
+
+            if previous:
+                hv_previous[client_id] = previous
 
             # Channels the user asked to override but the client did not configure
             # must not take part with an unknown voltage/threshold.
@@ -172,6 +224,7 @@ class AcquisitionOrchestrator:
             if not channels:
                 del channels_by_client[client_id]
                 self._drop_client(client_id, "HV override", "no channel left after the override")
+                self._restore_hv_overrides(hv_previous, [client_id])
                 continue
 
             channels_by_client[client_id] = channels
@@ -187,6 +240,7 @@ class AcquisitionOrchestrator:
 
             if not rc_ok:
                 self._drop_client(client_id, "RC configuration", "RC acquisition registers not configured")
+                self._restore_hv_overrides(hv_previous, [client_id])
                 continue
 
             rc_ready_clients.append(client_id)
@@ -194,6 +248,7 @@ class AcquisitionOrchestrator:
         failed_clients = [cid for cid in client_ids if cid not in rc_ready_clients]
 
         if not rc_ready_clients:
+            self._restore_hv_overrides(hv_previous)
             self.server_state.process_event(
                 event=ServerFSMEvent.CONFIGURATION_FAILED,
                 reason="No clients ready for acquisition after RC/HV preparation",
@@ -215,6 +270,7 @@ class AcquisitionOrchestrator:
         if resolved_batch_id is None:
             self.poutput("Cannot start acquisition: missing batch_id and multipmt_id.")
             self.acquisition_service.disable_rc_channels(client_ids=rc_ready_clients)
+            self._restore_hv_overrides(hv_previous)
             return
 
         started_acq = self.server_state.process_event(
@@ -228,6 +284,7 @@ class AcquisitionOrchestrator:
             self.poutput("FSM rejected acquisition start.")
             self.logger.error("ACQUISITION_STARTED rejected by FSM")
             self.acquisition_service.disable_rc_channels(client_ids=rc_ready_clients)
+            self._restore_hv_overrides(hv_previous)
             return
 
         self.acquisition_service.begin_session()
@@ -241,10 +298,14 @@ class AcquisitionOrchestrator:
                 "suffix": args.suffix,
                 "run_id": args.run_id,
                 "duration": args.duration,
+                "hv_previous": dict(hv_previous),
             },
             daemon=True,
         )
         owner_thread.start()
+
+        # From now on the session thread owns the restore.
+        hv_previous.clear()
 
         self.poutput(
             "Acquisition running in background. The server remains responsive; "
@@ -269,6 +330,25 @@ class AcquisitionOrchestrator:
 
         return sorted(set(channels) - set(excluded))
 
+    def _restore_hv_overrides(self, hv_previous: dict[bytes, dict[int, dict]], client_ids=None) -> list[bytes]:
+        """Put back voltage/threshold of the overridden channels (all the clients in
+        hv_previous, or only client_ids). Each client is restored once.
+
+        Returns the clients whose restore failed on every channel."""
+        unrestored = []
+
+        for client_id in list(hv_previous):
+            if client_ids is not None and client_id not in client_ids:
+                continue
+
+            previous = hv_previous.pop(client_id)
+            restored, _ = self.acquisition_service.restore_hv_override(client_id=client_id, previous=previous)
+
+            if previous and not restored:
+                unrestored.append(client_id)
+
+        return unrestored
+
     def _on_duration_elapsed(self) -> None:
         self.server_state.process_event(
             event=ServerFSMEvent.RECEIVER_COMPLETED,
@@ -276,7 +356,7 @@ class AcquisitionOrchestrator:
             source="acquisition_orchestrator",
         )
 
-    def _run_session(self, client_ids, acq_type, file_format, suffix, run_id, duration) -> None:
+    def _run_session(self, client_ids, acq_type, file_format, suffix, run_id, duration, hv_previous) -> None:
         """Thread della sessione: esegue l'acquisizione e chiude sempre la
         sessione, anche in caso di eccezione."""
         reason = "acquisition session completed"
@@ -313,7 +393,26 @@ class AcquisitionOrchestrator:
             )
 
         finally:
+            # Hardware closed and reset: voltage/threshold go back to what they were
+            # before the override, while the FSM is still finalizing. The restore is
+            # attempted even after an error and never prevents the session from closing.
+            unrestored = []
+
+            try:
+                unrestored = self._restore_hv_overrides(hv_previous)
+            except Exception:
+                self.logger.exception("Restoring the HV override failed unexpectedly")
+
             self.acquisition_service.close_session(success=success, reason=reason)
+
+            # A client that could not be restored on any channel is left out of the next
+            # acquisitions (after the session, which brings the clients back to READY).
+            for client_id in unrestored:
+                self.server_state.remove_operational_client(client_id)
+                self.poutput(
+                    f"Client {client_id.decode(errors='ignore')}: voltage/threshold could not be restored "
+                    "on any channel; the client is excluded from the next acquisitions."
+                )
 
     def stop(self) -> None:
 

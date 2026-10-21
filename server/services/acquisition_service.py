@@ -9,7 +9,7 @@ from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 from server.core.server_state import ServerFSM, ServerFSMEvent
 from server.utils.json_parser import JsonParser
-from server.utils.channels import hv_to_user_channels
+from server.utils.channels import N_CHANNELS, hv_to_user_channels
 
 ACQ_REGISTER_ADDRESSES = [0, 1, 10, 15, 16, 18, 19, 31, 39]
 
@@ -118,48 +118,66 @@ class AcquisitionService:
         
         return result
     
-    def _convert_pe_map_to_mv(self, client_id: bytes, pe_by_channel: dict[int, float]) -> dict[int, float] | None:
+    def _convert_pe_map_to_mv(self, client_id: bytes, pe_by_channel: dict[int, float]) -> tuple[dict[int, float], dict[int, str]]:
+        """Convert thresholds from p.e. to mV, channel by channel.
+
+        Returns (threshold_mv_by_channel, excluded). A channel without calibration
+        data goes into `excluded` with the reason; the other channels are converted."""
+
+        def all_excluded(reason: str) -> tuple[dict[int, float], dict[int, str]]:
+            self.logger.error(f"Cannot resolve PE calibration for client {client_id!r}: {reason}")
+            return {}, {ch: reason for ch in pe_by_channel}
+
         configuration_identity = self.server_state.get_configuration_identity(client_id)
-        
+
         if configuration_identity is None:
-            self.logger.error(f"Cannot resolve PE calibration: no configuration identity for client {client_id!r}")
-            return None
-        
+            return all_excluded("no configuration identity")
+
         multipmt_id = configuration_identity.get("multipmt_id")
         batch_id = configuration_identity.get("batch_id")
-        
+
         if not multipmt_id or not batch_id:
-            self.logger.error(f"Cannot resolve PE calibration: incomplete configuration identity for client {client_id!r}")
-            return None
-        
+            return all_excluded("incomplete configuration identity")
+
         parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
         thr_fit_parameters = parser.load_threshold_parameters()
         pe_reference = parser.load_pe_data()
-        
+
         if thr_fit_parameters is None or pe_reference is None:
-            self.logger.error(f"Cannot resolve PE calibration data for client {client_id!r}")
-            return None
-        
+            return all_excluded("PE calibration data not available")
+
         threshold_mv_by_channel = {}
+        excluded = {}
+
         for ch, pe_value in pe_by_channel.items():
             if ch not in thr_fit_parameters or ch not in pe_reference:
-                self.logger.error(f"Missing calibration data for channel {ch}, client {client_id!r}")
-                return None
+                excluded[ch] = "no PE calibration data for the channel"
+                continue
 
             m_ch, q_ch = thr_fit_parameters[ch]
             pe_adc = pe_reference[ch]
-            
+
             if m_ch == 0:
-                self.logger.error(f"Invalid threshold fit for channel {ch}: m=0")
-                return None
+                excluded[ch] = "invalid threshold fit (m=0)"
+                continue
 
             adc_thr = pe_value * pe_adc
             threshold_mv_by_channel[ch] = (adc_thr - q_ch) / m_ch
-        
-        return threshold_mv_by_channel
-    
-    
-    def resolve_hv_overrides(self, client_id: bytes, args) -> tuple[dict[int, dict] | None, str | None]:
+
+        return threshold_mv_by_channel, excluded
+
+
+    def resolve_hv_overrides(self, client_id: bytes, args) -> tuple[dict[int, dict] | None, dict[int, str], str | None]:
+        """Build the voltage/threshold to apply, from the command-line overrides.
+
+        Returns (acq_info, excluded, error):
+        - acq_info: {channel: {"voltage" and/or "threshold"}} in user numbering, None if
+          there is nothing to apply. Only the requested quantities are present: the
+          client keeps the other one as the hardware has it.
+        - excluded: {channel: reason} for the channels that cannot be overridden
+          (no PE calibration): only those channels are left out.
+        - error: the request itself is not valid (the whole client is left out)."""
+
         voltage = getattr(args, "voltage", None)
         voltage_map_raw = getattr(args, "voltage_map", None)
         threshold_mv = getattr(args, "threshold_mv", None)
@@ -167,76 +185,72 @@ class AcquisitionService:
         threshold_mv_map_raw = getattr(args, "threshold_mv_map", None)
         threshold_pe_map_raw = getattr(args, "threshold_pe_map", None)
 
-        if not any([voltage, voltage_map_raw, threshold_mv, threshold_pe, threshold_mv_map_raw, threshold_pe_map_raw]):
-            return None, None   # nessun override richiesto: comportamento invariato, usa i default già mandati
+        requested = [voltage, voltage_map_raw, threshold_mv, threshold_pe, threshold_mv_map_raw, threshold_pe_map_raw]
+
+        if all(value is None for value in requested):
+            return None, {}, None   # nessun override richiesto: comportamento invariato, usa i default già mandati
 
         client_name = client_id.decode(errors="ignore")
 
+        excluded: dict[int, str] = {}
         threshold_by_channel: dict[int, float] = {}
 
         if threshold_mv_map_raw is not None:
             parsed = self._parse_channel_value_map(threshold_mv_map_raw, float)
             if parsed is None:
-                return None, f"Invalid --threshold-mv-map format for client {client_name}"
+                return None, {}, f"Invalid --threshold-mv-map format for client {client_name}"
             threshold_by_channel = parsed
 
         elif threshold_pe_map_raw is not None:
             parsed = self._parse_channel_value_map(threshold_pe_map_raw, float)
             if parsed is None:
-                return None, f"Invalid --threshold-pe-map format for client {client_name}"
-            threshold_by_channel = self._convert_pe_map_to_mv(client_id=client_id, pe_by_channel=parsed)
-            if threshold_by_channel is None:
-                return None, f"Cannot resolve PE calibration for client {client_name}"
+                return None, {}, f"Invalid --threshold-pe-map format for client {client_name}"
+            threshold_by_channel, excluded_pe = self._convert_pe_map_to_mv(client_id=client_id, pe_by_channel=parsed)
+            excluded.update(excluded_pe)
 
         elif threshold_pe is not None:
-            threshold_by_channel = self._convert_pe_map_to_mv(client_id=client_id, pe_by_channel={ch: threshold_pe for ch in range(7)})
-            if threshold_by_channel is None:
-                return None, f"Cannot resolve PE calibration for client {client_name}"
+            threshold_by_channel, excluded_pe = self._convert_pe_map_to_mv(
+                client_id=client_id, pe_by_channel={ch: threshold_pe for ch in range(N_CHANNELS)},
+            )
+            excluded.update(excluded_pe)
 
         elif threshold_mv is not None:
-            threshold_by_channel = {ch: threshold_mv for ch in range(7)}
+            threshold_by_channel = {ch: threshold_mv for ch in range(N_CHANNELS)}
 
         voltage_by_channel: dict[int, float] = {}
 
         if voltage_map_raw is not None:
             parsed = self._parse_channel_value_map(voltage_map_raw, int)
             if parsed is None:
-                return None, f"Invalid --voltage-map format for client {client_name}"
+                return None, {}, f"Invalid --voltage-map format for client {client_name}"
             voltage_by_channel = parsed
 
         elif voltage is not None:
-            target_channels = set(threshold_by_channel.keys()) if threshold_by_channel else set(range(7))
+            target_channels = set(threshold_by_channel.keys()) | set(excluded) if (threshold_by_channel or excluded) else set(range(N_CHANNELS))
             voltage_by_channel = {ch: voltage for ch in target_channels}
 
-        all_channels = set(voltage_by_channel.keys()) | set(threshold_by_channel.keys())
+        all_channels = (set(voltage_by_channel) | set(threshold_by_channel)) - set(excluded)
+
+        invalid_channels = sorted(ch for ch in all_channels | set(excluded) if ch < 0 or ch >= N_CHANNELS)
+        if invalid_channels:
+            return None, {}, f"Invalid channels {invalid_channels} in the HV override for client {client_name}"
 
         if not all_channels:
-            return None, None
+            return None, excluded, None
 
-        current_params = self.server_state.get_client_hv_parameters(client_id)
-
+        # Only the requested quantities are sent: the client keeps the other one as it is.
         acq_info = {}
-        for ch in all_channels:
-            v = voltage_by_channel.get(ch)
-            t = threshold_by_channel.get(ch)
+        for ch in sorted(all_channels):
+            values = {}
+            if ch in voltage_by_channel:
+                values["voltage"] = voltage_by_channel[ch]
+            if ch in threshold_by_channel:
+                values["threshold"] = threshold_by_channel[ch]
+            acq_info[ch] = values
 
-            if v is None:
-                v = current_params.get(ch, {}).get("voltage")
-            if t is None:
-                t = current_params.get(ch, {}).get("threshold")
+        return acq_info, excluded, None
 
-            if v is None or t is None:
-                return None, (
-                    f"Channel {ch} for client {client_name} has no known "
-                    f"{'voltage' if v is None else 'threshold'} to fall back on "
-                    "(never configured for this client)"
-                )
 
-            acq_info[ch] = {"voltage": v, "threshold": t}
-
-        return acq_info, None
-    
-    
     def record_hv_parameters_from_reply(self, client_id: bytes, command: str, payload: dict, reply_result: dict) -> None:
         successful = set(reply_result.get("successful_channels", []))
         if not successful:
@@ -259,19 +273,28 @@ class AcquisitionService:
                 if ch_config:
                     update[external_ch] = ch_config
 
+        elif command == "hv_on":
+            update = {ch - 1: {"power_state": "on"} for ch in successful}
+
+        elif command == "hv_off":
+            update = {ch - 1: {"power_state": "off"} for ch in successful}
+
         else:
             return
 
         self.server_state.set_client_hv_parameters(client_id, update)
         
     
-    def apply_hv_override(self, client_id: bytes, acq_info: dict[int, dict]) -> list[int] | None:
-        """Apply voltage/threshold to the given channels (keys of acq_info, user
-        numbering 0..6).
+    def apply_hv_override(self, client_id: bytes, acq_info: dict[int, dict], wait_ramp: bool = False) -> tuple[list[int], dict[int, dict]] | None:
+        """Apply voltage and/or threshold to the given channels (keys of acq_info, user
+        numbering 0..6). With wait_ramp the client also waits for the ramp of the
+        channels that are ON.
 
-        Returns the user channels the client actually configured, or None if the
-        command failed altogether. Channels that are requested but not in the
-        returned list were skipped or failed and must not take part in the run."""
+        Returns None if the command failed altogether, otherwise (configured, previous):
+        - configured: the user channels the client actually set. The requested ones
+          that are not in the list were skipped or failed and must not take part in the run;
+        - previous: {channel: {"voltage", "threshold"}} the channels that were really
+          changed had before, to put them back after the run."""
 
         client_name = client_id.decode(errors="ignore")
 
@@ -281,6 +304,7 @@ class AcquisitionService:
             payload={
                 "channels": list(acq_info.keys()),
                 "acquisition_configuration": acq_info,
+                "wait_ramp": wait_ramp,
             },
             plane=CommandPlane.ACQUISITION,
             timeout_s=300.0,
@@ -291,16 +315,24 @@ class AcquisitionService:
             return None
 
         payload = reply.payload or {}
+        result = payload.get("result") or {}
+
+        # One failing channel makes the reply an error, but the others were set and
+        # must be put back: the reply is rejected only when nothing was attempted.
         if payload.get("status") != "ok":
             self.logger.error(f"HV override error for client {client_name}: {payload.get('error')}")
-            return None
 
-        result = payload.get("result", {})
+            if not result.get("requested_channels"):
+                return None
 
-        self.record_hv_parameters_from_reply(
-            client_id=client_id, command="set_acquisition_configuration",
-            payload={"acquisition_configuration": acq_info}, reply_result=result,
-        )
+        # Keys are strings after the JSON transport; the client uses HV numbering.
+        def to_user(values: dict) -> dict[int, dict]:
+            return {int(ch) - 1: dict(v) for ch, v in (values or {}).items()}
+
+        applied = to_user(result.get("applied"))
+        previous = to_user(result.get("previous"))
+
+        self.server_state.set_client_hv_parameters(client_id, applied)
 
         configured = sorted(hv_to_user_channels(result.get("successful_channels", [])))
         not_configured = sorted(set(acq_info.keys()) - set(configured))
@@ -312,7 +344,34 @@ class AcquisitionService:
                 f"skipped={hv_to_user_channels(result.get('skipped_channels', []))})"
             )
 
-        return configured
+        changed_previous = {
+            ch: values for ch, values in previous.items()
+            if ch in configured and applied.get(ch) != values
+        }
+
+        return configured, changed_previous
+
+    def restore_hv_override(self, client_id: bytes, previous: dict[int, dict]) -> tuple[list[int], list[int]]:
+        """Put voltage and threshold back to the values they had before the override
+        (previous, user numbering). Returns (restored, not_restored) channels: the client
+        has already marked BAD the ones that failed."""
+
+        client_name = client_id.decode(errors="ignore")
+
+        if not previous:
+            return [], []
+
+        self.poutput(f"Client {client_name}: restoring voltage/threshold on channels {sorted(previous)}.")
+
+        outcome = self.apply_hv_override(client_id=client_id, acq_info=previous)
+        restored = sorted(outcome[0]) if outcome is not None else []
+        not_restored = sorted(set(previous) - set(restored))
+
+        if not_restored:
+            self.poutput(f"Client {client_name}: voltage/threshold NOT restored on channels {not_restored} (see log).")
+            self.logger.error(f"Client {client_name}: HV override not restored on channels {not_restored}")
+
+        return restored, not_restored
 
     def get_detector_fixed_bad_channels(self, client_id: bytes) -> list[int] | None:
         """Canali fixed-bad (numerazione logica 0..6) del rivelatore associato
