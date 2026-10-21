@@ -3,7 +3,12 @@ from client.hardware.hv.hv_messages import HVRequest, HVResponse
 from common.message_handler import MessageStatus
 
 
-POSSIBLE_ALARMS = ["OV", "UV", "OC", "UC"]
+
+
+def _alarm_active(alarm) -> bool:
+    """get_ch_alarm() gives "none" or a string such as " OV UV " (OV, UV, OC, OT):
+    anything other than "none" is an active alarm."""
+    return alarm is not None and alarm != "none"
 
 def _wrap_hv_action(
     protocol_version: int,
@@ -131,7 +136,7 @@ def command_check_channel_safety(
         unsafe = (
             read_failed
             or status == "TRIP"
-            or alarm in POSSIBLE_ALARMS
+            or _alarm_active(alarm)
         )
 
         if unsafe:

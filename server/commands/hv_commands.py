@@ -4,7 +4,7 @@ from typing import List
 from server.utils.logger import get_logger
 from common.message_handler import Channel
 from server.core.server_state import command_guard, ServerFSM
-from server.utils.channels import hv_to_user_channels
+from server.utils.channels import hv_to_user_channels, normalize_user_channels
 
 logger = get_logger("hv_commands")
 
@@ -409,6 +409,18 @@ def do_hv(self, args: argparse.Namespace) -> None:
 
     else:
         self.poutput(f"Unknown HV command group: {args.command_group}")
+        return
+
+    try:
+        if "channels" in payload:
+            payload["channels"] = normalize_user_channels(payload["channels"])
+
+        if "serials" in payload:
+            normalize_user_channels(list(payload["serials"].keys()))
+
+    except (TypeError, ValueError) as exc:
+        self.poutput(f"Invalid channels: {exc}")
+        logger.error(f"HV command '{command}' not sent: invalid channels: {exc}")
         return
 
 

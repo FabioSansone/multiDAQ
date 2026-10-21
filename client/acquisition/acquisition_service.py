@@ -315,11 +315,25 @@ class AcquisitionService:
             )
         
         missing_serial_channels = missing_result.get("missing_serial_channels", [])
+
+        # Only the channels sent by the server are configured and powered: the others
+        # (e.g. without a matching calibration) have no voltage/threshold and stay off.
+        # The keys of acq_info are strings after the JSON transport; the internal HV
+        # commands use HV numbering (1..7).
+        try:
+            hv_channels = sorted(int(ch) + 1 for ch in acq_info)
+        except (TypeError, ValueError) as e:
+            self.logger.error(f"Cannot apply multipmt mode: invalid channels in acquisition configuration: {e}")
+            return {"success": False, "missing_serial_channels": missing_serial_channels}
+
+        if not hv_channels:
+            self.logger.error("Cannot apply multipmt mode: empty acquisition configuration")
+            return {"success": False, "missing_serial_channels": missing_serial_channels}
         
         if not self._submit_hv_command(
             command="set_acquisition_configuration",
             payload={
-                "channels": "all",
+                "channels": hv_channels,
                 "acquisition_configuration": acq_info,
             },
             timeout_s=300.0,
@@ -330,7 +344,7 @@ class AcquisitionService:
 
         if not self._submit_hv_command(
             command="hv_on",
-            payload={"channels": "all"},
+            payload={"channels": hv_channels},
             timeout_s=90.0,
         ):
             return {"success": False, "missing_serial_channels": missing_serial_channels}

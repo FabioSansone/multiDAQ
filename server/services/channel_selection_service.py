@@ -17,6 +17,12 @@ class ChannelSelectionService:
 
     
     @staticmethod
+    def _warn_user(self, message: str) -> None:
+        """A client or channel is being left out of the acquisition: record it in the
+        log and tell the user."""
+        self.logger.warning(message)
+        self.poutput(message)
+
     def parse_user_channels(
         channels: str | int | list[int],
         n_channels: int = 7,
@@ -104,7 +110,7 @@ class ChannelSelectionService:
             self.logger.error(
                 f"Invalid requested channels for client {client_name}: {exc}"
             )
-            self.poutput(
+            self._warn_user(
                 f"Client {client_name}: invalid channel selection: {exc}"
             )
             return []
@@ -129,7 +135,7 @@ class ChannelSelectionService:
                 f"HV sync unavailable on acquisition plane for client "
                 f"{client_name}: {reason}"
             )
-            self.poutput(
+            self._warn_user(
                 f"Client {client_name}: cannot determine safe channels "
                 "for acquisition."
             )
@@ -155,7 +161,7 @@ class ChannelSelectionService:
                 f"HV sync error on acquisition plane for client "
                 f"{client_name}: {sync_error}"
             )
-            self.poutput(
+            self._warn_user(
                 f"Client {client_name}: cannot determine safe channels "
                 "for acquisition."
             )
@@ -180,13 +186,13 @@ class ChannelSelectionService:
         available_rc_channels = sorted(set(available_rc_channels) - set(fixed_bad_rc_channels))
 
         if bad_rc_channels:
-            self.poutput(
+            self._warn_user(
                 f"Client {client_name}: BAD HV/FEB channels excluded: "
                 f"{bad_rc_channels}"
             )
 
         if fixed_bad_rc_channels:
-            self.poutput(
+            self._warn_user(
                 f"Client {client_name}: FIXED BAD HV/FEB channels excluded: "
                 f"{fixed_bad_rc_channels}"
             )
@@ -200,7 +206,7 @@ class ChannelSelectionService:
         )
 
         if excluded_requested_channels:
-            self.poutput(
+            self._warn_user(
                 f"Client {client_name}: requested channels unavailable and excluded: "
                 f"{excluded_requested_channels}"
             )
@@ -210,7 +216,7 @@ class ChannelSelectionService:
                 f"No requested OK HV/FEB channels available for client {client_name}. "
                 f"Requested={requested_rc_channels}, available={available_rc_channels}"
             )
-            self.poutput(
+            self._warn_user(
                 f"Client {client_name}: no requested channels are currently available."
             )
             return []
@@ -281,7 +287,7 @@ class ChannelSelectionService:
 
             if sync_reply is None:
                 self.logger.error(f"HV sync failed for client {client_name}: {reason}")
-                self.poutput(f"Client {client_name}: HV sync failed ({reason})")
+                self._warn_user(f"Client {client_name}: HV sync failed ({reason})")
                 continue
 
             sync_payload = sync_reply.payload or {}
@@ -290,7 +296,7 @@ class ChannelSelectionService:
 
             if sync_error:
                 self.logger.error(f"HV sync error from client {client_name}: {sync_error}")
-                self.poutput(f"Client {client_name}: HV sync error: {sync_error}")
+                self._warn_user(f"Client {client_name}: HV sync error: {sync_error}")
                 continue
 
             ok_channels = set(sync_result.get("ok_channels", []))
@@ -302,13 +308,13 @@ class ChannelSelectionService:
             ok_off_channels = sorted(ok_channels & off_channels)
 
             if bad_channels:
-                self.poutput(
+                self._warn_user(
                     f"Client {client_name}: BAD HV channels excluded: "
                     f"{hv_to_user_channels(sorted(bad_channels))}"
                 )
 
             if not ok_channels:
-                self.poutput(f"Client {client_name}: no OK HV channels available.")
+                self._warn_user(f"Client {client_name}: no OK HV channels available.")
                 continue
 
             if ok_off_channels:
@@ -331,7 +337,7 @@ class ChannelSelectionService:
                     self.logger.error(
                         f"HV on_and_wait failed for client {client_name}: {reason}"
                     )
-                    self.poutput(
+                    self._warn_user(
                         f"Client {client_name}: HV on_and_wait failed ({reason})"
                     )
                     continue
@@ -344,7 +350,7 @@ class ChannelSelectionService:
                     self.logger.error(
                         f"HV on_and_wait error from client {client_name}: {on_error}"
                     )
-                    self.poutput(
+                    self._warn_user(
                         f"Client {client_name}: HV on_and_wait error: {on_error}"
                     )
 
@@ -364,13 +370,13 @@ class ChannelSelectionService:
                     )
 
                 if failed_on:
-                    self.poutput(
+                    self._warn_user(
                         f"Client {client_name}: HV channels failed to go UP: "
                         f"{hv_to_user_channels(sorted(failed_on))}"
                     )
 
                 if bad_after_on:
-                    self.poutput(
+                    self._warn_user(
                         f"Client {client_name}: HV channels moved to BAD: "
                         f"{hv_to_user_channels(sorted(bad_after_on))}"
                     )
@@ -386,7 +392,7 @@ class ChannelSelectionService:
             final_user_channels = hv_to_user_channels(final_hv_channels)
 
             if not final_user_channels:
-                self.poutput(
+                self._warn_user(
                     f"Client {client_name}: no HV channels available for acquisition."
                 )
                 continue

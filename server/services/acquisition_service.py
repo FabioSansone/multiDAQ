@@ -9,6 +9,7 @@ from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 from server.core.server_state import ServerFSM, ServerFSMEvent
 from server.utils.json_parser import JsonParser
+from server.utils.channels import hv_to_user_channels
 
 ACQ_REGISTER_ADDRESSES = [0, 1, 10, 15, 16, 18, 19, 31, 39]
 
@@ -264,15 +265,22 @@ class AcquisitionService:
         self.server_state.set_client_hv_parameters(client_id, update)
         
     
-    def apply_hv_override(self, client_id: bytes, acq_info: dict[int, dict]) -> bool:
+    def apply_hv_override(self, client_id: bytes, acq_info: dict[int, dict]) -> list[int] | None:
+        """Apply voltage/threshold to the given channels (keys of acq_info, user
+        numbering 0..6).
+
+        Returns the user channels the client actually configured, or None if the
+        command failed altogether. Channels that are requested but not in the
+        returned list were skipped or failed and must not take part in the run."""
+
         client_name = client_id.decode(errors="ignore")
 
         reply, reason = self.command_service.send_hv_command(
             client_id=client_id,
             command="set_acquisition_configuration",
             payload={
-                "channels": [ch + 1 for ch in acq_info.keys()],   
-                "acquisition_configuration": acq_info,             
+                "channels": list(acq_info.keys()),
+                "acquisition_configuration": acq_info,
             },
             plane=CommandPlane.ACQUISITION,
             timeout_s=300.0,
@@ -280,21 +288,32 @@ class AcquisitionService:
 
         if reply is None:
             self.logger.error(f"HV override failed for client {client_name}: {reason}")
-            return False
+            return None
 
         payload = reply.payload or {}
         if payload.get("status") != "ok":
             self.logger.error(f"HV override error for client {client_name}: {payload.get('error')}")
-            return False
+            return None
+
+        result = payload.get("result", {})
 
         self.record_hv_parameters_from_reply(
             client_id=client_id, command="set_acquisition_configuration",
-            payload={"acquisition_configuration": acq_info}, reply_result=payload.get("result", {}),
+            payload={"acquisition_configuration": acq_info}, reply_result=result,
         )
-        return True
-            
 
-    
+        configured = sorted(hv_to_user_channels(result.get("successful_channels", [])))
+        not_configured = sorted(set(acq_info.keys()) - set(configured))
+
+        if not_configured:
+            self.logger.warning(
+                f"HV override on client {client_name}: channels {not_configured} not configured "
+                f"(failed={hv_to_user_channels(result.get('failed_channels', []))}, "
+                f"skipped={hv_to_user_channels(result.get('skipped_channels', []))})"
+            )
+
+        return configured
+
     def get_detector_fixed_bad_channels(self, client_id: bytes) -> list[int] | None:
         """Canali fixed-bad (numerazione logica 0..6) del rivelatore associato
         alla configurazione del client, letti dal JSON sul server."""

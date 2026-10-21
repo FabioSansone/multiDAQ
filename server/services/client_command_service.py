@@ -2,6 +2,7 @@ from enum import Enum
 from typing import Optional
 
 from common.message_handler import Channel, ProtocolMessage
+from server.utils.channels import normalize_user_channels
 from server.utils.logger import get_logger
 
 
@@ -114,6 +115,14 @@ class ClientCommandService:
         normalized_plane = self._normalize_plane(plane)
         if normalized_plane is None:
             return None, "invalid command plane"
+
+        if payload is not None and "channels" in payload:
+            # The client converts user numbering (0..6) to HV numbering itself.
+            try:
+                payload = {**payload, "channels": normalize_user_channels(payload["channels"])}
+            except (TypeError, ValueError) as exc:
+                self.logger.error(f"HV command '{command}' not sent to {client_id!r}: {exc}")
+                return None, f"invalid HV channels: {exc}"
 
         hv_command = self._create_command(
             plane=normalized_plane, channel=Channel.HV, command=command, payload=payload, priority=priority,

@@ -58,8 +58,23 @@ class AcquisitionOrchestrator:
             self.logger.error("CONFIGURATION_STARTED rejected by FSM in acquisition start")
             return
 
-        rc_ready_clients = []
         mode = self.get_mode()
+
+        # The preparation is a sequence of steps. Each step removes the channels that
+        # cannot take part (among those the previous step left) and drops the clients
+        # left without channels or failing, recording every removal in the log.
+
+        # Step 1: RC19 off on every target, before HV and channels are touched.
+        active_clients = []
+
+        for client_id in client_ids:
+            if self.acquisition_service.disable_rc_channels(client_ids=[client_id]):
+                active_clients.append(client_id)
+            else:
+                self._drop_client(client_id, "RC19 disable", "RC19 could not be disabled")
+
+        # Step 2: channels usable according to the hardware (HV/FEB state).
+        channels_by_client: dict[bytes, list[int]] = {}
 
         if mode == "test":
             self.poutput(
@@ -67,99 +82,114 @@ class AcquisitionOrchestrator:
                 "RC channels will be enabled from HV/FEB presence if available."
             )
 
-
-            for client_id in client_ids:
-                client_name = client_id.decode(errors="ignore")
+            for client_id in active_clients:
                 channels = self.channel_selection_service.get_test_rc_channels(
                     client_id=client_id, plane=CommandPlane.ACQUISITION
                 )
-                
+
                 if not channels:
-                    self.poutput(f"Client {client_name}: no channels available for RC enable.")
+                    self._drop_client(client_id, "channel selection", "no channels available")
                     continue
 
-                rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
+                channels_by_client[client_id] = channels
 
-
-                if not rc_ok:
-                    self.poutput(f"Client {client_name}: RC channel enable failed. Skipping acquisition start.")
-                    continue
-
-                rc_ready_clients.append(client_id)
-
-        else:
-            enabled_channels_by_client = (
-                self.channel_selection_service.prepare_hv_channels_for_acquisition(plane=CommandPlane.ACQUISITION, target_client_ids=client_ids)
+        elif active_clients:
+            enabled_channels_by_client = self.channel_selection_service.prepare_hv_channels_for_acquisition(
+                plane=CommandPlane.ACQUISITION, target_client_ids=active_clients,
             )
 
-            if not enabled_channels_by_client:
-                self.poutput("No HV channels available for acquisition.")
-                self.server_state.process_event(
-                    event=ServerFSMEvent.CONFIGURATION_FAILED,
-                    reason="No HV channels available for acquisition",
-                    source="acquisition_orchestrator",
-                    metadata={"failed_clients": client_ids},
-                )
-                return
-
-
-            for client_id in client_ids:
-                client_name = client_id.decode(errors="ignore")
+            for client_id in active_clients:
                 channels = enabled_channels_by_client.get(client_id, [])
 
                 if not channels:
-                    self.poutput(f"Client {client_name}: no channels available for RC enable.")
+                    self._drop_client(client_id, "HV preparation", "no HV channels available")
                     continue
-                
-                if mode == "multipmt":
-                    excluded = set(self.server_state.get_calibration_excluded_channels(client_id))
-                    excluded_by_calibration = sorted(set(channels) & excluded)
-                    channels = sorted(set(channels) - excluded)
 
-                    if excluded_by_calibration:
-                        self.poutput(
-                            f"Client {client_name}: channels excluded from acquisition "
-                            f"(calibration mismatch): {excluded_by_calibration}"
-                        )
+                channels_by_client[client_id] = channels
 
-                hv_override, override_error = self.acquisition_service.resolve_hv_overrides(
-                    client_id=client_id, args=args,
+        # Step 3 (multipmt): channels without a matching calibration.
+        if mode == "multipmt":
+            for client_id in list(channels_by_client):
+                channels = self._exclude_channels(
+                    client_id, channels_by_client[client_id],
+                    self.server_state.get_calibration_excluded_channels(client_id),
+                    "calibration match", "no matching calibration",
                 )
 
-                if override_error is not None:
-                    self.poutput(f"Client {client_name}: {override_error}. Skipping acquisition start.")
-                    self.logger.error(f"HV override resolution failed for client {client_name}: {override_error}")
+                if not channels:
+                    del channels_by_client[client_id]
+                    self._drop_client(client_id, "calibration match", "no channel with a matching calibration")
                     continue
 
-                if hv_override is not None:
-                    
-                    if mode == "multipmt":
-                        overridden_channels = set(hv_override.keys())
-                        excluded_now = sorted(overridden_channels - set(channels))
-                        if excluded_now:
-                            self.poutput(
-                                f"Client {client_name}: HV override applies to channel(s) {excluded_now}, "
-                                "currently excluded from this acquisition (no matching calibration). "
-                                "Voltage/threshold will be stored, but these channels will NOT participate "
-                                "now -- start acquisition again after the calibration mismatch is resolved "
-                                "to include them."
-                            )
+                channels_by_client[client_id] = channels
 
-                    override_ok = self.acquisition_service.apply_hv_override(
-                        client_id=client_id, acq_info=hv_override,
+        # Step 4: voltage/threshold override requested by the user. It is also
+        # applied in test mode: the HV policy of the client allows setting the
+        # parameters there, while powering the channels remains forbidden.
+        for client_id in list(channels_by_client):
+            client_name = client_id.decode(errors="ignore")
+            channels = channels_by_client[client_id]
+
+            hv_override, override_error = self.acquisition_service.resolve_hv_overrides(
+                client_id=client_id, args=args,
+            )
+
+            if override_error is not None:
+                del channels_by_client[client_id]
+                self._drop_client(client_id, "HV override", override_error)
+                continue
+
+            if hv_override is None:
+                continue
+
+            if mode == "multipmt":
+                excluded_now = sorted(set(hv_override.keys()) - set(channels))
+                if excluded_now:
+                    self.poutput(
+                        f"Client {client_name}: HV override applies to channel(s) {excluded_now}, "
+                        "currently excluded from this acquisition (no matching calibration). "
+                        "Voltage/threshold will be stored, but these channels will NOT participate "
+                        "now -- start acquisition again after the calibration mismatch is resolved "
+                        "to include them."
                     )
-                    if not override_ok:
-                        self.poutput(f"Client {client_name}: failed to apply HV voltage/threshold override. Skipping acquisition start.")
-                        continue
 
-                rc_ok = self.acquisition_service.configure_acquisition_client(client_id=client_id, trigger_config=trigger_config, effective_channels=channels)
+            configured = self.acquisition_service.apply_hv_override(
+                client_id=client_id, acq_info=hv_override,
+            )
 
-                if not rc_ok:
-                    self.poutput(f"Client {client_name}: RC channel enable failed. Skipping acquisition start.")
-                    continue
+            if configured is None:
+                del channels_by_client[client_id]
+                self._drop_client(client_id, "HV override", "voltage/threshold could not be applied")
+                continue
 
-                rc_ready_clients.append(client_id)
+            # Channels the user asked to override but the client did not configure
+            # must not take part with an unknown voltage/threshold.
+            channels = self._exclude_channels(
+                client_id, channels, set(hv_override.keys()) - set(configured),
+                "HV override", "voltage/threshold not applied",
+            )
 
+            if not channels:
+                del channels_by_client[client_id]
+                self._drop_client(client_id, "HV override", "no channel left after the override")
+                continue
+
+            channels_by_client[client_id] = channels
+
+        # Step 5: RC trigger configuration (RC19 stays off until the producer starts).
+        rc_ready_clients = []
+
+        for client_id in channels_by_client:
+            rc_ok = self.acquisition_service.configure_acquisition_client(
+                client_id=client_id, trigger_config=trigger_config,
+                effective_channels=channels_by_client[client_id],
+            )
+
+            if not rc_ok:
+                self._drop_client(client_id, "RC configuration", "RC acquisition registers not configured")
+                continue
+
+            rc_ready_clients.append(client_id)
 
         failed_clients = [cid for cid in client_ids if cid not in rc_ready_clients]
 
@@ -220,6 +250,24 @@ class AcquisitionOrchestrator:
             "Acquisition running in background. The server remains responsive; "
             "use 'acquisition stop' to stop it."
         )
+
+    def _drop_client(self, client_id: bytes, step: str, reason: str) -> None:
+        message = f"Client {client_id.decode(errors='ignore')}: removed from the acquisition at step '{step}': {reason}."
+        self.logger.warning(message)
+        self.poutput(message)
+
+    def _exclude_channels(self, client_id: bytes, channels, excluded, step: str, reason: str) -> list[int]:
+        removed = sorted(set(channels) & set(excluded))
+
+        if removed:
+            message = (
+                f"Client {client_id.decode(errors='ignore')}: channels {removed} excluded "
+                f"at step '{step}': {reason}."
+            )
+            self.logger.warning(message)
+            self.poutput(message)
+
+        return sorted(set(channels) - set(excluded))
 
     def _on_duration_elapsed(self) -> None:
         self.server_state.process_event(

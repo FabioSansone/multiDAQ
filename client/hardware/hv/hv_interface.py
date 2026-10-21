@@ -1078,6 +1078,9 @@ class HV:
                 failed_channels.append(ch)
                 self.moveToBad(ch)
 
+        # Give the channels the time to leave the idle state before reading it.
+        time.sleep(0.5)
+
         pending_channels = [
             ch for ch in power_on_successful
             if ch not in failed_channels
@@ -1096,7 +1099,9 @@ class HV:
                         up_channels.append(ch)
                         pending_channels.remove(ch)
 
-                    elif status == "TRIP" or alarm in {"OV", "UV", "OC", "UC"}:
+                    # getAlarm() returns "none" or a string such as " OV UV ": any
+                    # other value is an active alarm.
+                    elif status == "TRIP" or alarm != "none":
                         self.logger.error(
                             f"Channel {ch} unsafe while waiting for UP: "
                             f"status={status}, alarm={alarm}"

@@ -204,8 +204,6 @@ class ClientRecord:
     last_event_context: dict | None = None
     error_context: dict | None = None
     identity: dict | None = None
-    # Rivelatore (multipmt_id/batch_id) la cui configurazione è applicata al client.
-    # Se assente vale l'identità del client.
     configuration_identity: dict | None = None
     hv_parameters: dict[int, dict] = field(default_factory=dict)
     calibration_excluded_channels: list[int] = field(default_factory=list)

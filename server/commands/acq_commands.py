@@ -369,18 +369,7 @@ def do_acquisition(self, args: argparse.Namespace) -> None:
         return
 
     if args.command == "start":
-        
-        hv_overrides_start = ("voltage", "voltage_map", "threshold_mv", "threshold_pe",
-            "threshold_mv_map", "threshold_pe_map",)
-        specified_overrides = [name for name in hv_overrides_start if getattr(args, name, None) is not None]
-        current_mode = self.server_state.get_mode()
-        if specified_overrides and current_mode == AcquisitionMode.TEST:
-            self.poutput(
-                f"HV voltage/threshold overrides are not applicable in test mode "
-                f"(no HV control in this mode). Specified: {specified_overrides}"
-            )
-            logger.error(f"Rejected HV overrides in test mode: {specified_overrides}")
-            return
+
         self.acquisition_orchestrator.start(args)
         return
 
