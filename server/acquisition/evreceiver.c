@@ -111,11 +111,17 @@ typedef struct __attribute__((packed))
     int32_t status_reg39;
 
     char serial_pmt[7][32];
+    int32_t fixed_bad_mask;
 
     char run_id[64];
-    char software_version[16];
 
-    uint8_t reserved[420];
+    int32_t voltage[7];
+    int32_t threshold_mv[7];
+    float threshold_pe[7];
+    char hv_channel_state[7][16];
+    char hv_power_state[7][16];
+
+    uint8_t reserved[1180];
 
 } file_header_t;
 
@@ -476,25 +482,17 @@ void reset_worker_node(worker_node_t *node) {
 }
 
 void reset_meta_struct(meta_data_t *meta){
-    meta->version = 0;
-    meta->timestamp_raw = 0;
-    meta->timestamp_utc[0] = '\0';
-    meta->acquisition_mode[0] = '\0';
-    meta->acquisition_type[0] = '\0';
-    meta->acq_type_param[0] = '\0';   
-    meta->status_reg0 = 0;
-    meta->status_reg1 = 0;
-    meta->status_reg10 = 0;
-    meta->status_reg15 = 0;
-    meta->status_reg16 = 0;
-    meta->status_reg18 = 0;
-    meta->status_reg19 = 0;
-    meta->status_reg31 = 0;
-    meta->status_reg39 = 0;
+    memset(meta, 0, sizeof(*meta));   // stringhe vuote, numeri a 0
+
+    // Valori che il server manda a -1 quando non sono stati letti: se la chiave manca
+    // si parte dallo stesso "non letto", mai da uno 0 che sembrerebbe una misura.
+    meta->fixed_bad_mask = -1;
+
     for (int ch = 0; ch < 7; ch++) {
-        meta->serial_pmt[ch][0] = '\0';
+        meta->voltage[ch] = -1;
+        meta->threshold_mv[ch] = -1;
+        meta->threshold_pe[ch] = -1.0f;
     }
-    meta->client_id[0] = '\0';
 }
 
 void populate_meta_struct(meta_data_t *meta, char *meta_buff) {
@@ -552,6 +550,44 @@ void populate_meta_struct(meta_data_t *meta, char *meta_buff) {
             } else if (strcmp(key, "acq_type_param") == 0) {
                 strncpy(meta->acq_type_param, value, sizeof(meta->acq_type_param) - 1);
                 meta->acq_type_param[sizeof(meta->acq_type_param) - 1] = '\0';
+            } else if (strcmp(key, "multipmt_id") == 0){
+                strncpy(meta->multipmt_id, value, sizeof(meta->multipmt_id)-1);
+                meta->multipmt_id[sizeof(meta->multipmt_id)-1] = '\0';
+            } else if (strcmp(key, "batch_id") == 0){
+                strncpy(meta->batch_id, value, sizeof(meta->batch_id)-1);
+                meta->batch_id[sizeof(meta->batch_id)-1] = '\0';
+            } else if (strcmp(key, "fixed_bad_mask") == 0){
+                meta->fixed_bad_mask = atoi(value);
+            } else if (strcmp(key, "run_id") == 0){
+                strncpy(meta->run_id, value, sizeof(meta->run_id)-1);
+                meta->run_id[sizeof(meta->run_id)-1] = '\0';
+            } else if (strncmp(key, "voltage_ch", 10) == 0 && strlen(key) == 11) {
+                int ch = key[10] - '0';
+                if (ch >= 0 && ch < 7) {
+                    meta->voltage[ch] = atoi(value);
+                }
+            } else if (strncmp(key, "threshold_mv_ch", 15) == 0 && strlen(key) == 16) {
+                int ch = key[15] - '0';
+                if (ch >= 0 && ch < 7) {
+                    meta->threshold_mv[ch] = atoi(value);
+                }
+            } else if (strncmp(key, "threshold_pe_ch", 15) == 0 && strlen(key) == 16) {
+                int ch = key[15] - '0';
+                if (ch >= 0 && ch < 7) {
+                    meta->threshold_pe[ch] = (float)atof(value);
+                }
+            } else if (strncmp(key, "hv_channel_state_ch", 19) == 0 && strlen(key) == 20) {
+                int ch = key[19] - '0';
+                if (ch >= 0 && ch < 7) {
+                    strncpy(meta->hv_channel_state[ch], value, sizeof(meta->hv_channel_state[ch]) - 1);
+                    meta->hv_channel_state[ch][sizeof(meta->hv_channel_state[ch]) - 1] = '\0';
+                }
+            } else if (strncmp(key, "hv_power_state_ch", 17) == 0 && strlen(key) == 18) {
+                int ch = key[17] - '0';
+                if (ch >= 0 && ch < 7) {
+                    strncpy(meta->hv_power_state[ch], value, sizeof(meta->hv_power_state[ch]) - 1);
+                    meta->hv_power_state[ch][sizeof(meta->hv_power_state[ch]) - 1] = '\0';
+                }
             }
         }
 
@@ -563,7 +599,7 @@ int write_header(FILE *file, const meta_data_t *meta)
 {
     file_header_t header = {0};
 
-    memcpy(header.magic, "MDAQH01", 7);
+    memcpy(header.magic, "MDAQH02", 7);
 
     header.version = meta->version;
     header.header_size = FILE_HEADER_SIZE;
@@ -623,6 +659,49 @@ int write_header(FILE *file, const meta_data_t *meta)
         "%s",
         meta->client_id
     );
+
+    snprintf(
+        header.multipmt_id,
+        sizeof(header.multipmt_id),
+        "%s",
+        meta->multipmt_id
+    );
+
+    snprintf(
+        header.batch_id,
+        sizeof(header.batch_id),
+        "%s",
+        meta->batch_id
+    );
+
+    snprintf(
+        header.run_id,
+        sizeof(header.run_id),
+        "%s",
+        meta->run_id
+    );
+
+    header.fixed_bad_mask = meta->fixed_bad_mask;
+
+    for (size_t ch = 0; ch < 7; ++ch) {
+        header.voltage[ch] = meta->voltage[ch];
+        header.threshold_mv[ch] = meta->threshold_mv[ch];
+        header.threshold_pe[ch] = meta->threshold_pe[ch];
+
+        snprintf(
+            header.hv_channel_state[ch],
+            sizeof(header.hv_channel_state[ch]),
+            "%s",
+            meta->hv_channel_state[ch]
+        );
+
+        snprintf(
+            header.hv_power_state[ch],
+            sizeof(header.hv_power_state[ch]),
+            "%s",
+            meta->hv_power_state[ch]
+        );
+    }
 
     size_t written = fwrite(
         &header,

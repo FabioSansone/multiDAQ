@@ -13,13 +13,21 @@
 
 typedef struct
 {
+    char magic[8];
+
     uint32_t version;
+    uint32_t header_size;
+
     int64_t timestamp_raw;
 
     char timestamp_utc[32];
     char acquisition_mode[16];
     char acquisition_type[32];
     char acq_type_param[32];
+
+    char client_id[32];
+    char multipmt_id[32];
+    char batch_id[32];
 
     int32_t status_reg0;
     int32_t status_reg1;
@@ -32,7 +40,15 @@ typedef struct
     int32_t status_reg39;
 
     char serial_pmt[7][32];
-    char client_id[32];
+    int32_t fixed_bad_mask;
+
+    char run_id[64];
+
+    int32_t voltage[7];
+    int32_t threshold_mv[7];
+    float threshold_pe[7];
+    char hv_channel_state[7][16];
+    char hv_power_state[7][16];
 
 } meta_data_t;
 
