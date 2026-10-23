@@ -19,15 +19,12 @@ class ClientCommandService:
         acquisition_manager,
         monitoring_manager,
         server_state,
-        output_func=None,
     ) -> None:
         self.control_manager = control_manager
         self.acquisition_manager = acquisition_manager
         self.monitoring_manager = monitoring_manager
         
         self.server_state = server_state
-
-        self.poutput = output_func or (lambda message: None)
 
         self.logger = get_logger("client_command_service")
         self.logger.debug("ClientCommandService initialized")
@@ -209,10 +206,6 @@ class ClientCommandService:
                 f"RC read register {address} failed for "
                 f"client {client_name}: {reason}"
             )
-            self.poutput(
-                f"Client {client_name}: no reply while reading "
-                f"RC register {address} ({reason})"
-            )
             return None
 
         payload = reply.payload or {}
@@ -225,13 +218,6 @@ class ClientCommandService:
                 f"RC read register {address} failed for "
                 f"client {client_name}: {error}"
             )
-            self.poutput(
-                f"Client {client_name}: failed to read "
-                f"RC register {address}"
-            )
-
-            if error:
-                self.poutput(f"Client {client_name}: error: {error}")
 
             return None
 
@@ -263,10 +249,6 @@ class ClientCommandService:
                 f"RC write register {address} failed for "
                 f"client {client_name}: {reason}"
             )
-            self.poutput(
-                f"Client {client_name}: no reply while writing "
-                f"RC register {address} ({reason})"
-            )
             return False
 
         payload = reply.payload or {}
@@ -278,13 +260,6 @@ class ClientCommandService:
                 f"RC write register {address} failed for "
                 f"client {client_name}: {error}"
             )
-            self.poutput(
-                f"Client {client_name}: failed to write "
-                f"RC register {address}"
-            )
-
-            if error:
-                self.poutput(f"Client {client_name}: error: {error}")
 
             return False
 
@@ -311,10 +286,6 @@ class ClientCommandService:
                 f"RC set acquisition registers {rc_acq_dict} failed for "
                 f"client {client_name}: {reason}"
             )
-            self.poutput(
-                f"Client {client_name}: no reply while setting acquisition registers "
-                f"RC register {rc_acq_dict} ({reason})"
-            )
             return False
 
         payload = reply.payload or {}
@@ -326,13 +297,6 @@ class ClientCommandService:
                 f"RC set acquisition registers {rc_acq_dict} failed for "
                 f"client {client_name}: {error}"
             )
-            self.poutput(
-                f"Client {client_name}: failed to set acquisition registers "
-                f"RC register {rc_acq_dict}"
-            )
-
-            if error:
-                self.poutput(f"Client {client_name}: error: {error}")
 
             return False
 
@@ -359,7 +323,6 @@ class ClientCommandService:
         
         if reply is None:
             self.logger.error(f"HV get pmt serial map failed for client {client_name}: {reason}")
-            self.poutput(f"Client {client_name}: HV get pmt serial map failed ({reason})")
             return {}
 
         payload = reply.payload or {}
@@ -368,14 +331,13 @@ class ClientCommandService:
 
         if error:
             self.logger.error(f"HV get pmt serial map error from client {client_name}: {error}")
-            self.poutput(f"Client {client_name}: HV get pmt serial map error: {error}")
             return {}
         
         
         serial_map = result.get("serial_map", {})
         
         if not serial_map:
-            self.poutput("  (no channels)")
+            self.logger.warning(f"HV get pmt serial map for client {client_name}: no channels returned")
             return {}
         
         for ch_key in sorted(serial_map.keys(), key=lambda x: int(x)):

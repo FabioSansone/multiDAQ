@@ -75,15 +75,12 @@ class AcquisitionService:
         data_receiver_service,
         command_service,
         mac_identity_registry,
-        output_func=None,
     ) -> None:
 
         self.server_state = server_state
         self.command_service = command_service
         self.data_receiver_service = data_receiver_service
         self.mac_identity_registry = mac_identity_registry
-
-        self.poutput = output_func or (lambda message: None)
 
         self.logger = get_logger("acquisition_service")
         self.logger.debug("Acquisition Service initialized")
@@ -430,14 +427,13 @@ class AcquisitionService:
         if not previous:
             return [], []
 
-        self.poutput(f"Client {client_name}: restoring voltage/threshold on channels {sorted(previous)}.")
+        self.logger.info(f"Client {client_name}: restoring voltage/threshold on channels {sorted(previous)}")
 
         outcome = self.apply_hv_override(client_id=client_id, acq_info=previous)
         restored = sorted(outcome[0]) if outcome is not None else []
         not_restored = sorted(set(previous) - set(restored))
 
         if not_restored:
-            self.poutput(f"Client {client_name}: voltage/threshold NOT restored on channels {not_restored} (see log).")
             self.logger.error(f"Client {client_name}: HV override not restored on channels {not_restored}")
 
         return restored, not_restored
@@ -561,7 +557,7 @@ class AcquisitionService:
         
         if excluded_channels:
             self.server_state.set_calibration_excluded_channels(client_id, excluded_channels)
-            self.poutput(
+            self.logger.warning(
                 f"Client {client_name}: channels excluded from multiPMT configuration "
                 f"(no matching calibration): {sorted(excluded_channels)}"
             )
@@ -1357,7 +1353,7 @@ class AcquisitionService:
                 client_result.error = start_errors.get(client_id)
 
             if not opened_client_ids:
-                self.poutput("No clients ready for acquisition (all OPEN failed).")
+                self.logger.error("No clients ready for acquisition (all OPEN failed)")
                 return AcquisitionSessionResult(clients=client_results)
 
             # La durata parte solo dopo l'abilitazione; se nessun client è partito
@@ -1419,11 +1415,10 @@ class AcquisitionService:
 
 
     def run_hardware_stop_and_flush(self, client_ids: List[bytes], reason: str, reset_trigger_config: bool = True) -> dict[bytes, bool]:
-        self.poutput(f"Finalizing: {reason}")
         self.logger.info(f"Finalizing: {reason}")
 
         if not client_ids:
-            self.poutput("No active clients. Nothing to close.")
+            self.logger.info("No active clients. Nothing to close")
             return {}
 
         results = {client_id: True for client_id in client_ids}
@@ -1432,7 +1427,7 @@ class AcquisitionService:
             if not self._run_client_step("RC19 disable", lambda cid: self.disable_rc_channels(client_ids=[cid]), client_id):
                 results[client_id] = False
 
-        self.poutput("Pushing FIFO flush via register 15...")
+        self.logger.info("Pushing FIFO flush via register 15")
         for client_id, ok in self.flush_clients(client_ids=client_ids).items():
             if not ok:
                 results[client_id] = False
@@ -1442,7 +1437,7 @@ class AcquisitionService:
                 if not self._run_client_step("Trigger reset", lambda cid: self.configure_acquisition_end_client(client_id=cid), client_id):
                     results[client_id] = False
         else:
-            self.poutput("Trigger configuration preserved (multi-step acquisition, not the final point).")
+            self.logger.info("Trigger configuration preserved (multi-step acquisition, not the final point)")
 
         for client_id, ok in self.stop_acq_all_clients(client_ids=client_ids).items():
             if not ok:
@@ -1451,10 +1446,8 @@ class AcquisitionService:
         failed = [client_id for client_id, ok in results.items() if not ok]
 
         if not failed:
-            self.poutput("Finalization completed.")
             self.logger.info("Finalization completed")
         else:
-            self.poutput(f"Finalization completed with errors on {len(failed)} client(s) (see log).")
             self.logger.error(f"Finalization completed with errors: failed clients {failed!r}")
 
         return results
@@ -1749,7 +1742,7 @@ class AcquisitionService:
         ):
             return False
 
-        self.poutput(
+        self.logger.info(
             f"Client {client_name}: "
             "producer and hardware reset confirmed."
         )
@@ -1777,10 +1770,10 @@ class AcquisitionService:
             )
 
             if ok:
-                self.poutput(f"Client {client_name}: RC acquisition channels disabled.")
+                self.logger.info(f"Client {client_name}: RC acquisition channels disabled")
             else:
                 overall_success = False
-                self.poutput(f"Client {client_name}: failed to disable RC acquisition channels.")
+                self.logger.error(f"Client {client_name}: failed to disable RC acquisition channels")
 
         return overall_success
 
@@ -1797,12 +1790,12 @@ class AcquisitionService:
 
         batch_id = configuration_identity.get("batch_id")
         if batch_id:
-            self.poutput(f"Using batch_id from client configuration: {batch_id}")
+            self.logger.info(f"Using batch_id from client configuration: {batch_id}")
             return batch_id
 
         multipmt_id = configuration_identity.get("multipmt_id")
         if multipmt_id:
-            self.poutput(f"No batch_id in client configuration. Using multipmt_id as acquisition folder id: {multipmt_id}")
+            self.logger.info(f"No batch_id in client configuration. Using multipmt_id as acquisition folder id: {multipmt_id}")
             return multipmt_id
 
         return None

@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from typing import List
 
 from server.utils.logger import get_logger
@@ -7,20 +8,26 @@ from server.services.client_command_service import CommandPlane
 
 
 
+@dataclass
+class ChannelSelection:
+    """Channels usable on a client (user numbering 0..6) and what the user should be
+    told about the others. The caller prints the notes: the service only logs."""
+    channels: list[int] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
 class ChannelSelectionService:
-    def __init__(self, command_service, server_state, output_func=None) -> None:
+    def __init__(self, command_service, server_state) -> None:
         self.command_service = command_service
         self.server_state = server_state
-        self.poutput = output_func or (lambda message: None)
         self.logger = get_logger("channel_selection_service")
         self.logger.debug("Channels Selection Service initialized")
 
-    
-    def _warn_user(self, message: str) -> None:
+    def _note(self, notes: list[str], message: str) -> None:
         """A client or channel is being left out of the acquisition: record it in the
-        log and tell the user."""
+        log and keep it for the user."""
         self.logger.warning(message)
-        self.poutput(message)
+        notes.append(message)
 
     @staticmethod
     def parse_user_channels(
@@ -87,7 +94,7 @@ class ChannelSelectionService:
         client_id: bytes,
         requested_channels: str | int | list[int] = "all",
         plane: CommandPlane = CommandPlane.CONTROL
-    ) -> List[int]:
+    ) -> ChannelSelection:
         """
         Return RC channels to enable in test mode.
 
@@ -95,11 +102,12 @@ class ChannelSelectionService:
             - channels requested by the user, in RC numbering 0..6;
             - HV/FEB channels detected as OK.
 
-        If HV synchronization is unavailable, the requested channel selection
-        is used as fallback.
+        If HV synchronization is unavailable on the control plane, the requested
+        channel selection is used as fallback.
         """
 
         client_name = client_id.decode(errors="ignore")
+        notes: list[str] = []
 
         try:
             requested_rc_channels = self.parse_user_channels(
@@ -110,10 +118,8 @@ class ChannelSelectionService:
             self.logger.error(
                 f"Invalid requested channels for client {client_name}: {exc}"
             )
-            self._warn_user(
-                f"Client {client_name}: invalid channel selection: {exc}"
-            )
-            return []
+            self._note(notes, f"Client {client_name}: invalid channel selection: {exc}")
+            return ChannelSelection([], notes)
 
         sync_reply, reason = self.command_service.send_hv_command(
             client_id=client_id,
@@ -129,43 +135,37 @@ class ChannelSelectionService:
                     f"HV sync unavailable in test mode for client {client_name}: "
                     f"{reason}. Using requested RC channels."
                 )
-                return requested_rc_channels
+                return ChannelSelection(requested_rc_channels, notes)
 
             self.logger.error(
                 f"HV sync unavailable on acquisition plane for client "
                 f"{client_name}: {reason}"
             )
-            self._warn_user(
-                f"Client {client_name}: cannot determine safe channels "
-                "for acquisition."
-            )
-            return []
+            self._note(notes, f"Client {client_name}: cannot determine safe channels for acquisition.")
+            return ChannelSelection([], notes)
 
         sync_payload = sync_reply.payload or {}
         sync_result = sync_payload.get("result", {})
         sync_error = sync_payload.get("error")
 
         if sync_error:
-            if plane==CommandPlane.CONTROL:
+            if plane == CommandPlane.CONTROL:
                 self.logger.warning(
                     f"HV sync error in test mode for client {client_name}: "
                     f"{sync_error}. Using requested RC channels."
                 )
-                self.poutput(
-                    f"Client {client_name}: HV sync error; "
-                    f"using requested RC channels: {requested_rc_channels}"
+                self._note(
+                    notes,
+                    f"Client {client_name}: HV sync error; using requested RC channels: {requested_rc_channels}",
                 )
-                return requested_rc_channels
-            
+                return ChannelSelection(requested_rc_channels, notes)
+
             self.logger.error(
                 f"HV sync error on acquisition plane for client "
                 f"{client_name}: {sync_error}"
             )
-            self._warn_user(
-                f"Client {client_name}: cannot determine safe channels "
-                "for acquisition."
-            )
-            return []
+            self._note(notes, f"Client {client_name}: cannot determine safe channels for acquisition.")
+            return ChannelSelection([], notes)
 
         ok_hv_channels = sorted(
             set(sync_result.get("ok_channels", []))
@@ -186,16 +186,10 @@ class ChannelSelectionService:
         available_rc_channels = sorted(set(available_rc_channels) - set(fixed_bad_rc_channels))
 
         if bad_rc_channels:
-            self._warn_user(
-                f"Client {client_name}: BAD HV/FEB channels excluded: "
-                f"{bad_rc_channels}"
-            )
+            self._note(notes, f"Client {client_name}: BAD HV/FEB channels excluded: {bad_rc_channels}")
 
         if fixed_bad_rc_channels:
-            self._warn_user(
-                f"Client {client_name}: FIXED BAD HV/FEB channels excluded: "
-                f"{fixed_bad_rc_channels}"
-            )
+            self._note(notes, f"Client {client_name}: FIXED BAD HV/FEB channels excluded: {fixed_bad_rc_channels}")
 
         final_rc_channels = sorted(
             set(requested_rc_channels) & set(available_rc_channels)
@@ -206,9 +200,9 @@ class ChannelSelectionService:
         )
 
         if excluded_requested_channels:
-            self._warn_user(
-                f"Client {client_name}: requested channels unavailable and excluded: "
-                f"{excluded_requested_channels}"
+            self._note(
+                notes,
+                f"Client {client_name}: requested channels unavailable and excluded: {excluded_requested_channels}",
             )
 
         if not final_rc_channels:
@@ -216,37 +210,26 @@ class ChannelSelectionService:
                 f"No requested OK HV/FEB channels available for client {client_name}. "
                 f"Requested={requested_rc_channels}, available={available_rc_channels}"
             )
-            self._warn_user(
-                f"Client {client_name}: no requested channels are currently available."
-            )
-            return []
+            self._note(notes, f"Client {client_name}: no requested channels are currently available.")
+            return ChannelSelection([], notes)
 
-        self.poutput(
-            f"Client {client_name}: requested RC channels: "
-            f"{requested_rc_channels}"
-        )
-        self.poutput(
-            f"Client {client_name}: available RC channels: "
-            f"{available_rc_channels}"
-        )
-        self.poutput(
-            f"Client {client_name}: final RC channels enabled: "
-            f"{final_rc_channels}"
+        self.logger.info(
+            f"Client {client_name}: requested RC channels {requested_rc_channels}, "
+            f"available {available_rc_channels}, final {final_rc_channels}"
         )
 
-        return final_rc_channels
+        return ChannelSelection(final_rc_channels, notes)
 
-    def prepare_hv_channels_for_acquisition(self, plane: CommandPlane = CommandPlane.ACQUISITION, target_client_ids: list[bytes] | None = None,) -> dict[bytes, List[int]]:
+    def prepare_hv_channels_for_acquisition(self, plane: CommandPlane = CommandPlane.ACQUISITION, target_client_ids: list[bytes] | None = None,) -> dict[bytes, ChannelSelection]:
         """
         Synchronize HV status and switch ON all OK+OFF channels.
 
         If target_client_ids is given, only those clients are prepared:
         clients on the plane that are not targets are left untouched.
 
-        Returns:
-            dict[client_id, list[int]]
-            Channels are returned in external numbering: 0..6.
-            These are the channels that can be passed to RC register 19.
+        Returns one ChannelSelection per client prepared, also when no channel is
+        usable (empty channels, and the notes say why). Channels are in external
+        numbering: 0..6, the ones that can be passed to RC register 19.
         """
 
         if plane == CommandPlane.CONTROL:
@@ -267,15 +250,15 @@ class ChannelSelectionService:
             client_ids = [client_id for client_id in client_ids if client_id in targets]
 
         if not client_ids:
-            self.poutput(
-                f"No clients available on {plane.value} plane."
-            )
+            self.logger.warning(f"No clients available on {plane.value} plane.")
             return {}
 
-        enabled_channels_by_client = {}
+        selection_by_client: dict[bytes, ChannelSelection] = {}
 
         for client_id in client_ids:
             client_name = client_id.decode(errors="ignore")
+            notes: list[str] = []
+            selection_by_client[client_id] = ChannelSelection([], notes)
 
             sync_reply, reason = self.command_service.send_hv_command(
                 client_id=client_id,
@@ -287,7 +270,7 @@ class ChannelSelectionService:
 
             if sync_reply is None:
                 self.logger.error(f"HV sync failed for client {client_name}: {reason}")
-                self._warn_user(f"Client {client_name}: HV sync failed ({reason})")
+                self._note(notes, f"Client {client_name}: HV sync failed ({reason})")
                 continue
 
             sync_payload = sync_reply.payload or {}
@@ -296,7 +279,7 @@ class ChannelSelectionService:
 
             if sync_error:
                 self.logger.error(f"HV sync error from client {client_name}: {sync_error}")
-                self._warn_user(f"Client {client_name}: HV sync error: {sync_error}")
+                self._note(notes, f"Client {client_name}: HV sync error: {sync_error}")
                 continue
 
             ok_channels = set(sync_result.get("ok_channels", []))
@@ -308,21 +291,18 @@ class ChannelSelectionService:
             ok_off_channels = sorted(ok_channels & off_channels)
 
             if bad_channels:
-                self._warn_user(
-                    f"Client {client_name}: BAD HV channels excluded: "
-                    f"{hv_to_user_channels(sorted(bad_channels))}"
-                )
+                self._note(notes, f"Client {client_name}: BAD HV channels excluded: {hv_to_user_channels(sorted(bad_channels))}")
 
             if not ok_channels:
-                self._warn_user(f"Client {client_name}: no OK HV channels available.")
+                self._note(notes, f"Client {client_name}: no OK HV channels available.")
                 continue
 
             if ok_off_channels:
                 user_ok_off_channels = hv_to_user_channels(ok_off_channels)
 
-                self.poutput(
+                self.logger.info(
                     f"Client {client_name}: switching ON HV channels "
-                    f"{user_ok_off_channels} and waiting for UP state..."
+                    f"{user_ok_off_channels} and waiting for UP state"
                 )
 
                 on_reply, reason = self.command_service.send_hv_command(
@@ -337,9 +317,7 @@ class ChannelSelectionService:
                     self.logger.error(
                         f"HV on_and_wait failed for client {client_name}: {reason}"
                     )
-                    self._warn_user(
-                        f"Client {client_name}: HV on_and_wait failed ({reason})"
-                    )
+                    self._note(notes, f"Client {client_name}: HV on_and_wait failed ({reason})")
                     continue
 
                 on_payload = on_reply.payload or {}
@@ -350,9 +328,7 @@ class ChannelSelectionService:
                     self.logger.error(
                         f"HV on_and_wait error from client {client_name}: {on_error}"
                     )
-                    self._warn_user(
-                        f"Client {client_name}: HV on_and_wait error: {on_error}"
-                    )
+                    self._note(notes, f"Client {client_name}: HV on_and_wait error: {on_error}")
 
                 successful_on = set(
                     on_result.get("successful_channels", [])
@@ -364,44 +340,35 @@ class ChannelSelectionService:
                 bad_after_on = set(on_result.get("bad_channels", []))
 
                 if successful_on:
-                    self.poutput(
+                    self.logger.info(
                         f"Client {client_name}: HV channels UP: "
                         f"{hv_to_user_channels(sorted(successful_on))}"
                     )
 
                 if failed_on:
-                    self._warn_user(
-                        f"Client {client_name}: HV channels failed to go UP: "
-                        f"{hv_to_user_channels(sorted(failed_on))}"
+                    self._note(
+                        notes,
+                        f"Client {client_name}: HV channels failed to go UP: {hv_to_user_channels(sorted(failed_on))}",
                     )
 
                 if bad_after_on:
-                    self._warn_user(
-                        f"Client {client_name}: HV channels moved to BAD: "
-                        f"{hv_to_user_channels(sorted(bad_after_on))}"
+                    self._note(
+                        notes,
+                        f"Client {client_name}: HV channels moved to BAD: {hv_to_user_channels(sorted(bad_after_on))}",
                     )
 
                 final_hv_channels = sorted(set(ok_on_channels) | successful_on)
 
             else:
                 final_hv_channels = ok_on_channels
-                self.poutput(
-                    f"Client {client_name}: all usable OK channels already ON."
-                )
+                self.logger.info(f"Client {client_name}: all usable OK channels already ON")
 
             final_user_channels = hv_to_user_channels(final_hv_channels)
 
             if not final_user_channels:
-                self._warn_user(
-                    f"Client {client_name}: no HV channels available for acquisition."
-                )
+                self._note(notes, f"Client {client_name}: no HV channels available for acquisition.")
                 continue
 
-            enabled_channels_by_client[client_id] = final_user_channels
+            selection_by_client[client_id] = ChannelSelection(final_user_channels, notes)
 
-            self.poutput(
-                f"Client {client_name}: HV channels ready for acquisition: "
-                f"{final_user_channels}"
-            )
-
-        return enabled_channels_by_client
+        return selection_by_client

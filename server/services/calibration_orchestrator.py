@@ -51,9 +51,14 @@ class CalibrationOrchestrator:
         for client_id in client_ids:
             client_name = client_id.decode(errors="ignore")
 
-            channels = self.channel_selection_service.get_test_rc_channels(
+            selection = self.channel_selection_service.get_test_rc_channels(
                 client_id=client_id, requested_channels=args.channels, plane=CommandPlane.ACQUISITION
             )
+
+            for note in selection.notes:
+                self.poutput(note)
+
+            channels = selection.channels
 
             if not channels:
                 self.poutput(f"Client {client_name}: no requested channels available for this scan.")

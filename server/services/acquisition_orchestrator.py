@@ -115,15 +115,17 @@ class AcquisitionOrchestrator:
             )
 
             for client_id in active_clients:
-                channels = self.channel_selection_service.get_test_rc_channels(
+                selection = self.channel_selection_service.get_test_rc_channels(
                     client_id=client_id, plane=CommandPlane.ACQUISITION
                 )
 
-                if not channels:
+                self._print_notes(selection.notes)
+
+                if not selection.channels:
                     self._drop_client(client_id, "channel selection", "no channels available")
                     continue
 
-                channels_by_client[client_id] = channels
+                channels_by_client[client_id] = selection.channels
 
         elif active_clients:
             enabled_channels_by_client = self.channel_selection_service.prepare_hv_channels_for_acquisition(
@@ -131,13 +133,23 @@ class AcquisitionOrchestrator:
             )
 
             for client_id in active_clients:
-                channels = enabled_channels_by_client.get(client_id, [])
+                selection = enabled_channels_by_client.get(client_id)
 
-                if not channels:
+                if selection is None:
+                    self._drop_client(client_id, "HV preparation", "client not prepared")
+                    continue
+
+                self._print_notes(selection.notes)
+
+                if not selection.channels:
                     self._drop_client(client_id, "HV preparation", "no HV channels available")
                     continue
 
-                channels_by_client[client_id] = channels
+                self.poutput(
+                    f"Client {client_id.decode(errors='ignore')}: HV channels ready for acquisition: "
+                    f"{selection.channels}"
+                )
+                channels_by_client[client_id] = selection.channels
 
         # Step 3 (multipmt): channels without a matching calibration.
         if mode == "multipmt":
@@ -273,6 +285,8 @@ class AcquisitionOrchestrator:
             self._restore_hv_overrides(hv_previous)
             return
 
+        self.poutput(f"Acquisition folder id: {resolved_batch_id}")
+
         started_acq = self.server_state.process_event(
             event=ServerFSMEvent.ACQUISITION_STARTED,
             reason="Acquisition started",
@@ -312,6 +326,11 @@ class AcquisitionOrchestrator:
             "use 'acquisition stop' to stop it."
         )
 
+    def _print_notes(self, notes: list[str]) -> None:
+        """Tell the user what a service left out (the service only logs it)."""
+        for note in notes:
+            self.poutput(note)
+
     def _drop_client(self, client_id: bytes, step: str, reason: str) -> None:
         message = f"Client {client_id.decode(errors='ignore')}: removed from the acquisition at step '{step}': {reason}."
         self.logger.warning(message)
@@ -342,7 +361,14 @@ class AcquisitionOrchestrator:
                 continue
 
             previous = hv_previous.pop(client_id)
-            restored, _ = self.acquisition_service.restore_hv_override(client_id=client_id, previous=previous)
+            client_name = client_id.decode(errors="ignore")
+
+            self.poutput(f"Client {client_name}: restoring voltage/threshold on channels {sorted(previous)}.")
+
+            restored, not_restored = self.acquisition_service.restore_hv_override(client_id=client_id, previous=previous)
+
+            if not_restored:
+                self.poutput(f"Client {client_name}: voltage/threshold NOT restored on channels {not_restored} (see log).")
 
             if previous and not restored:
                 unrestored.append(client_id)
@@ -350,6 +376,7 @@ class AcquisitionOrchestrator:
         return unrestored
 
     def _on_duration_elapsed(self) -> None:
+        self.poutput("Acquisition duration elapsed: finalizing.")
         self.server_state.process_event(
             event=ServerFSMEvent.RECEIVER_COMPLETED,
             reason="Acquisition duration elapsed",
@@ -374,6 +401,9 @@ class AcquisitionOrchestrator:
                 on_duration_elapsed=self._on_duration_elapsed,
             )
             success = result.success
+
+            if success:
+                self.poutput("Acquisition finalized.")
 
             for client_id in result.failed_clients:
                 client_name = client_id.decode(errors="ignore")

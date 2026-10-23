@@ -41,6 +41,13 @@ class StartupService:
                 )
                 self.logger.error(f"Cannot build multipmt configuration for client {client_name}")
                 return False
+
+            excluded_channels = self.server_state.get_calibration_excluded_channels(client_id)
+            if excluded_channels:
+                self.poutput(
+                    f"Client {client_name}: channels excluded from multiPMT configuration "
+                    f"(no matching calibration): {sorted(excluded_channels)}"
+                )
             
         elif mode == "calibration":
             acq_info = {ch: {"voltage": 1200, "threshold": 400} for ch in range(7)}

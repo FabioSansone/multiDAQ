@@ -61,13 +61,11 @@ class Server(cmd2.Cmd):
             acquisition_manager=self.acq_manager,
             monitoring_manager=self.mon_manager,
             server_state=self.server_state,
-            output_func=self.poutput,
         )
 
         self.channel_selection_service = ChannelSelectionService(
             command_service=self.client_command_service,
             server_state=self.server_state,
-            output_func=self.poutput,
         )
         
 
@@ -76,7 +74,6 @@ class Server(cmd2.Cmd):
             data_receiver_service=self.data_receiver_service,
             command_service=self.client_command_service,
             mac_identity_registry=self.mac_identity_registry,
-            output_func=self.poutput,
         )
         
         self.monitoring_service = MonitoringService(
