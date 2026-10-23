@@ -2,7 +2,6 @@ import argparse
 import cmd2
 from server.utils.logger import get_logger
 from server.utils.channels import *
-from common.message_handler import Channel
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
 from server.utils.json_parser import JsonParser
 from server.commands.hv_commands import _print_hv_lists
@@ -347,18 +346,10 @@ def do_force(self, args: argparse.Namespace) -> bool:
         failed_client_ids: list[bytes] = []
 
         for client_id in client_ids:
-            hv_sync_command = self.control_manager.message_handler.create_command(
-                channel=Channel.HV,
+            reply, reason = self.client_command_service.send_hv_command(
+                client_id=client_id,
                 command="set_hv_sync",
                 payload={"channels": "all"},
-                sender="server",
-            )
-
-            self.control_manager.queue_message(client_id, hv_sync_command)
-
-            reply, reason = self.control_manager.wait_for_reply(
-                client_id=client_id,
-                in_reply_to=hv_sync_command.request_id,
                 timeout_s=90.0,
             )
 

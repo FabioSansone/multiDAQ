@@ -2,7 +2,6 @@ import argparse
 import cmd2
 
 from server.utils.logger import get_logger
-from common.message_handler import Channel
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
 
 
@@ -126,18 +125,10 @@ def do_rc(self, args: argparse.Namespace) -> None:
         timeout_s = 35.0
 
     for client_id in client_ids:
-        rc_command = self.control_manager.message_handler.create_command(
-            channel=Channel.RC,
+        reply, reason = self.client_command_service.send_rc_command(
+            client_id=client_id,
             command=command,
             payload=payload,
-            sender="server",
-        )
-
-        self.control_manager.queue_message(client_id, rc_command)
-
-        reply, reason = self.control_manager.wait_for_reply(
-            client_id=client_id,
-            in_reply_to=rc_command.request_id,
             timeout_s=timeout_s,
         )
 

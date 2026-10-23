@@ -2,7 +2,6 @@ import argparse
 import cmd2
 from typing import List
 from server.utils.logger import get_logger
-from common.message_handler import Channel
 from server.core.server_state import command_guard, ServerFSM
 from server.utils.channels import hv_to_user_channels, normalize_user_channels
 
@@ -425,18 +424,10 @@ def do_hv(self, args: argparse.Namespace) -> None:
 
 
     for client_id in target_client_ids:
-        hv_command = self.control_manager.message_handler.create_command(
-            channel=Channel.HV,
+        reply, reason = self.client_command_service.send_hv_command(
+            client_id=client_id,
             command=command,
             payload=payload,
-            sender="server",
-        )
-
-        self.control_manager.queue_message(client_id, hv_command)
-
-        reply, reason = self.control_manager.wait_for_reply(
-            client_id=client_id,
-            in_reply_to=hv_command.request_id,
             timeout_s=timeout_s,
         )
 

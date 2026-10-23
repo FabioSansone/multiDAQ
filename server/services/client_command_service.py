@@ -144,6 +144,20 @@ class ClientCommandService:
             client_id=client_id, message=rc_command, plane=normalized_plane, timeout_s=timeout_s,
         )
         
+    def send_acq_mode_sync_command(self, client_id, payload,
+                                   plane=CommandPlane.CONTROL, timeout_s=90.0, priority: int | None = None):
+        """Ask the client to align its hardware to the acquisition mode (set_acq_mode_sync)."""
+        normalized_plane = self._normalize_plane(plane)
+        if normalized_plane is None:
+            return None, "invalid command plane"
+
+        mode_sync_command = self._create_command(
+            plane=normalized_plane, channel=Channel.ACQUISITION, command="set_acq_mode_sync", payload=payload, priority=priority,
+        )
+        return self._send_command_and_wait_reply(
+            client_id=client_id, message=mode_sync_command, plane=normalized_plane, timeout_s=timeout_s,
+        )
+
     def send_main_command(
         self,
         client_id,

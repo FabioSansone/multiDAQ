@@ -1,6 +1,5 @@
 from server.utils.logger import get_logger
 from server.core.server_state import ServerFSMEvent
-from common.message_handler import Channel
 from server.utils.channels import hv_to_user_channels
 
 
@@ -14,8 +13,8 @@ class StartupService:
     explicit successful/failed outcome before the batch is considered closed.
     """
 
-    def __init__(self, control_manager, server_state, acquisition_service, output_func=None) -> None:
-        self.control_manager = control_manager
+    def __init__(self, command_service, server_state, acquisition_service, output_func=None) -> None:
+        self.command_service = command_service
         self.server_state = server_state
         self.acquisition_service = acquisition_service
         self.poutput = output_func or (lambda message: None)
@@ -51,23 +50,14 @@ class StartupService:
             self.poutput(f"Client {client_name}: cannot resolve detector fixed bad channels")
             return False
           
-        mode_sync_command = self.control_manager.message_handler.create_command(
-            channel=Channel.ACQUISITION,
-            command="set_acq_mode_sync",
+        reply, reason = self.command_service.send_acq_mode_sync_command(
+            client_id=client_id,
             payload={
                 "acq_mode": mode,
                 "pe_thr": pe_thr,
                 "acquisition_configuration": acq_info,
                 "fixed_bad_channels": fixed_bad_channels,
             },
-            sender="server",
-        )
-
-        self.control_manager.queue_message(client_id, mode_sync_command)
-
-        reply, reason = self.control_manager.wait_for_reply(
-            client_id=client_id,
-            in_reply_to=mode_sync_command.request_id,
             timeout_s=90.0,
         )
 

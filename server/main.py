@@ -175,7 +175,7 @@ class Server(cmd2.Cmd):
         
         
         self.startup_service = StartupService(
-            control_manager=self.control_manager,
+            command_service=self.client_command_service,
             server_state=self.server_state,
             acquisition_service=self.acquisition_service,
             output_func=self.poutput,
