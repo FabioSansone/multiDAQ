@@ -9,6 +9,8 @@ from client.acquisition.acquisition_service import AcquisitionService
 from client.core.monitor_sample_service import MonitorSampleService
 from client.hardware.feb.feb_service import FEBService
 from common.message_handler import MessageStatus, Channel
+from client.utils.channels import channels_definition
+from client.hardware.rc.rc_interface import RC_HARDWARE_SNAPSHOT
 
 import queue
 import time
@@ -461,6 +463,168 @@ class ClientRunTime:
                 "reason": reason,
             },
         )
-            
-            
-            
+
+
+    def get_multipmt_configuration(self, channels: list[int] | str = "all", *, rc_flag: bool = False, hv_flag: bool = False, power_flag: bool = False, serial_flag: bool = False) -> dict:
+        """Hardware values the file header needs, read in one place.
+
+        channels: user numbering (0..6) or "all". The result is keyed by user channel.
+        - rc_flag: the RC acquisition registers;
+        - hv_flag: voltage and threshold set on each channel;
+        - power_flag: state of each channel (ok/bad/...) and whether it is on or off.
+          Both come from the channel lists the HV service keeps, no wait on the hardware;
+        - serial_flag: the PMT serial of each channel ("0" if missing or unreadable).
+
+        A section that cannot be read is reported in "errors" and left empty or None:
+        it does not raise, and one section failing does not stop the others.
+        "success" is True only if every requested section was read for every channel."""
+
+        hv_channels = channels_definition(channels=channels, hv_channels=True)
+
+        snapshot = {
+            "success": True,
+            "registers": {},
+            "hv_parameters": {},
+            "channel_state": {},
+            "power_state": {},
+            "serials": {},
+            "errors": {},
+        }
+
+        if rc_flag:
+            rc_error = None
+
+            rc_response = self.rc_service._submit_command(
+                command="rc_read_acq_registers",
+                payload={"rc_acq_registers": RC_HARDWARE_SNAPSHOT},
+                sender="client_runtime_multipmt_configuration",
+            )
+
+            if rc_response.status != MessageStatus.OK:
+                rc_error = rc_response.error
+            else:
+                values = (rc_response.result or {}).get("value", {})
+                snapshot["registers"] = {int(address): value for address, value in values.items()}
+
+                unread_registers = sorted(address for address, value in snapshot["registers"].items() if value is None)
+                if unread_registers:
+                    rc_error = f"registers not read: {unread_registers}"
+
+            if rc_error is not None:
+                snapshot["success"] = False
+                snapshot["errors"]["rc"] = str(rc_error)
+                self.logger.error(f"Failed to read RC registers for the run snapshot: {rc_error}")
+
+        if hv_flag:
+            hv_error = None
+
+            if self.hv_service is None:
+                hv_error = "HVService unavailable"
+            else:
+                hv_response = self.hv_service._submit_command(
+                    command="get_volt_thr_channels",
+                    payload={"channels": hv_channels},
+                    sender="client_runtime_multipmt_configuration",
+                )
+
+                # One failing channel makes the response an error, but the others were read.
+                configuration = (hv_response.result or {}).get("volt_thr_configuration", {})
+
+                for hv_channel in hv_channels:
+                    values = configuration.get(hv_channel) or {}
+                    snapshot["hv_parameters"][hv_channel - 1] = {
+                        "voltage": values.get("voltage"),
+                        "threshold": values.get("threshold"),
+                    }
+
+                unread_channels = [
+                    channel for channel, values in snapshot["hv_parameters"].items()
+                    if values["voltage"] is None or values["threshold"] is None
+                ]
+
+                if hv_response.status != MessageStatus.OK:
+                    hv_error = hv_response.error
+                elif unread_channels:
+                    hv_error = f"channels not read: {unread_channels}"
+
+            if hv_error is not None:
+                snapshot["success"] = False
+                snapshot["errors"]["hv"] = str(hv_error)
+                self.logger.error(f"Failed to read HV voltage/threshold for the run snapshot: {hv_error}")
+
+        if power_flag:
+            power_error = None
+
+            if self.hv_service is None:
+                power_error = "HVService unavailable"
+            else:
+                lists_response = self.hv_service._submit_command(
+                    command="hv_channel_lists",
+                    payload={},
+                    sender="client_runtime_multipmt_configuration",
+                )
+
+                if lists_response.status != MessageStatus.OK:
+                    power_error = lists_response.error
+                else:
+                    lists = lists_response.result or {}
+                    ok_channels = set(lists.get("ok_channels", []))
+                    on_channels = set(lists.get("on_channels", []))
+                    off_channels = set(lists.get("off_channels", []))
+                    bad_channels = set(lists.get("bad_channels", []))
+                    fixed_bad_channels = set(lists.get("fixed_bad_channels", []))
+                    missing_serial_channels = set(lists.get("missing_serial_channels", []))
+
+                    for hv_channel in hv_channels:
+                        if hv_channel in fixed_bad_channels:
+                            channel_state = "fixed_bad"
+                        elif hv_channel in missing_serial_channels:
+                            channel_state = "missing_serial"
+                        elif hv_channel in bad_channels:
+                            channel_state = "bad"
+                        elif hv_channel in ok_channels:
+                            channel_state = "ok"
+                        else:
+                            channel_state = "unknown"
+
+                        if channel_state == "ok" and hv_channel in on_channels:
+                            power_state = "on"
+                        elif channel_state == "ok" and hv_channel in off_channels:
+                            power_state = "off"
+                        else:
+                            power_state = "unknown"
+
+                        snapshot["channel_state"][hv_channel - 1] = channel_state
+                        snapshot["power_state"][hv_channel - 1] = power_state
+
+            if power_error is not None:
+                snapshot["success"] = False
+                snapshot["errors"]["power"] = str(power_error)
+                self.logger.error(f"Failed to read HV channel states for the run snapshot: {power_error}")
+
+        if serial_flag:
+            serial_error = None
+
+            if self.hv_service is None:
+                serial_error = "HVService unavailable"
+            else:
+                serial_response = self.hv_service._submit_command(
+                    command="get_serial_map",
+                    payload={"channels": hv_channels},
+                    sender="client_runtime_multipmt_configuration",
+                )
+
+                if serial_response.status != MessageStatus.OK:
+                    serial_error = serial_response.error
+                else:
+                    serial_map = (serial_response.result or {}).get("serial_map", {})
+
+                    for hv_channel in hv_channels:
+                        snapshot["serials"][hv_channel - 1] = serial_map.get(hv_channel, "0")
+
+            if serial_error is not None:
+                snapshot["success"] = False
+                snapshot["errors"]["serial"] = str(serial_error)
+                self.logger.error(f"Failed to read PMT serials for the run snapshot: {serial_error}")
+
+        return snapshot

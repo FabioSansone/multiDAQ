@@ -10,6 +10,7 @@ COMMAND_MAP = {
     #System Handlers
     "server_shutdown": handle_server_shutdown,
     'set_acq_mode_sync': handle_set_acq_mode_sync,
+    "get_multipmt_configuration": handle_get_multipmt_configuration,
     
     #HV Handlers
     "hv_on": handle_hv_on,

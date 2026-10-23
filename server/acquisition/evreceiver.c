@@ -44,7 +44,8 @@
 #define N_WORKERS 8 //Number of parallel workers for processing the data
 #define  NUM_BUCKETS_PER_WORKER 64 //The number of linked lists in each table for each worker node
 
-#define FILE_HEADER_SIZE 512
+#define FILE_HEADER_SIZE 2048 
+#define MAXIMUM_HEADER_SIZE 3000
 
 #define MAX_FILE_SIZE_BYTES (UINT64_C(10) * 1024 * 1024 * 1024)
 
@@ -95,6 +96,10 @@ typedef struct __attribute__((packed))
     char acquisition_type[32];
     char acq_type_param[32];
 
+    char client_id[32];
+    char multipmt_id[32];
+    char batch_id[32];
+
     int32_t status_reg0;
     int32_t status_reg1;
     int32_t status_reg10;
@@ -107,15 +112,16 @@ typedef struct __attribute__((packed))
 
     char serial_pmt[7][32];
 
-    char client_id[32];
+    char run_id[64];
+    char software_version[16];
 
-    uint8_t reserved[84];
+    uint8_t reserved[420];
 
 } file_header_t;
 
 _Static_assert(
     sizeof(file_header_t) == FILE_HEADER_SIZE,
-    "file_header_t must be exactly 512 bytes"
+    "file_header_t must be exactly 2048 bytes"
 );
 
 
@@ -975,8 +981,10 @@ void *control_listener(void *args){
         char id_str[MAX_SOURCE_ID_LEN] = {0};
         char path[256] = {0};
         char format_file_str[8] = {0};
-        char metadata[512] = {0};
+        char metadata[MAXIMUM_HEADER_SIZE] = {0};
         char buffer[1024];
+        int truncated = 0;
+        
 
         zmq_pollitem_t poll_items[] = { { cl_socket, 0, ZMQ_POLLIN, 0 } };
         if (zmq_poll(poll_items, 1, 500) <= 0)
@@ -1006,8 +1014,9 @@ void *control_listener(void *args){
             else if (frame_idx == 2) { dest = path;             dest_cap = sizeof(path); }
             else if (frame_idx == 3) { dest = format_file_str;  dest_cap = sizeof(format_file_str); }
             else if (frame_idx == 4) { dest = metadata;         dest_cap = sizeof(metadata); }
-
+            
             if (dest != NULL) {
+                if (frame_size > dest_cap - 1) truncated = 1;
                 size_t len = (frame_size < dest_cap - 1) ? frame_size : dest_cap - 1;
                 memcpy(dest, frame_data, len);
                 dest[len] = '\0';
@@ -1023,7 +1032,9 @@ void *control_listener(void *args){
 
         const char *reply_msg = NULL;
 
-        if ((strcmp(command, "OPEN") == 0 || strcmp(command, "OPEN_READY") == 0) && n_matched < 3) {
+        if (truncated){
+            reply_msg = "ERROR: frame too long";
+        } else if ((strcmp(command, "OPEN") == 0 || strcmp(command, "OPEN_READY") == 0) && n_matched < 3) {
             reply_msg = "ERROR: OPEN parsing failed";
         }else if (strcmp(command, "CLOSE_READY") == 0 && (n_matched != 2 || id_str[0] == '\0')) {
             reply_msg = "ERROR: CLOSE_READY parsing failed";

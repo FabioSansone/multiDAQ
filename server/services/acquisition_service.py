@@ -118,44 +118,73 @@ class AcquisitionService:
         
         return result
     
-    def _convert_pe_map_to_mv(self, client_id: bytes, pe_by_channel: dict[int, float]) -> tuple[dict[int, float], dict[int, str]]:
-        """Convert thresholds from p.e. to mV, channel by channel.
+    def _load_calibration_by_channel(self, client_id: bytes, serial_by_channel: dict[int, str]) -> tuple[dict[int, tuple[float, float, float]], str | None]:
+        """Threshold calibration of each physical channel: {channel: (m, q, pe_adc)}.
 
-        Returns (threshold_mv_by_channel, excluded). A channel without calibration
-        data goes into `excluded` with the reason; the other channels are converted."""
-
-        def all_excluded(reason: str) -> tuple[dict[int, float], dict[int, str]]:
-            self.logger.error(f"Cannot resolve PE calibration for client {client_id!r}: {reason}")
-            return {}, {ch: reason for ch in pe_by_channel}
+        The calibration in the JSON is indexed by analysis channel: it is matched to the
+        physical channel through the PMT serial. A channel without a matching calibration
+        is not in the result. The second value is the reason when no calibration can be
+        read at all (then the first is empty)."""
 
         configuration_identity = self.server_state.get_configuration_identity(client_id)
 
         if configuration_identity is None:
-            return all_excluded("no configuration identity")
+            return {}, "no configuration identity"
 
         multipmt_id = configuration_identity.get("multipmt_id")
         batch_id = configuration_identity.get("batch_id")
 
         if not multipmt_id or not batch_id:
-            return all_excluded("incomplete configuration identity")
+            return {}, "incomplete configuration identity"
 
         parser = JsonParser(multipmt_id=multipmt_id, batch_id=batch_id)
         thr_fit_parameters = parser.load_threshold_parameters()
         pe_reference = parser.load_pe_data()
+        json_serial_by_channel = parser.get_json_serial_channel_map()
 
-        if thr_fit_parameters is None or pe_reference is None:
-            return all_excluded("PE calibration data not available")
+        if thr_fit_parameters is None or pe_reference is None or json_serial_by_channel is None:
+            return {}, "calibration data not available"
+
+        analysis_channel_by_serial = {
+            serial: analysis_ch for analysis_ch, serial in json_serial_by_channel.items()
+            if serial and serial != "0"
+        }
+
+        calibration_by_channel = {}
+
+        for real_ch, serial in serial_by_channel.items():
+            analysis_ch = analysis_channel_by_serial.get(serial)
+
+            if analysis_ch is None or analysis_ch not in thr_fit_parameters or analysis_ch not in pe_reference:
+                continue
+
+            m_ch, q_ch = thr_fit_parameters[analysis_ch]
+            calibration_by_channel[real_ch] = (m_ch, q_ch, pe_reference[analysis_ch])
+
+        return calibration_by_channel, None
+
+    def _convert_pe_map_to_mv(self, client_id: bytes, pe_by_channel: dict[int, float], serial_by_channel: dict[int, str]) -> tuple[dict[int, float], dict[int, str]]:
+        """Convert thresholds from p.e. to mV, channel by channel (calibration matched
+        to the channel through the PMT serial).
+
+        Returns (threshold_mv_by_channel, excluded). A channel without calibration data
+        goes into `excluded` with the reason; the other channels are converted."""
+
+        calibration_by_channel, error = self._load_calibration_by_channel(client_id, serial_by_channel)
+
+        if error is not None:
+            self.logger.error(f"Cannot resolve PE calibration for client {client_id!r}: {error}")
+            return {}, {ch: error for ch in pe_by_channel}
 
         threshold_mv_by_channel = {}
         excluded = {}
 
         for ch, pe_value in pe_by_channel.items():
-            if ch not in thr_fit_parameters or ch not in pe_reference:
-                excluded[ch] = "no PE calibration data for the channel"
+            if ch not in calibration_by_channel:
+                excluded[ch] = "no PE calibration matching the PMT serial of the channel"
                 continue
 
-            m_ch, q_ch = thr_fit_parameters[ch]
-            pe_adc = pe_reference[ch]
+            m_ch, q_ch, pe_adc = calibration_by_channel[ch]
 
             if m_ch == 0:
                 excluded[ch] = "invalid threshold fit (m=0)"
@@ -166,6 +195,35 @@ class AcquisitionService:
 
         return threshold_mv_by_channel, excluded
 
+    def _convert_mv_map_to_pe(self, client_id: bytes, threshold_mv_by_channel: dict[int, float], serial_by_channel: dict[int, str]) -> dict[int, float]:
+        """Convert thresholds from mV to p.e. (inverse of _convert_pe_map_to_mv).
+
+        A channel without a matching calibration, excluded for calibration, or without
+        a threshold, is not in the result."""
+
+        client_name = client_id.decode(errors="ignore")
+
+        calibration_by_channel, error = self._load_calibration_by_channel(client_id, serial_by_channel)
+
+        if error is not None:
+            self.logger.warning(f"Client {client_name}: threshold in p.e. not computed, {error}")
+            return {}
+
+        excluded_channels = set(self.server_state.get_calibration_excluded_channels(client_id))
+        threshold_pe_by_channel = {}
+
+        for ch, threshold_mv in threshold_mv_by_channel.items():
+            if ch in excluded_channels or threshold_mv is None or ch not in calibration_by_channel:
+                continue
+
+            m_ch, q_ch, pe_adc = calibration_by_channel[ch]
+
+            if pe_adc == 0:
+                continue
+
+            threshold_pe_by_channel[ch] = (m_ch * threshold_mv + q_ch) / pe_adc
+
+        return threshold_pe_by_channel
 
     def resolve_hv_overrides(self, client_id: bytes, args) -> tuple[dict[int, dict] | None, dict[int, str], str | None]:
         """Build the voltage/threshold to apply, from the command-line overrides.
@@ -195,6 +253,14 @@ class AcquisitionService:
         excluded: dict[int, str] = {}
         threshold_by_channel: dict[int, float] = {}
 
+        # The PE calibration is matched to the channels through the PMT serials.
+        serial_by_channel: dict[int, str] = {}
+
+        if threshold_mv_map_raw is None and (threshold_pe_map_raw is not None or threshold_pe is not None):
+            serial_by_channel = self.command_service.get_pmt_serial_map_clients(
+                client_id, "all", plane=CommandPlane.ACQUISITION,
+            ) or {}
+
         if threshold_mv_map_raw is not None:
             parsed = self._parse_channel_value_map(threshold_mv_map_raw, float)
             if parsed is None:
@@ -205,12 +271,15 @@ class AcquisitionService:
             parsed = self._parse_channel_value_map(threshold_pe_map_raw, float)
             if parsed is None:
                 return None, {}, f"Invalid --threshold-pe-map format for client {client_name}"
-            threshold_by_channel, excluded_pe = self._convert_pe_map_to_mv(client_id=client_id, pe_by_channel=parsed)
+            threshold_by_channel, excluded_pe = self._convert_pe_map_to_mv(
+                client_id=client_id, pe_by_channel=parsed, serial_by_channel=serial_by_channel,
+            )
             excluded.update(excluded_pe)
 
         elif threshold_pe is not None:
             threshold_by_channel, excluded_pe = self._convert_pe_map_to_mv(
                 client_id=client_id, pe_by_channel={ch: threshold_pe for ch in range(N_CHANNELS)},
+                serial_by_channel=serial_by_channel,
             )
             excluded.update(excluded_pe)
 
@@ -1270,6 +1339,7 @@ class AcquisitionService:
                 acq_mode=self.server_state.get_mode(),
                 acq_type=acq_type,
                 acq_type_param=acq_type_param,
+                run_id=run_id,
             )
 
             opened_client_ids, acquiring_client_ids, start_errors = self._open_and_start_prepared_clients(
@@ -1421,6 +1491,7 @@ class AcquisitionService:
         acq_mode: str,
         acq_type: str,
         acq_type_param=None,
+        run_id=None,
     ) -> dict[bytes, dict]:
 
         start_timestamp = int(time.time())
@@ -1435,20 +1506,45 @@ class AcquisitionService:
 
         for client_id in client_ids:
             client_name = client_id.decode(errors="ignore")
+            multipmt_configuration = self.command_service.get_multipmt_hardware_configuration(
+                client_id=client_id,
+                requested_channels="all",
+                rc_flag=True,
+                hv_flag=True,
+                power_flag=True,
+                serial_flag=True,
+                plane=CommandPlane.ACQUISITION
+            )
 
-            register_values = self._read_client_acq_registers(client_id)
-
-            serial_map_client = (
-                self.command_service.get_pmt_serial_map_clients(
-                    client_id,
-                    "all",
-                    plane=CommandPlane.ACQUISITION
+            if not multipmt_configuration.get("success", False):
+                self.logger.error(
+                    f"Error reading the hardware configuration of client {client_name}: "
+                    f"{multipmt_configuration.get('errors')}. The header is written anyway, "
+                    "with the values not read marked as unknown."
                 )
-                or {}
+
+            register_values = multipmt_configuration.get("registers") or {}
+            serial_map_client = multipmt_configuration.get("serials") or {}
+            hv_parameters = multipmt_configuration.get("hv_parameters") or {}
+            channel_states = multipmt_configuration.get("channel_state") or {}
+            power_states = multipmt_configuration.get("power_state") or {}
+
+            configuration_identity = self.server_state.get_configuration_identity(client_id) or {}
+
+            fixed_bad_channels = self.get_detector_fixed_bad_channels(client_id)
+
+            threshold_mv_by_channel = {
+                ch: hv_parameters.get(ch, {}).get("threshold") for ch in range(N_CHANNELS)
+            }
+
+            threshold_pe_by_channel = self._convert_mv_map_to_pe(
+                client_id=client_id,
+                threshold_mv_by_channel=threshold_mv_by_channel,
+                serial_by_channel=serial_map_client,
             )
 
             metadata = {
-                "version": 1,
+                "version": 2,
                 "timestamp_raw": start_timestamp,
                 "timestamp_utc": start_timestamp_utc,
                 "acquisition_mode": acq_mode,
@@ -1459,6 +1555,15 @@ class AcquisitionService:
                     else ""
                 ),
                 "client_id": client_name,
+                "multipmt_id": configuration_identity.get("multipmt_id") or "",
+                "batch_id": configuration_identity.get("batch_id") or "",
+                "run_id": run_id if run_id is not None else "",
+                # Bit i set = channel i is fixed bad in the detector JSON; -1 if not known.
+                "fixed_bad_mask": (
+                    sum(1 << ch for ch in fixed_bad_channels)
+                    if fixed_bad_channels is not None
+                    else -1
+                ),
             }
 
             for address in ACQ_REGISTER_ADDRESSES:
@@ -1468,10 +1573,27 @@ class AcquisitionService:
                     value if value is not None else -1
                 )
 
-            for ch in range(7):
+            for ch in range(N_CHANNELS):
                 metadata[f"serial_pmt{ch}"] = (
                     serial_map_client.get(ch, "")
                 )
+
+                hv = hv_parameters.get(ch, {})
+
+                metadata[f"voltage_ch{ch}"] = (
+                    hv.get("voltage") if hv.get("voltage") is not None else -1
+                )
+
+                metadata[f"threshold_mv_ch{ch}"] = (
+                    hv.get("threshold") if hv.get("threshold") is not None else -1
+                )
+
+                metadata[f"threshold_pe_ch{ch}"] = (
+                    round(threshold_pe_by_channel[ch], 4) if ch in threshold_pe_by_channel else -1
+                )
+
+                metadata[f"hv_channel_state_ch{ch}"] = channel_states.get(ch, "unknown")
+                metadata[f"hv_power_state_ch{ch}"] = power_states.get(ch, "unknown")
 
             metadata_by_client[client_id] = metadata
 

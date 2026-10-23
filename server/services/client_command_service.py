@@ -610,3 +610,99 @@ class ClientCommandService:
             plane=plane,
             timeout_s=timeout_s,
         )
+
+
+    @staticmethod
+    def _int_keys(values: dict | None) -> dict:
+        return {int(key): value for key, value in (values or {}).items()}
+
+    def get_multipmt_hardware_configuration(self, client_id: bytes, requested_channels: str | int | list[int] = "all", rc_flag: bool = False, hv_flag: bool = False, power_flag: bool = False, serial_flag: bool = False, plane=CommandPlane.CONTROL, priority: int | None = None, timeout_s: float = 60.0) -> dict:
+        client_name = client_id.decode(errors="ignore")
+
+        configuration = {
+            "success": False,
+            "registers": {},
+            "hv_parameters": {},
+            "channel_state": {},
+            "power_state": {},
+            "serials": {},
+            "errors": {},
+        }
+
+        normalized_plane = self._normalize_plane(plane)
+        if normalized_plane is None:
+            configuration["errors"]["command"] = "invalid command plane"
+            return configuration
+
+        try:
+            requested_channels = normalize_user_channels(requested_channels)
+        except (TypeError, ValueError) as exc:
+            self.logger.error(f"Hardware configuration not requested to {client_name}: {exc}")
+            configuration["errors"]["command"] = f"invalid channels: {exc}"
+            return configuration
+
+        configuration_command = self._create_command(
+            plane=normalized_plane,
+            channel=Channel.SYSTEM,
+            command="get_multipmt_configuration",
+            payload={
+                "channels": requested_channels,
+                "rc": rc_flag,
+                "hv": hv_flag,
+                "power": power_flag,
+                "serial": serial_flag,
+            },
+            priority=priority,
+        )
+
+        reply, reason = self._send_command_and_wait_reply(
+            client_id=client_id,
+            message=configuration_command,
+            plane=normalized_plane,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(f"Hardware configuration read failed for client {client_name}: {reason}")
+            configuration["errors"]["command"] = reason
+            return configuration
+
+        payload = reply.payload or {}
+        result = payload.get("result") or {}
+
+        # Even when a section failed, the client sends the ones it could read.
+        try:
+            if rc_flag:
+                configuration["registers"] = self._int_keys(result.get("registers"))
+
+            if hv_flag:
+                configuration["hv_parameters"] = self._int_keys(result.get("hv_parameters"))
+
+            if power_flag:
+                configuration["channel_state"] = self._int_keys(result.get("channel_state"))
+                configuration["power_state"] = self._int_keys(result.get("power_state"))
+
+            if serial_flag:
+                configuration["serials"] = self._int_keys(result.get("serials"))
+
+        except (TypeError, ValueError) as exc:
+            self.logger.error(f"Malformed hardware configuration from client {client_name}: {exc}")
+            configuration["registers"] = {}
+            configuration["hv_parameters"] = {}
+            configuration["channel_state"] = {}
+            configuration["power_state"] = {}
+            configuration["serials"] = {}
+            configuration["errors"]["response"] = f"malformed reply: {exc}"
+            return configuration
+
+        configuration["errors"] = dict(result.get("errors") or {})
+
+        if payload.get("status") != "ok" and not configuration["errors"]:
+            configuration["errors"]["command"] = payload.get("error") or "unknown error"
+
+        configuration["success"] = payload.get("status") == "ok" and not configuration["errors"]
+
+        if not configuration["success"]:
+            self.logger.warning(f"Hardware configuration of client {client_name} incomplete: {configuration['errors']}")
+
+        return configuration

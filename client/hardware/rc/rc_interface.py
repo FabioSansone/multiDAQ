@@ -22,6 +22,8 @@ RC_REG15_TRIGGERED_RATE_ENABLE_BIT = 1 << 1
 RC_REG31_MODE_BIT = 1 << 7      # 1 = exact combination, 0 = majority
 RC_REG31_CHANNEL_MASK = 0x7F    # bits 0-6, one-hot
 
+RC_HARDWARE_SNAPSHOT = [0, 1, 10, 15, 16, 18, 19, 31, 39]
+
 
 
 class RC:
@@ -102,8 +104,10 @@ class RC:
             "message": f"Register {address} read successfully",
         }
     
-    def read_acq_registers(self, addresses: list) -> dict:
+    def read_acq_registers(self, addresses: list | None) -> dict:
         result = {}
+        if not addresses:
+            addresses = RC_HARDWARE_SNAPSHOT
         for address in addresses:
             value = self.read(address)
             if address not in result:
@@ -350,9 +354,6 @@ class RC:
                 else f"RC acquisition register configuration completed with failures: {failed_registers}"
             ),
         }
-
-
-
         
 
 
