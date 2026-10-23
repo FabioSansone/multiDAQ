@@ -120,13 +120,13 @@ class HV:
             if channel in self.on_ch:
                 self.on_ch.remove(channel)
 
-            elif channel in self.off_ch:
+            if channel in self.off_ch:
                 self.off_ch.remove(channel)
             
-            elif channel in self.ok_ch:
+            if channel in self.ok_ch:
                 self.ok_ch.remove(channel)
             
-            elif channel in self.bad_ch:
+            if channel in self.bad_ch:
                 self.bad_ch.remove(channel)
             
             if channel not in self.fixed_bad:
@@ -142,13 +142,13 @@ class HV:
                 if channel in self.on_ch:
                     self.on_ch.remove(channel)
     
-                elif channel in self.off_ch:
+                if channel in self.off_ch:
                     self.off_ch.remove(channel)
                 
-                elif channel in self.ok_ch:
+                if channel in self.ok_ch:
                     self.ok_ch.remove(channel)
                 
-                elif channel in self.bad_ch:
+                if channel in self.bad_ch:
                     self.bad_ch.remove(channel)
                 
                 if channel not in self.missing_serial:
@@ -218,6 +218,10 @@ class HV:
             raise TypeError(f"Invalid type for channels: {type(channels)}")
 
         for ch in ch_list:
+            if not isinstance(ch, int):
+                raise TypeError(
+                    f"Invalid HV channel {ch!r}: expected int"
+                )
             if ch < 1 or ch > n_channels:
                 raise ValueError(f"Invalid HV channel: {ch}")
 
@@ -1704,6 +1708,11 @@ class HV:
         
         return {"missing_serial_channels": missing, "checked_channels": list(channels)}
     
+    def _normalize_serial(self, serial: str | None) -> str:
+        if not serial:
+            return ""
+        return serial.rstrip("\x00").strip()
+
     def get_serial_map(self, channels: list[int]) -> dict:
         
         serial_ch_map = {}
@@ -1712,7 +1721,7 @@ class HV:
             if ch not in serial_ch_map:
                 try:
                     _, pmt_serial, _, _, _ = self.hv.getInfo(slave=ch)
-                    serial_ch_map[ch] = pmt_serial
+                    serial_ch_map[ch] = self._normalize_serial(pmt_serial)
                 except Exception as e:
                     self.logger.error(f"Failed to read PMT info for channel {ch}: {e}")
                     serial_ch_map[ch] = "0"
