@@ -16,13 +16,13 @@ class ChannelSelectionService:
         self.logger.debug("Channels Selection Service initialized")
 
     
-    @staticmethod
     def _warn_user(self, message: str) -> None:
         """A client or channel is being left out of the acquisition: record it in the
         log and tell the user."""
         self.logger.warning(message)
         self.poutput(message)
 
+    @staticmethod
     def parse_user_channels(
         channels: str | int | list[int],
         n_channels: int = 7,
