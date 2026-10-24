@@ -11,15 +11,30 @@ dependencies = [
     "cmd2",
     "rich",
     "smbus2",
-    "pymodbus",
-    "pyserial",
+    # hvmodbus.py uses FramerType, convert_from_registers and the device_id argument;
+    # the [serial] extra installs pyserial, which the Modbus serial client needs.
+    "pymodbus[serial]>=3.10,<4",
     "prometheus_client",
+    # The server starts the web control panel (flask) unless it is run with --no-web.
     "flask",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["server*", "client*", "common*"]
+
+# The code finds these files next to the Python modules (Path(__file__)), so they
+# must be installed with the package: the C sources of the receiver, the detector
+# JSON files and the web page.
+[tool.setuptools.package-data]
+server = [
+    "acquisition/*.c",
+    "acquisition/dispatch/*.c",
+    "acquisition/dispatch/*.h",
+    "multipmt_config_files/*.json",
+    "web/templates/*",
+    "web/static/*",
+]
 
 [project.scripts]
 multidaq-server = "server.main:main"
