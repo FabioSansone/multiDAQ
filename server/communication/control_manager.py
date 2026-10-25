@@ -1,12 +1,12 @@
 import zmq
 from typing import Optional, List
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
+from common.reply_handler import ReplyHandler
 from server.utils.logger import get_logger
 from server.core.server_state import ServerState
 from server.core.mac_id_registry import MacIdentityRegistry
 import threading
 import queue
-import time
 
 MAX_RETRIES = 5
 
@@ -24,7 +24,6 @@ class ControlPlaneManager:
         self.message_handler = MessageHandler(logger=get_logger("message_handler"))
         
         self.stop_listening = threading.Event()
-        self.incoming_queue = queue.Queue()
         self.outgoing_queue = queue.Queue()
         self.listener_thread: Optional[threading.Thread] = None
         
@@ -33,6 +32,8 @@ class ControlPlaneManager:
         self.event_callback = None
         
         self.mac_register = mac_identity_registry
+
+        self.reply_handler = ReplyHandler(logger=get_logger("reply_handler"))
         
         self.logger = get_logger("control_manager")
         self.logger.debug("ZMQ Control Server Manager initialized")
@@ -463,8 +464,10 @@ class ControlPlaneManager:
         return success
     
     def queue_message(self, client_id: bytes, message: ProtocolMessage) -> None:
+        # The waiter must exist before the command leaves, or a fast reply is lost.
+        self.reply_handler.register_pending_reply(client_id=client_id, request_id=message.request_id)
         self.outgoing_queue.put((client_id, message))
-        
+
     def wait_for_reply(
         self,
         *,
@@ -472,41 +475,13 @@ class ControlPlaneManager:
         in_reply_to: str,
         timeout_s: float = 10.0,
     ) -> tuple[Optional[ProtocolMessage], str]:
-        """
-        Wait for a reply matching both client_id and in_reply_to.
+        """Wait for the reply to `in_reply_to` from `client_id` (see ReplyHandler)."""
+        return self.reply_handler.wait_pending_reply(
+            client_id=client_id,
+            request_id=in_reply_to,
+            timeout_s=timeout_s,
+        )
 
-        Non-matching messages are temporarily removed from the incoming queue
-        and restored before returning. A monotonic deadline guarantees that
-        unrelated messages cannot restart or extend the requested timeout.
-        """
-
-        deadline = time.monotonic() + timeout_s
-        deferred_messages = []
-
-        try:
-            while True:
-                remaining_s = deadline - time.monotonic()
-
-                if remaining_s <= 0:
-                    return None, "timeout waiting for reply"
-
-                try:
-                    reply_client_id, message, reason = self.incoming_queue.get(timeout=remaining_s)
-                except queue.Empty:
-                    return None, "timeout waiting for reply"
-
-                if message is None:
-                    return None, reason
-
-                if reply_client_id == client_id and message.in_reply_to == in_reply_to:
-                    return message, "ok"
-
-                deferred_messages.append((reply_client_id, message, reason))
-
-        finally:
-            for deferred_message in deferred_messages:
-                self.incoming_queue.put(deferred_message)
-        
     def _control_io_loop(self) -> None:
         """
         Owns the ROUTER socket after the handshake.
@@ -521,7 +496,7 @@ class ControlPlaneManager:
                 if message.msg_type == MessageType.EVENT:
                     self.event_queue.put((client_id, message,))
                 else:
-                    self.incoming_queue.put((client_id, message, reason))
+                    self.reply_handler.deliver_pending_reply(client_id=client_id, message=message)
             elif reason != "timeout elapsed":
                 self.logger.warning(f"Receive problem: {reason}")
 
@@ -612,11 +587,7 @@ class ControlPlaneManager:
         
         
     def clear_queues(self) -> None:
-        while not self.incoming_queue.empty():
-            try:
-                self.incoming_queue.get_nowait()
-            except queue.Empty:
-                break
+        self.reply_handler.cancel_all("queues cleared")
 
         while not self.outgoing_queue.empty():
             try:

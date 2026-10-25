@@ -12,6 +12,7 @@ from common.message_handler import (
     MessageType,
     ProtocolMessage,
 )
+from common.reply_handler import ReplyHandler
 from server.core.server_state import ServerState
 from server.services.time_sync_service import TimeSyncService, TimeSyncMeasurement
 from server.utils.logger import get_logger
@@ -38,7 +39,6 @@ class MonitoringPlaneManager:
             logger=get_logger("message_handler")
         )
 
-        self.mon_incoming_queue = queue.Queue()
         self.mon_outgoing_queue = queue.Queue()
         self.mon_event_queue = queue.Queue()
 
@@ -63,6 +63,8 @@ class MonitoringPlaneManager:
         self.time_sync_service = time_sync_service
         self.time_sync_waiters: dict[tuple[bytes, str], queue.Queue] = {}
         self.time_sync_waiters_lock = threading.Lock()
+
+        self.reply_handler = ReplyHandler(logger=get_logger("reply_handler"))
 
         self.logger = get_logger("monitoring_manager")
         self.logger.debug("ZMQ Monitoring Server Manager initialized")
@@ -413,7 +415,12 @@ class MonitoringPlaneManager:
         self,
         client_id: bytes,
         message: ProtocolMessage,
+        expect_reply: bool = True,
     ) -> None:
+        # The waiter must exist before the command leaves, or a fast reply is lost.
+        # Time-sync probes have their own waiters and pass expect_reply=False.
+        if expect_reply:
+            self.reply_handler.register_pending_reply(client_id=client_id, request_id=message.request_id)
         self.mon_outgoing_queue.put((client_id, message))
 
     def wait_for_reply(
@@ -423,42 +430,12 @@ class MonitoringPlaneManager:
         in_reply_to: str,
         timeout_s: float = 10.0,
     ) -> tuple[Optional[ProtocolMessage], str]:
-        """
-        Wait for a reply matching both client_id and in_reply_to.
-
-        Non-matching messages are temporarily removed from the incoming queue
-        and restored before returning. A monotonic deadline guarantees that
-        unrelated messages cannot restart or extend the requested timeout.
-        """
-
-        deadline = time.monotonic() + timeout_s
-        deferred_messages = []
-
-        try:
-            while True:
-                remaining_s = deadline - time.monotonic()
-
-                if remaining_s <= 0:
-                    return None, "timeout waiting for reply"
-
-                try:
-                    reply_client_id, message, reason = self.mon_incoming_queue.get(
-                        timeout=remaining_s
-                    )
-                except queue.Empty:
-                    return None, "timeout waiting for reply"
-
-                if message is None:
-                    return None, reason
-
-                if reply_client_id == client_id and message.in_reply_to == in_reply_to:
-                    return message, "ok"
-
-                deferred_messages.append((reply_client_id, message, reason))
-
-        finally:
-            for deferred_message in deferred_messages:
-                self.mon_incoming_queue.put(deferred_message)
+        """Wait for the reply to `in_reply_to` from `client_id` (see ReplyHandler)."""
+        return self.reply_handler.wait_pending_reply(
+            client_id=client_id,
+            request_id=in_reply_to,
+            timeout_s=timeout_s,
+        )
 
     def wait_for_time_sync_measurement(
         self,
@@ -527,7 +504,7 @@ class MonitoringPlaneManager:
                     if measurement is not None:
                         self._deliver_time_sync_measurement(measurement=measurement)
                 else:
-                    self.mon_incoming_queue.put((client_id, message, reason))
+                    self.reply_handler.deliver_pending_reply(client_id=client_id, message=message)
 
             elif reason != "timeout elapsed":
                 self.logger.warning(f"Monitoring receive problem: {reason}")
@@ -846,11 +823,7 @@ class MonitoringPlaneManager:
         self.logger.info("Monitoring listener stopped")
 
     def clear_queues(self) -> None:
-        while True:
-            try:
-                self.mon_incoming_queue.get_nowait()
-            except queue.Empty:
-                break
+        self.reply_handler.cancel_all("queues cleared")
 
         while True:
             try:
@@ -989,6 +962,7 @@ class MonitoringPlaneManager:
         self.queue_message(
             client_id,
             probe,
+            expect_reply=False,
         )
         
         return probe.request_id
