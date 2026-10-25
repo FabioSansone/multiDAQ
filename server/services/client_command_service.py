@@ -25,7 +25,6 @@ class ClientCommandService:
         self.monitoring_manager = monitoring_manager
         
         self.server_state = server_state
-
         self.logger = get_logger("client_command_service")
         self.logger.debug("ClientCommandService initialized")
 
@@ -88,8 +87,7 @@ class ClientCommandService:
                 f"client unavailable on {normalized_plane.value} plane",
             )
 
-        manager = self._get_manager(normalized_plane)
-
+        manager = self._get_manager(normalized_plane)        
         manager.queue_message(
             client_id=client_id,
             message=message,
