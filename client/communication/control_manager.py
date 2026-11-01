@@ -16,6 +16,8 @@ from common.message_handler import (
 from common.constants import ACQUISITION_MODES
 from client.communication.client_command_map import COMMAND_MAP
 
+from client.communication.connection_monitor import ConnectionMonitor
+
 
 MAX_RETRIES = 10
 
@@ -48,6 +50,8 @@ class ControlPlaneManager:
 
         self.hv_warning_thread: Optional[threading.Thread] = None
 
+        self.socket_monitor: ConnectionMonitor | None = None
+
         self.logger = get_logger("control_manager")
         self.logger.info("ZMQ Control Client Manager initialized")
 
@@ -77,6 +81,9 @@ class ControlPlaneManager:
 
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.IDENTITY, identity_bytes)
+            self.socket.setsockopt(zmq.HEARTBEAT_IVL, 30000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, 60000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TTL, 60000)
 
             self.socket.connect(server_address)
             self.recv_poller.register(self.socket, zmq.POLLIN)
@@ -118,16 +125,22 @@ class ControlPlaneManager:
             return None, "client socket not initialized"
 
         try:
-            socks = dict(self.recv_poller.poll(timeout=timeout_ms))
+            deadline = time.monotonic() + timeout_ms / 1000
 
-            if self.socket not in socks:
-                return None, "timeout elapsed"
+            while True:
+                socks = dict(self.recv_poller.poll(timeout=max(0, int((deadline - time.monotonic()) * 1000))))
 
-            raw_message = self.socket.recv()
+                if self.socket not in socks:
+                    return None, "timeout elapsed"
 
-            if not raw_message:
-                self.logger.error("Received empty message")
-                return None, "empty message"
+                raw_message = self.socket.recv()
+
+                if raw_message:
+                    break
+
+                # An empty message is the liveness probe of the server: nothing to do, keep waiting
+                self.logger.debug("Liveness probe received from the server")
+
 
             message, reason = self.message_handler.deserialize(raw_message)
 
@@ -515,6 +528,11 @@ class ControlPlaneManager:
             )
             self.hv_warning_thread.start()
 
+        if self.socket_monitor is None:
+            self.socket_monitor = ConnectionMonitor(socket=self.socket, name="control", on_disconnected=self.disconnect_client)
+            self.socket_monitor.start()
+    
+        
         self.logger.info("Control listener started")
         return True
 
@@ -526,6 +544,10 @@ class ControlPlaneManager:
 
         if self.hv_warning_thread and self.hv_warning_thread.is_alive():
             self.hv_warning_thread.join(timeout=2.0)
+
+        if self.socket_monitor:
+            self.socket_monitor.stop()
+            self.socket_monitor = None
 
         self.logger.info("Control listener stopped")
 
@@ -601,3 +623,18 @@ class ControlPlaneManager:
     def close(self) -> None:
         self.close_connection()
         self.logger.info("ControlPlaneManager closed")
+
+
+    def disconnect_client(self,) -> None:
+        self.logger.error("Control connection lost: entering safe state")
+        self.stop_listening.set() 
+        self._disconnect_thread = threading.Thread(target=self._safe_state_then_reconnect, daemon=True)
+        self._disconnect_thread.start()
+
+
+    def _safe_state_then_reconnect(self) -> None:
+        try:
+            self.runtime.enter_safe_state()
+        except Exception:
+            self.logger.exception("Safe state failed")
+        self.reconnect_requested.set()

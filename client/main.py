@@ -51,8 +51,6 @@ def main() -> int:
     )
 
     control_command_thread = None
-    acquisition_command_thread = None
-    monitoring_command_thread = None
 
     try:
         while True:
@@ -125,17 +123,9 @@ def main() -> int:
             )
             control_command_thread.start()
 
-            acquisition_command_thread = threading.Thread(
-                target=acquisition_manager.handle_commands,
-                daemon=True,
-            )
-            acquisition_command_thread.start()
+            acquisition_manager.start_command_thread()
             
-            monitoring_command_thread = threading.Thread(
-                target=monitoring_manager.handle_commands,
-                daemon=True,
-            )
-            monitoring_command_thread.start()
+            monitoring_manager.start_command_thread()
 
             while (
                 not control_manager.reconnect_requested.is_set()
@@ -145,6 +135,9 @@ def main() -> int:
                 time.sleep(0.5)
 
             logger.info("Reconnect requested after server shutdown")
+
+            acquisition_manager.stop_recovery()
+            monitoring_manager.stop_recovery()
 
             control_manager.close_connection()
             acquisition_manager.close_connection()
@@ -156,6 +149,8 @@ def main() -> int:
         logger.info("Client interrupted, shutting down")
 
     finally:
+        acquisition_manager.stop_recovery()
+        monitoring_manager.stop_recovery()
         monitoring_manager.close_connection()
         acquisition_manager.close_connection()
         control_manager.close_connection()

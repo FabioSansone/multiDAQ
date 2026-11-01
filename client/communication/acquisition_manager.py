@@ -6,6 +6,7 @@ import time
 
 from client.core.client_runtime import ClientRunTime
 from client.communication.client_command_map import COMMAND_MAP
+from client.communication.connection_monitor import ConnectionMonitor
 from common.message_handler import (
     MessageHandler,
     ProtocolMessage,
@@ -28,6 +29,7 @@ class AcquisitionPlaneManager:
         self.socket: Optional[zmq.Socket] = None
         self.recv_poller = zmq.Poller()
         self.acq_endpoint: Optional[str] = None
+        self.port: int | None = None
 
         self.runtime = runtime
         self.server_ip = runtime.server_ip
@@ -38,6 +40,7 @@ class AcquisitionPlaneManager:
         self.outgoing_queue = queue.Queue()
         self.listener_thread: Optional[threading.Thread] = None
         self.reconnect_requested = threading.Event()
+        self.socket_monitor: ConnectionMonitor | None = None
 
         self.command_map = COMMAND_MAP
 
@@ -45,10 +48,15 @@ class AcquisitionPlaneManager:
             logger=get_logger("message_handler")
         )
 
+        self.command_thread: Optional[threading.Thread] = None
+        self._recovery_stop = threading.Event()
+        self._recovery_thread: Optional[threading.Thread] = None
+
         self.logger = get_logger("acq_manager")
         self.logger.info("ZMQ Acquisition Client Manager initialized")
 
     def start_connection(self, port: int) -> bool:
+        self.port = port
         if self.socket is not None:
             try:
                 self.recv_poller.unregister(self.socket)
@@ -72,6 +80,9 @@ class AcquisitionPlaneManager:
 
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.IDENTITY, identity_bytes)
+            self.socket.setsockopt(zmq.HEARTBEAT_IVL, 30000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, 60000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TTL, 60000)
 
             self.socket.connect(server_address)
             self.recv_poller.register(self.socket, zmq.POLLIN)
@@ -107,16 +118,22 @@ class AcquisitionPlaneManager:
             return None, "acquisition socket not initialized"
 
         try:
-            socks = dict(self.recv_poller.poll(timeout=timeout_ms))
+            deadline = time.monotonic() + timeout_ms / 1000
 
-            if self.socket not in socks:
-                return None, "timeout elapsed"
+            while True:
+                socks = dict(self.recv_poller.poll(timeout=max(0, int((deadline - time.monotonic()) * 1000))))
 
-            raw_message = self.socket.recv()
+                if self.socket not in socks:
+                    return None, "timeout elapsed"
 
-            if not raw_message:
-                self.logger.error("Received empty acquisition message")
-                return None, "empty message"
+                raw_message = self.socket.recv()
+
+                if raw_message:
+                    break
+
+                # An empty message is the liveness probe of the server: nothing to do, keep waiting
+                self.logger.debug("Liveness probe received from the server")
+
 
             message, reason = self.message_handler.deserialize(raw_message)
 
@@ -328,6 +345,10 @@ class AcquisitionPlaneManager:
         )
         self.listener_thread.start()
 
+        if self.socket_monitor is None:
+            self.socket_monitor = ConnectionMonitor(socket=self.socket, name="acquisition", on_disconnected=self.disconnect_client)
+            self.socket_monitor.start()
+
         self.logger.info("Acquisition listener started")
         return True
 
@@ -337,7 +358,21 @@ class AcquisitionPlaneManager:
         if self.listener_thread and self.listener_thread.is_alive():
             self.listener_thread.join(timeout=2.0)
 
+        if self.socket_monitor:
+            self.socket_monitor.stop()
+            self.socket_monitor = None
+
         self.logger.info("Acquisition listener stopped")
+
+    def stop_recovery(self) -> None:
+        """Stop the recovery of the plane and wait for its thread. Called before the whole
+        client reconnects: the recovery must not rebuild the socket the main loop is closing."""
+        self._recovery_stop.set()
+
+        thread = self._recovery_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=15.0)
+
 
     def handle_commands(self) -> None:
         """
@@ -374,6 +409,16 @@ class AcquisitionPlaneManager:
                 self.logger.error(
                     f"Error handling acquisition command {message.command}: {e}"
                 )
+
+    def start_command_thread(self) -> None:
+        """Start the thread that serves the commands. Call it after start_listener(), which
+        clears stop_listening: the loop of handle_commands ends as soon as it is set."""
+        if self.command_thread is not None and self.command_thread.is_alive():
+            self.logger.warning("Acquisition command thread already running")
+            return
+
+        self.command_thread = threading.Thread(target=self.handle_commands, daemon=True)
+        self.command_thread.start()
 
     def clear_queues(self) -> None:
         while not self.incoming_queue.empty():
@@ -414,3 +459,57 @@ class AcquisitionPlaneManager:
     def close(self) -> None:
         self.close_connection()
         self.logger.info("AcquisitionPlaneManager closed")
+
+    def recover_connection(self, retry_delay_s: float = 5.0) -> bool:
+        """Rebuild the acquisition plane after a loss. Runs in the recovery thread. Each
+        attempt is short, so that stop_recovery() is taken into account quickly."""
+        self.close_connection()
+
+        # The old thread ends when stop_listening is set: wait for it, or two threads would
+        # read the same queue once start_listener() clears the flag
+        if self.command_thread is not None and self.command_thread.is_alive():
+            self.command_thread.join(timeout=2.0)
+
+        attempt = 0
+        while not self._recovery_stop.is_set():
+            attempt += 1
+            self.logger.info(f"Acquisition plane recovery, attempt {attempt}")
+
+            if (
+                self.port is not None
+                and self.start_connection(self.port)
+                and self.handshake(timeout_ms=5000, max_retries=1)
+                and self.start_listener()
+            ):
+                self.start_command_thread()
+                self.logger.info("Acquisition plane recovered")
+                return True
+
+            self.close_connection()
+            self._recovery_stop.wait(retry_delay_s)
+
+        self.logger.info("Acquisition plane recovery stopped")
+        return False
+
+    def disconnect_client(self) -> None:
+        """The acquisition connection dropped. The client stays alive on the other planes:
+        the hardware is made safe and the plane is rebuilt, all in the recovery thread (this
+        method runs in the connection monitor thread, which must not stay busy)."""
+        if self._recovery_thread is not None and self._recovery_thread.is_alive():
+            self.logger.warning("Acquisition recovery already in progress")
+            return
+
+        self.logger.error("Acquisition connection lost: the plane stops serving commands")
+        self.stop_listening.set()
+
+        self._recovery_stop.clear()
+        self._recovery_thread = threading.Thread(target=self._safe_state_then_recover, daemon=True)
+        self._recovery_thread.start()
+
+    def _safe_state_then_recover(self) -> None:
+        try:
+            self.runtime.enter_acquisition_safe_state()
+        except Exception:
+            self.logger.exception("Acquisition safe state failed")
+
+        self.recover_connection()
