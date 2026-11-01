@@ -429,7 +429,7 @@ class AcquisitionService:
 
         self.logger.info(f"Client {client_name}: restoring voltage/threshold on channels {sorted(previous)}")
 
-        outcome = self.apply_hv_override(client_id=client_id, acq_info=previous)
+        outcome = self.apply_hv_override(client_id=client_id, acq_info=previous, wait_ramp=True)
         restored = sorted(outcome[0]) if outcome is not None else []
         not_restored = sorted(set(previous) - set(restored))
 
