@@ -26,6 +26,7 @@ MONITOR_ONLY_ALLOWED_COMMANDS = {
     "check_recovery_bad",
     "check_channel_presence",
     "hv_off",
+    "hv_force_off",
     "hv_off_and_wait",
     "set_common_voltage",
     "set_common_threshold",

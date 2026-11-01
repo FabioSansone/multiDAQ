@@ -76,6 +76,20 @@ def command_hv_off(
     return _wrap_hv_action(protocol_version, hv_request, result)
 
 
+def command_hv_force_off(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+    # Unlike hv_off it also acts on the channels that are not OK (BAD, FIXED BAD):
+    # used by the safe state, where nothing can be left powered.
+    result = hv_interface.force_off(
+        channels=hv_request.payload["channels"],
+    )
+
+    return _wrap_hv_action(protocol_version, hv_request, result)
+
+
 def command_common_voltage(
     protocol_version: int,
     hv_interface: HV,
@@ -751,6 +765,7 @@ COMMAND_HANDLERS = {
     
     "hv_on": command_hv_on,
     "hv_off": command_hv_off,
+    "hv_force_off": command_hv_force_off,
 
     "hv_on_and_wait": command_hv_on_and_wait,
     "hv_off_and_wait": command_hv_off_and_wait,
