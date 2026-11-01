@@ -375,16 +375,17 @@ def do_force(self, args: argparse.Namespace) -> bool:
             _print_hv_lists(self, client_name, result)
 
         if not successful_client_ids:
-            self.server_state.process_event(
+            if not self.server_state.process_event(
                 event=ServerFSMEvent.CONFIGURATION_FAILED,
                 reason="Force hv_sync failed on all clients",
                 source="do_force_hv_sync",
                 metadata={"failed_clients": failed_client_ids},
-            )
+            ):
+                logger.error("CONFIGURATION_FAILED rejected by FSM for force hv_sync")
             self.poutput("hv_sync failed on all connected clients.")
             return
 
-        self.server_state.process_event(
+        if not self.server_state.process_event(
             event=ServerFSMEvent.CONFIGURATION_SUCCEEDED,
             reason="Force hv_sync completed",
             source="do_force_hv_sync",
@@ -392,7 +393,15 @@ def do_force(self, args: argparse.Namespace) -> bool:
                 "successful_clients": successful_client_ids,
                 "failed_clients": failed_client_ids,
             },
-        )
+        ):
+            # The FSM is still in CONFIGURING: leave it with every client still under configuration failed
+            logger.error("CONFIGURATION_SUCCEEDED rejected by FSM for force hv_sync")
+            self.server_state.process_event(
+                event=ServerFSMEvent.CONFIGURATION_FAILED,
+                reason="Force hv_sync result rejected by the FSM",
+                source="do_force_hv_sync",
+            )
+            self.poutput("hv_sync result rejected (clients lost or changed during the sync). Check the connected clients and retry.")
         return
 
 @cmd2.with_category("Generic Commands")

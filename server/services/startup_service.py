@@ -135,17 +135,18 @@ class StartupService:
         )
 
         if not successful_client_ids:
-            self.server_state.process_event(
+            if not self.server_state.process_event(
                 event=ServerFSMEvent.CONFIGURATION_FAILED,
                 reason=f"Startup configuration for mode '{mode}' failed on all clients",
                 source="startup_service",
                 metadata={"failed_clients": failed_client_ids},
-            )
+            ):
+                self.logger.error("CONFIGURATION_FAILED rejected by FSM at startup")
             self.poutput("Startup configuration failed on all connected clients.")
             self.logger.error(f"Startup configuration for mode '{mode}' failed on all clients")
             return False
 
-        self.server_state.process_event(
+        if not self.server_state.process_event(
             event=ServerFSMEvent.CONFIGURATION_SUCCEEDED,
             reason=f"Startup configuration for mode '{mode}' completed",
             source="startup_service",
@@ -153,7 +154,16 @@ class StartupService:
                 "successful_clients": successful_client_ids,
                 "failed_clients": failed_client_ids,
             },
-        )
+        ):
+            # The FSM is still in CONFIGURING: leave it with every client still under configuration failed
+            self.logger.error(f"CONFIGURATION_SUCCEEDED rejected by FSM at startup (mode '{mode}')")
+            self.server_state.process_event(
+                event=ServerFSMEvent.CONFIGURATION_FAILED,
+                reason="Startup configuration result rejected by the FSM",
+                source="startup_service",
+            )
+            self.poutput("Startup configuration result rejected (clients lost or changed during the configuration). Check the connected clients and retry.")
+            return False
 
         if failed_client_ids:
             self.poutput(f"Warning: {len(failed_client_ids)} client(s) are not synchronized.")

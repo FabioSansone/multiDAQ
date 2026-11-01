@@ -261,21 +261,33 @@ class AcquisitionOrchestrator:
 
         if not rc_ready_clients:
             self._restore_hv_overrides(hv_previous)
-            self.server_state.process_event(
+            if not self.server_state.process_event(
                 event=ServerFSMEvent.CONFIGURATION_FAILED,
                 reason="No clients ready for acquisition after RC/HV preparation",
                 source="acquisition_orchestrator",
                 metadata={"failed_clients": failed_clients},
-            )
+            ):
+                self.logger.error("CONFIGURATION_FAILED rejected by FSM in acquisition start")
             self.poutput("No clients ready for acquisition.")
             return
 
-        self.server_state.process_event(
+        if not self.server_state.process_event(
             event=ServerFSMEvent.CONFIGURATION_SUCCEEDED,
             reason="RC/HV channels prepared for acquisition",
             source="acquisition_orchestrator",
             metadata={"successful_clients": rc_ready_clients, "failed_clients": failed_clients},
-        )
+        ):
+            # The FSM is still in CONFIGURING: leave it with every client still under configuration failed
+            self.logger.error("CONFIGURATION_SUCCEEDED rejected by FSM in acquisition start")
+            self.server_state.process_event(
+                event=ServerFSMEvent.CONFIGURATION_FAILED,
+                reason="Acquisition preparation result rejected by the FSM",
+                source="acquisition_orchestrator",
+            )
+            self.poutput("Acquisition not started: the preparation result was rejected (clients lost or changed meanwhile).")
+            self.acquisition_service.disable_rc_channels(client_ids=rc_ready_clients)
+            self._restore_hv_overrides(hv_previous)
+            return
 
         resolved_batch_id = self.acquisition_service.resolve_batch_id(rc_ready_clients)
 

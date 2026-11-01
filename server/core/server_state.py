@@ -75,6 +75,7 @@ class ClientFSMEvent(str, Enum):
     ACQUISITION_STARTED = "acquisition_started"
     STOP_REQUESTED = "stop_requested"
     RECEIVER_COMPLETED = "receiver_completed"
+    ACQUISITION_PLANE_LOST = "acquisition_plane_lost"
 
     FINALIZATION_SUCCEEDED = "finalization_succeeded"
     FINALIZATION_FAILED = "finalization_failed"
@@ -170,6 +171,13 @@ TRANSITION_TABLE_CLIENT: dict[tuple[ClientFSM, ClientFSMEvent], ClientFSM] = {
     (ClientFSM.ACQUIRING, ClientFSMEvent.DISCONNECTED): ClientFSM.ERROR,
     (ClientFSM.FINALIZING, ClientFSMEvent.DISCONNECTED): ClientFSM.ERROR,
     (ClientFSM.ERROR, ClientFSMEvent.DISCONNECTED): ClientFSM.DISCONNECTED,
+
+    (ClientFSM.CONNECTED, ClientFSMEvent.ACQUISITION_PLANE_LOST): ClientFSM.CONNECTED,
+    (ClientFSM.CONFIGURING, ClientFSMEvent.ACQUISITION_PLANE_LOST): ClientFSM.ERROR,
+    (ClientFSM.READY, ClientFSMEvent.ACQUISITION_PLANE_LOST): ClientFSM.CONNECTED,
+    (ClientFSM.ACQUIRING, ClientFSMEvent.ACQUISITION_PLANE_LOST): ClientFSM.ERROR,
+    (ClientFSM.FINALIZING, ClientFSMEvent.ACQUISITION_PLANE_LOST): ClientFSM.ERROR,
+    (ClientFSM.ERROR, ClientFSMEvent.ACQUISITION_PLANE_LOST): ClientFSM.ERROR,
 }
 
 for _client_state in ClientFSM:
@@ -538,6 +546,37 @@ class ServerState:
                     f"source={source}, reason={reason}"
                 )
                 return False
+
+            if present_state == ServerFSM.CONFIGURING and event in {ServerFSMEvent.CONFIGURATION_SUCCEEDED, ServerFSMEvent.CONFIGURATION_FAILED}:
+                # A client lost during the configuration is no longer under configuration
+                # (record forgotten, or moved to ERROR): the caller does not know yet.
+                config_metadata = event_context["metadata"]
+                expected = set(self.list_clients_in_state(ClientFSM.CONFIGURING))
+                try:
+                    successful = self._normalize_client_ids(config_metadata.get("successful_clients", []))
+                    failed = self._normalize_client_ids(config_metadata.get("failed_clients", []))
+                except ValueError as exc:
+                    self.logger.error(str(exc))
+                    return False
+
+                lost = (set(successful) | set(failed)) - expected
+                if lost:
+                    names = sorted(c.decode(errors="ignore") for c in lost)
+                    self.logger.warning(
+                        f"Clients no longer under configuration, dropped from the result of {event.value}: {names}"
+                    )
+
+                    config_metadata["successful_clients"] = [c for c in successful if c in expected]
+                    config_metadata["failed_clients"] = [c for c in failed if c in expected]
+
+                    # Nobody is left to be configured: the configuration has failed
+                    if event == ServerFSMEvent.CONFIGURATION_SUCCEEDED and not config_metadata["successful_clients"]:
+                        self.logger.warning(
+                            "No successful client left after the losses: CONFIGURATION_SUCCEEDED handled as CONFIGURATION_FAILED"
+                        )
+                        event = ServerFSMEvent.CONFIGURATION_FAILED
+                        event_context["event"] = event
+                        next_state = TRANSITION_TABLE[(present_state, event)]
 
             if next_state == ServerFSM.FINALIZING:
                 if event == ServerFSMEvent.DISCONNECT_REQUESTED:
