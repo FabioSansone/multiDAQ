@@ -13,6 +13,7 @@ from common.message_handler import (
     ProtocolMessage,
 )
 from common.reply_handler import ReplyHandler
+from server.communication.liveness_probe import LivenessProbe
 from server.core.server_state import ServerState
 from server.services.time_sync_service import TimeSyncService, TimeSyncMeasurement
 from server.utils.logger import get_logger
@@ -58,8 +59,9 @@ class MonitoringPlaneManager:
         self.mon_sample_callback = None
         
         self.mon_client_disconnected_callback = None
+        self.mon_client_lost_callback = None
         self.mon_client_reconnected_callback = None
-        
+
         self.time_sync_service = time_sync_service
         self.time_sync_waiters: dict[tuple[bytes, str], queue.Queue] = {}
         self.time_sync_waiters_lock = threading.Lock()
@@ -67,6 +69,7 @@ class MonitoringPlaneManager:
         self.reply_handler = ReplyHandler(logger=get_logger("reply_handler"))
 
         self.logger = get_logger("monitoring_manager")
+        self.liveness_probe = LivenessProbe(self.logger)
         self.logger.debug("ZMQ Monitoring Server Manager initialized")
 
     def list_connected_clients(self) -> List[bytes]:
@@ -137,6 +140,10 @@ class MonitoringPlaneManager:
             self.socket = self.context.socket(zmq.ROUTER)
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+            self.socket.setsockopt(zmq.ROUTER_HANDOVER, 1)
+            self.socket.setsockopt(zmq.HEARTBEAT_IVL, 30000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, 60000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TTL, 60000)
 
             self.socket.bind(f"tcp://*:{port}")
             self.recv_poller.register(self.socket, zmq.POLLIN)
@@ -194,6 +201,7 @@ class MonitoringPlaneManager:
             if len(frames) < 2:
                 self.logger.error(f"Invalid multipart message format: {frames}")
                 return None, None, "invalid multipart format", None, None
+
 
             client_id = frames[0]
             raw_message = frames[-1]
@@ -273,7 +281,7 @@ class MonitoringPlaneManager:
                 self.time_sync_service.cancel_probe(message.request_id)
 
             if exc.errno == zmq.EHOSTUNREACH:
-                self.remove_client(client_id)
+                self._notify_client_lost(client_id)
 
             return False
 
@@ -299,6 +307,12 @@ class MonitoringPlaneManager:
                 f"Monitoring handshake failed while waiting for client hello: {reason}"
             )
             return False
+
+        return self._accept_hello(client_id, message)
+
+    def _accept_hello(self, client_id: bytes, message: ProtocolMessage) -> bool:
+        """Validate the hello of a client, answer ready and register the client on the plane.
+        Used by the handshake of connect and by the I/O loop, for a client that comes back."""
 
         # Il monitoring richiede solo il piano di controllo gia' attivo indipendentemente dal piano di acquisizione
         if client_id not in self.server_state.list_connected_clients():
@@ -339,6 +353,10 @@ class MonitoringPlaneManager:
             self.logger.error(f"Failed to send monitoring ready message to client {client_id!r}")
             return False
 
+        if self.server_state.is_client_on_plane(client_id=client_id, plane="monitoring"):
+            self.logger.warning(f"Client {client_id!r} is already registered on the monitoring plane: previous session considered lost")
+            self._notify_client_lost(client_id)
+
         self.add_client(client_id)
 
         identity = self.server_state.get_identity(client_id) or {}
@@ -362,8 +380,7 @@ class MonitoringPlaneManager:
                     f"Monitoring client reconnect callback failed: "
                     f"client={client_id!r}: {exc}"
                 )
-                
-                
+
         return True
 
     def handshake(self) -> bool:
@@ -467,6 +484,29 @@ class MonitoringPlaneManager:
                     self.time_sync_waiters.pop(key, None)
                 
                 
+    def _notify_client_lost(self, client_id: bytes) -> None:
+        """The ROUTER told us the client is gone: let the registered callback decide what to do.
+        It runs in the I/O thread, so it must not block."""
+        self.logger.warning(f"Monitoring client {client_id!r} lost")
+
+        if self.mon_client_lost_callback is None:
+            return
+
+        try:
+            self.mon_client_lost_callback(client_id)
+        except Exception as exc:
+            self.logger.exception(f"Monitoring client lost callback failed: client={client_id!r}: {exc}")
+
+    def _handle_late_hello(self, client_id: bytes, message: ProtocolMessage) -> None:
+        """A hello arrives while the plane is being served: a client that lost this plane
+        is coming back. The I/O loop must survive whatever goes wrong here."""
+        self.logger.info(f"Monitoring hello received from {client_id!r} while serving: readmitting the client")
+
+        try:
+            self._accept_hello(client_id, message)
+        except Exception:
+            self.logger.exception(f"Failed to readmit client {client_id!r} on the monitoring plane")
+
     def _monitoring_io_loop(self) -> None:
         """
         Own the ROUTER socket after completion of the handshake.
@@ -491,6 +531,8 @@ class MonitoringPlaneManager:
                 elif message.msg_type == MessageType.SAMPLE:
                     self._timestamp_sample(client_id=client_id, message=message, server_receive_utc_ns=received_server_utc_ns)
                     self._store_latest_sample(client_id, message)
+                elif message.msg_type == MessageType.HANDSHAKE:
+                    self._handle_late_hello(client_id, message)
                 elif self._is_time_sync_reply(message=message):
                     payload = message.payload or {}
                     measurement = self.time_sync_service.complete_probe(
@@ -508,6 +550,10 @@ class MonitoringPlaneManager:
 
             elif reason != "timeout elapsed":
                 self.logger.warning(f"Monitoring receive problem: {reason}")
+
+            self.liveness_probe.run_if_due(
+                self.socket, self.server_state.list_monitoring_clients(), self._notify_client_lost,
+            )
 
             while True:
                 try:

@@ -12,6 +12,7 @@ from common.message_handler import (
     ProtocolMessage,
 )
 from common.reply_handler import ReplyHandler
+from server.communication.liveness_probe import LivenessProbe
 from server.core.server_state import ServerState
 from server.utils.logger import get_logger
 
@@ -45,10 +46,12 @@ class AcquisitionPlaneManager:
         self.acq_listener_thread: Optional[threading.Thread] = None
         self.acq_event_thread: Optional[threading.Thread] = None
         self.acq_event_callback = None
+        self.acq_client_lost_callback = None
 
         self.reply_handler = ReplyHandler(logger=get_logger("reply_handler"))
 
         self.logger = get_logger("acquisition_manager")
+        self.liveness_probe = LivenessProbe(self.logger)
         self.logger.debug("ZMQ Acquisition Server Manager initialized")
 
     def list_connected_clients(self) -> List[bytes]:
@@ -97,6 +100,10 @@ class AcquisitionPlaneManager:
             self.socket = self.context.socket(zmq.ROUTER)
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+            self.socket.setsockopt(zmq.ROUTER_HANDOVER, 1)
+            self.socket.setsockopt(zmq.HEARTBEAT_IVL, 30000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, 60000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TTL, 60000)
 
             self.socket.bind(f"tcp://*:{port}")
             self.recv_poller.register(self.socket, zmq.POLLIN)
@@ -157,6 +164,7 @@ class AcquisitionPlaneManager:
                     f"Invalid multipart message format: {frames}"
                 )
                 return None, None, "invalid multipart format"
+
 
             client_id = frames[0]
             raw_message = frames[-1]
@@ -230,7 +238,7 @@ class AcquisitionPlaneManager:
             )
 
             if exc.errno == zmq.EHOSTUNREACH:
-                self.remove_client(client_id)
+                self._notify_client_lost(client_id)
 
             return False
 
@@ -259,6 +267,12 @@ class AcquisitionPlaneManager:
                 f"client hello: {reason}"
             )
             return False
+
+        return self._accept_hello(client_id, message)
+
+    def _accept_hello(self, client_id: bytes, message: ProtocolMessage) -> bool:
+        """Validate the hello of a client, answer ready and register the client on the plane.
+        Used by the handshake of connect and by the I/O loop, for a client that comes back."""
 
         if client_id not in self.server_state.list_connected_clients():
             self.logger.error(
@@ -305,6 +319,10 @@ class AcquisitionPlaneManager:
                 f"to client {client_id!r}"
             )
             return False
+
+        if self.server_state.is_client_on_plane(client_id=client_id, plane="acquisition"):
+            self.logger.warning(f"Client {client_id!r} is already registered on the acquisition plane: previous session considered lost")
+            self._notify_client_lost(client_id)
 
         self.add_client(client_id)
 
@@ -401,6 +419,29 @@ class AcquisitionPlaneManager:
             timeout_s=timeout_s,
         )
 
+    def _notify_client_lost(self, client_id: bytes) -> None:
+        """The ROUTER told us the client is gone: let the registered callback decide what to do.
+        It runs in the I/O thread, so it must not block."""
+        self.logger.warning(f"Acquisition client {client_id!r} lost")
+
+        if self.acq_client_lost_callback is None:
+            return
+
+        try:
+            self.acq_client_lost_callback(client_id)
+        except Exception as exc:
+            self.logger.exception(f"Acquisition client lost callback failed: client={client_id!r}: {exc}")
+
+    def _handle_late_hello(self, client_id: bytes, message: ProtocolMessage) -> None:
+        """A hello arrives while the plane is being served: a client that lost this plane
+        is coming back. The I/O loop must survive whatever goes wrong here."""
+        self.logger.info(f"Acquisition hello received from {client_id!r} while serving: readmitting the client")
+
+        try:
+            self._accept_hello(client_id, message)
+        except Exception:
+            self.logger.exception(f"Failed to readmit client {client_id!r} on the acquisition plane")
+
     def _acquisition_io_loop(self) -> None:
         """
         Own the ROUTER socket after completion of the handshake.
@@ -417,6 +458,8 @@ class AcquisitionPlaneManager:
             if message is not None:
                 if message.msg_type == MessageType.EVENT:
                     self.acq_event_queue.put((client_id, message))
+                elif message.msg_type == MessageType.HANDSHAKE:
+                    self._handle_late_hello(client_id, message)
                 else:
                     self.reply_handler.deliver_pending_reply(client_id=client_id, message=message)
 
@@ -424,6 +467,10 @@ class AcquisitionPlaneManager:
                 self.logger.warning(
                     f"Acquisition receive problem: {reason}"
                 )
+
+            self.liveness_probe.run_if_due(
+                self.socket, self.server_state.list_acquisition_clients(), self._notify_client_lost,
+            )
 
             while True:
                 try:

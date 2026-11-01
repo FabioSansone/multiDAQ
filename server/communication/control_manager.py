@@ -2,6 +2,7 @@ import zmq
 from typing import Optional, List
 from common.message_handler import MessageHandler, ProtocolMessage, MessageStatus, MessageType, Channel
 from common.reply_handler import ReplyHandler
+from server.communication.liveness_probe import LivenessProbe
 from server.utils.logger import get_logger
 from server.core.server_state import ServerState
 from server.core.mac_id_registry import MacIdentityRegistry
@@ -30,12 +31,14 @@ class ControlPlaneManager:
         self.event_queue = queue.Queue()
         self.event_thread: Optional[threading.Thread] = None
         self.event_callback = None
+        self.client_lost_callback = None
         
         self.mac_register = mac_identity_registry
 
         self.reply_handler = ReplyHandler(logger=get_logger("reply_handler"))
         
         self.logger = get_logger("control_manager")
+        self.liveness_probe = LivenessProbe(self.logger)
         self.logger.debug("ZMQ Control Server Manager initialized")
     
     def list_connected_clients(self) -> List[bytes]:
@@ -65,6 +68,10 @@ class ControlPlaneManager:
             self.socket = self.context.socket(zmq.ROUTER)
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+            self.socket.setsockopt(zmq.ROUTER_HANDOVER, 1)
+            self.socket.setsockopt(zmq.HEARTBEAT_IVL, 30000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, 60000)
+            self.socket.setsockopt(zmq.HEARTBEAT_TTL, 60000)
             self.socket.bind(f"tcp://*:{port}")
             self.recv_poller.register(self.socket, zmq.POLLIN)
             self.endpoint = f"tcp://*:{port}" 
@@ -174,7 +181,7 @@ class ControlPlaneManager:
         except zmq.ZMQError as e:
             self.logger.error(f"ZMQ error while sending message to client {client_id!r}: {e}")
             if e.errno == zmq.EHOSTUNREACH:
-                self.remove_client(client_id)
+                self._notify_client_lost(client_id)
             return False
 
         except Exception as e:
@@ -383,6 +390,10 @@ class ControlPlaneManager:
             )
             return False
             
+        if self.server_state.is_client_on_plane(client_id=client_id, plane="control"):
+            self.logger.warning(f"Client {client_id!r} is already registered on the control plane: previous session considered lost")
+            self._notify_client_lost(client_id)
+
         self.add_client(client_id, identity_payload)
 
         self.logger.info(
@@ -482,6 +493,19 @@ class ControlPlaneManager:
             timeout_s=timeout_s,
         )
 
+    def _notify_client_lost(self, client_id: bytes) -> None:
+        """The ROUTER told us the client is gone: let the registered callback decide what to do.
+        It runs in the I/O thread, so it must not block."""
+        self.logger.warning(f"Control client {client_id!r} lost")
+
+        if self.client_lost_callback is None:
+            return
+
+        try:
+            self.client_lost_callback(client_id)
+        except Exception as exc:
+            self.logger.exception(f"Control client lost callback failed: client={client_id!r}: {exc}")
+
     def _control_io_loop(self) -> None:
         """
         Owns the ROUTER socket after the handshake.
@@ -499,6 +523,10 @@ class ControlPlaneManager:
                     self.reply_handler.deliver_pending_reply(client_id=client_id, message=message)
             elif reason != "timeout elapsed":
                 self.logger.warning(f"Receive problem: {reason}")
+
+            self.liveness_probe.run_if_due(
+                self.socket, self.server_state.list_connected_clients(), self._notify_client_lost,
+            )
 
             while True:
                 try:

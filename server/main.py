@@ -2,6 +2,7 @@
 # coding=utf-8
 
 import argparse
+from functools import partial
 import cmd2
 import zmq
 
@@ -13,7 +14,8 @@ from server.communication.monitoring_manager import MonitoringPlaneManager
 from server.acquisition.receiver_service import DataReceiverService
 from common.constants import ACQUISITION_MODES
 from server.core.server_state import ServerState, ServerFSMEvent
-from server.services.client_command_service import ClientCommandService
+from server.services.client_command_service import ClientCommandService, CommandPlane
+from server.services.client_liveness_service import ClientLivenessService
 from server.services.channel_selection_service import ChannelSelectionService
 from server.services.acquisition_orchestrator import AcquisitionOrchestrator
 from server.services.acquisition_service import AcquisitionService
@@ -207,6 +209,24 @@ class Server(cmd2.Cmd):
             server_state=self.server_state,
             command_service=self.client_command_service,
         )
+
+        # Each plane reports the clients it loses; the service knows what to do for that plane.
+        self.client_liveness_service = ClientLivenessService(
+            server_state=self.server_state,
+            control_manager=self.control_manager,
+            acquisition_manager=self.acq_manager,
+            monitor_manager=self.mon_manager,
+            output_func=self.poutput,
+        )
+        self.control_manager.client_lost_callback = partial(
+            self.client_liveness_service.handle_client_lost, plane=CommandPlane.CONTROL)
+        self.acq_manager.acq_client_lost_callback = partial(
+            self.client_liveness_service.handle_client_lost, plane=CommandPlane.ACQUISITION)
+        self.mon_manager.mon_client_lost_callback = partial(
+            self.client_liveness_service.handle_client_lost, plane=CommandPlane.MONITORING)
+
+        # Who needs to know that a client is gone, besides the registries.
+        self.client_liveness_service.register_listener(self.acquisition_service.on_client_lost)
 
         self.prompt = f"Server[{self.mode}]> "
         
