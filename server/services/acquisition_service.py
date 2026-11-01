@@ -92,6 +92,10 @@ class AcquisitionService:
         self._session_complete_event.set()
         self._last_finalize_success = True
 
+        self._session_clients: set[bytes] = set()
+        self._acquiring_clients: set[bytes] = set()
+        self._lost_clients: dict[bytes, str] = {}
+
         self._stop_requested = threading.Event()
 
         # Maschera RC19 prevista per ciascun client, calcolata in preparazione
@@ -1242,6 +1246,44 @@ class AcquisitionService:
             self.logger.exception(f"{description} raised for client {client_id!r}")
             return False
 
+    def _close_lost_client(self, client_id: bytes, numeric_id: str | None) -> bool:
+        """Short finalization of a client that is gone: only what the server can do
+        without it. No RC19 disable, no flush/reset of the DMA, no trigger reset (they all
+        go through the client). Stops the producer (best effort) and closes the file.
+
+        `numeric_id` is resolved before the session: the control-plane loss forgets the
+        identity of the client. Returns True if the file has been closed."""
+
+        client_name = client_id.decode(errors="ignore")
+
+        if numeric_id is None:
+            self.logger.error(f"Lost client {client_name}: unknown numeric id, cannot close its file")
+            return False
+
+        self.logger.warning(f"Lost client {client_name}: short finalization (producer stop and file close only)")
+
+        producer_stopped = self._run_client_step(
+            "Producer stop (lost client)",
+            lambda cid: self.data_receiver_service.stop_producer(client_id=numeric_id),
+            client_id,
+        )
+
+        if not producer_stopped:
+            self.logger.warning(f"Lost client {client_name}: producer STOP not confirmed, the board may still be sending")
+
+        closed = self._run_client_step(
+            "File close (lost client)",
+            lambda cid: self.data_receiver_service.close_file(numeric_id, confirmed=True),
+            client_id,
+        )
+
+        if closed:
+            self.logger.info(f"Lost client {client_name}: file closed, the data are partial")
+        else:
+            self.logger.error(f"Lost client {client_name}: failed to close its file")
+
+        return closed
+
     def stop_acq_all_clients(self, client_ids: List[bytes]) -> dict[bytes, bool]:
         results = {}
 
@@ -1329,6 +1371,14 @@ class AcquisitionService:
             self.logger.warning("Acquisition session requested without clients")
             return AcquisitionSessionResult(clients=client_results)
 
+        # Resolved now: if the control plane of a client is lost its identity is forgotten
+        numeric_ids = {client_id: self._resolve_numeric_id(client_id) for client_id in client_ids}
+
+        with self._session_lock:
+            self._session_clients = set(client_ids)
+
+        lost_clients: dict[bytes, str] = {}
+
         try:
             metadata_by_client = self.build_run_metadata(
                 client_ids=client_ids,
@@ -1356,13 +1406,28 @@ class AcquisitionService:
                 self.logger.error("No clients ready for acquisition (all OPEN failed)")
                 return AcquisitionSessionResult(clients=client_results)
 
+
+            with self._session_lock:
+                self._acquiring_clients = set(acquiring_client_ids)
+                lost_while_starting = self._all_acquiring_clients_lost_locked()
+
+            # In case all clients were lost before starting
+            if lost_while_starting:
+                self.logger.warning("Every acquiring client was lost while starting: skipping the acquisition wait")
+                self.request_stop()
+
             # La durata parte solo dopo l'abilitazione; se nessun client è partito
             # si passa direttamente alla finalizzazione.
             if acquiring_client_ids:
                 if duration is not None and duration > 0:
                     stopped_early = self._stop_requested.wait(timeout=duration)
                     if stopped_early:
-                        self.logger.info("Acquisition stopped early by request, before duration elapsed")
+                        with self._session_lock:
+                            lost = bool(self._lost_clients)
+                        if lost:
+                            self.logger.info("Acquisition stopped early: client(s) lost during the session")
+                        else:
+                            self.logger.info("Acquisition stopped early by request, before duration elapsed")
                     else:
                         self.logger.info(f"Acquisition duration ({duration}s) elapsed naturally")
                         if on_duration_elapsed is not None:
@@ -1372,6 +1437,9 @@ class AcquisitionService:
                                 self.logger.exception("on_duration_elapsed callback failed")
                 else:
                     self._stop_requested.wait()
+
+            with self._session_lock:
+                lost_clients = dict(self._lost_clients)
 
         except Exception:
             # Un errore imprevisto dopo l'apertura dei file o l'abilitazione di RC19
@@ -1390,11 +1458,31 @@ class AcquisitionService:
 
             raise
 
-        finalize_results = self.run_hardware_stop_and_flush(client_ids=opened_client_ids, reason=reason, reset_trigger_config=reset_trigger_config)
+        finally:
+            with self._session_lock:
+                self._session_clients = set()
+                self._acquiring_clients = set()
+                self._lost_clients = {}
+            
+
+        # Clients still alive: complete finalization. Lost clients: only what the server can do.
+        alive_client_ids = [client_id for client_id in opened_client_ids if client_id not in lost_clients]
+        lost_opened_client_ids = [client_id for client_id in opened_client_ids if client_id in lost_clients]
+
+        finalize_results = self.run_hardware_stop_and_flush(client_ids=alive_client_ids, reason=reason, reset_trigger_config=reset_trigger_config)
+
+        for client_id in lost_opened_client_ids:
+            finalize_results[client_id] = self._close_lost_client(client_id, numeric_ids.get(client_id))
 
         for client_id in opened_client_ids:
             finalized = finalize_results.get(client_id, False)
             client_results[client_id].finalized = finalized
+
+            # The file of a lost client is partial: never a success, even if it has been closed
+            if client_id in lost_clients:
+                client_results[client_id].success = False
+                client_results[client_id].error = f"client lost during the acquisition ({lost_clients[client_id]})"
+                continue
 
             # Una finalizzazione riuscita non nasconde un errore di avvio.
             client_results[client_id].success = finalized and client_results[client_id].error is None
@@ -1550,6 +1638,7 @@ class AcquisitionService:
                 "multipmt_id": configuration_identity.get("multipmt_id") or "",
                 "batch_id": configuration_identity.get("batch_id") or "",
                 "run_id": run_id if run_id is not None else "",
+                "software_version": __version__,
                 # Bit i set = channel i is fixed bad in the detector JSON; -1 if not known.
                 "fixed_bad_mask": (
                     sum(1 << ch for ch in fixed_bad_channels)
@@ -1638,7 +1727,6 @@ class AcquisitionService:
             self.logger.error(
                 "Reset refused for %s: RC15=%r",
                 client_name,
-                "software_version": __version__,
                 previous,
             )
             return False
@@ -1829,3 +1917,44 @@ class AcquisitionService:
                 acq_type=acq_type, client_identity=client_identity, run_id=run_id
             )
         return client_run_folder
+
+
+    def _all_acquiring_clients_lost_locked(self) -> bool:
+        """True if some clients started and every one of them has been lost.
+        Call it with _session_lock held."""
+        return bool(self._acquiring_clients) and self._acquiring_clients <= set(self._lost_clients)
+
+    def on_client_lost(self, client_id: bytes, plane: CommandPlane):
+        """Listener of ClientLivenessService. It runs in the I/O thread of a manager:
+        it must only update the state and set an Event, never wait for the network."""
+
+        if plane == CommandPlane.MONITORING:
+            return
+
+        client_name = client_id.decode(errors="ignore")
+
+        with self._session_lock:
+            if client_id not in self._session_clients:
+                self.logger.debug(f"Client {client_name} lost on the {plane.value} plane but not in the acquisition session, ignored")
+                return
+
+            if client_id in self._lost_clients:
+                self.logger.debug(f"Client {client_name} already marked as lost in the acquisition session, ignored")
+                return
+
+            self._lost_clients[client_id] = f"client lost on the {plane.value} plane"
+
+            was_acquiring = client_id in self._acquiring_clients
+            remaining = len(self._acquiring_clients - set(self._lost_clients))
+            all_lost = self._all_acquiring_clients_lost_locked()
+
+        self.logger.warning(
+            f"Client {client_name} lost during the acquisition session ({plane.value} plane): "
+            f"was_acquiring={was_acquiring}, acquiring clients left={remaining}"
+        )
+
+        if all_lost:
+            self.logger.warning("Every acquiring client has been lost: requesting the stop of the session")
+            self.request_stop()
+        else:
+            self.logger.info(f"Acquisition session continues without client {client_name}")
