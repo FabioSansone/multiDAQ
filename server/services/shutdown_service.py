@@ -8,11 +8,10 @@ logger = get_logger("shutdown_service")
 
 
 class ShutdownService:
-    def __init__(self, server_state, control_manager, command_service, output_func=None) -> None:
+    def __init__(self, server_state, control_manager, command_service) -> None:
         self.control_manager = control_manager
         self.server_state = server_state
         self.command_service = command_service
-        self.poutput = output_func or (lambda message: None)
         self.logger = get_logger("shutdown_service")
         self.logger.debug("Shutdown Service initialized")
 

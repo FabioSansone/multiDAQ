@@ -80,7 +80,6 @@ class Server(cmd2.Cmd):
             command_service=self.client_command_service,
             time_sync_service=self.time_service,
             monitoring_manager=self.mon_manager,
-            output_func=self.poutput,
         )
         
         self.monitor_stream_service = MonitorStreamService(
@@ -207,7 +206,6 @@ class Server(cmd2.Cmd):
             control_manager=self.control_manager,
             server_state=self.server_state,
             command_service=self.client_command_service,
-            output_func=self.poutput,
         )
 
         self.prompt = f"Server[{self.mode}]> "

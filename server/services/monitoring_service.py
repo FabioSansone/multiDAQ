@@ -21,14 +21,12 @@ class MonitoringService:
         command_service,
         monitoring_manager,
         time_sync_service,
-        output_func=None,
     ) -> None:
 
         self.command_service = command_service
         self.monitoring_manager = monitoring_manager
         self.time_sync_service = time_sync_service
 
-        self.poutput = output_func or (lambda message: None)
         
         self._time_sync_schedule_lock = threading.Lock()
         self._next_resync_ns: dict[bytes, int] = {}
