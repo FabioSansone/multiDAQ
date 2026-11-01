@@ -106,30 +106,24 @@ def do_rc(self, args: argparse.Namespace) -> None:
             "port": args.port,
             "standard_addr": args.standard_addr,
         }
-        timeout_s = 600.0
 
     elif args.parameter == "read":
         payload = {"address": args.address}
-        timeout_s = 35.0
 
     elif args.parameter == "write":
         payload = {"address": args.address, "value": args.value}
-        timeout_s = 35.0
     
     elif args.parameter == "get_rc_acq":
         payload = {"rc_acq_registers": [0,1,10,15,16,18,19,31,39]}
-        timeout_s = 35.0
 
     else:
         payload = {"channels": args.channels}
-        timeout_s = 35.0
 
     for client_id in client_ids:
         reply, reason = self.client_command_service.send_rc_command(
             client_id=client_id,
             command=command,
             payload=payload,
-            timeout_s=timeout_s,
         )
 
         client_name = client_id.decode(errors="ignore")

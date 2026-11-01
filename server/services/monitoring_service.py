@@ -100,7 +100,7 @@ class MonitoringService:
     def read_main_snapshot(
         self,
         client_id: bytes,
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
     ) -> dict:
 
         reply, reason = self.command_service.send_main_command(
@@ -123,7 +123,7 @@ class MonitoringService:
         self,
         client_id: bytes,
         channels="all",
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
     ) -> dict:
 
         reply, reason = self.command_service.send_rc_command(
@@ -148,7 +148,7 @@ class MonitoringService:
         self,
         client_id: bytes,
         channels="all",
-        timeout_s: float = 60.0,
+        timeout_s: float | None = None,
     ) -> dict:
 
         reply, reason = self.command_service.send_hv_command(
@@ -171,7 +171,7 @@ class MonitoringService:
     def read_sensor_status(
         self,
         client_id: bytes,
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
     ) -> dict:
 
         reply, reason = self.command_service.send_main_command(
@@ -195,7 +195,7 @@ class MonitoringService:
         client_id: bytes,
         section: Channel,
         interval_s: float,
-        timeout_s: float = 10.0,
+        timeout_s: float | None = None,
     ) -> dict:
             
             
@@ -264,7 +264,7 @@ class MonitoringService:
         self,
         client_id: bytes,
         section: Channel,
-        timeout_s: float = 10.0,
+        timeout_s: float | None = None,
     ) -> dict:
 
         if section not in {

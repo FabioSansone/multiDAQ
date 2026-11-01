@@ -3,6 +3,7 @@ from common.message_handler import Channel, MessageStatus
 from client.hardware.main.main_messages import MainRequest, MainMessagePriority
 
 from client.communication.priority_utils import resolve_priority_value
+from common.timeouts import client_timeout
 
 
 def _handle_main_command(manager, message, *, main_command: str, timeout_s: float = 30.0):
@@ -66,5 +67,5 @@ def handle_main_read_snapshot(manager, message):
         manager,
         message,
         main_command="main_read_snapshot",
-        timeout_s=30.0,
+        timeout_s=client_timeout("main_read_snapshot"),
     )

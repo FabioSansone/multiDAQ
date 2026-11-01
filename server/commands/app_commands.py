@@ -350,7 +350,6 @@ def do_force(self, args: argparse.Namespace) -> bool:
                 client_id=client_id,
                 command="set_hv_sync",
                 payload={"channels": "all"},
-                timeout_s=90.0,
             )
 
             client_name = client_id.decode(errors="ignore")

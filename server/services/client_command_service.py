@@ -2,6 +2,7 @@ from enum import Enum
 from typing import Optional
 
 from common.message_handler import Channel, ProtocolMessage
+from common.timeouts import server_timeout
 from server.utils.channels import normalize_user_channels
 from server.utils.logger import get_logger
 
@@ -64,8 +65,12 @@ class ClientCommandService:
         client_id: bytes,
         message: ProtocolMessage,
         plane: CommandPlane | str,
-        timeout_s: float,
+        timeout_s: float | None = None,
     ):
+        # Without an explicit value the wait is derived from the command (common.timeouts).
+        if timeout_s is None:
+            timeout_s = server_timeout(message.command)
+
         normalized_plane = self._normalize_plane(plane)
 
         if normalized_plane is None:
@@ -106,7 +111,7 @@ class ClientCommandService:
         )
 
     def send_hv_command(self, client_id, command, payload,
-                        plane=CommandPlane.CONTROL, timeout_s=90.0, priority: int | None = None):
+                        plane=CommandPlane.CONTROL, timeout_s=None, priority: int | None = None):
         normalized_plane = self._normalize_plane(plane)
         if normalized_plane is None:
             return None, "invalid command plane"
@@ -127,7 +132,7 @@ class ClientCommandService:
         )
 
     def send_rc_command(self, client_id, command, payload,
-                        plane=CommandPlane.CONTROL, timeout_s=35.0, priority: int | None = None):
+                        plane=CommandPlane.CONTROL, timeout_s=None, priority: int | None = None):
         normalized_plane = self._normalize_plane(plane)
         if normalized_plane is None:
             return None, "invalid command plane"
@@ -140,7 +145,7 @@ class ClientCommandService:
         )
         
     def send_acq_mode_sync_command(self, client_id, payload,
-                                   plane=CommandPlane.CONTROL, timeout_s=90.0, priority: int | None = None):
+                                   plane=CommandPlane.CONTROL, timeout_s=None, priority: int | None = None):
         """Ask the client to align its hardware to the acquisition mode (set_acq_mode_sync)."""
         normalized_plane = self._normalize_plane(plane)
         if normalized_plane is None:
@@ -159,7 +164,7 @@ class ClientCommandService:
         command,
         payload,
         plane=CommandPlane.MONITORING,
-        timeout_s=35.0,
+        timeout_s=None,
         priority: int | None = None,
     ):
         normalized_plane = self._normalize_plane(plane)
@@ -187,7 +192,7 @@ class ClientCommandService:
         client_id: bytes,
         address: int,
         plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
     ) -> int | None:
         client_name = client_id.decode(errors="ignore")
 
@@ -227,7 +232,7 @@ class ClientCommandService:
         address: int,
         value: int,
         plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
     ) -> bool:
         client_name = client_id.decode(errors="ignore")
 
@@ -264,7 +269,7 @@ class ClientCommandService:
         return True
 
 
-    def set_rc_acquisition_registers(self, client_id: bytes, rc_acq_dict: dict, plane: CommandPlane | str = CommandPlane.CONTROL, priority: int | None = None, timeout_s: float = 60.0,) -> bool:
+    def set_rc_acquisition_registers(self, client_id: bytes, rc_acq_dict: dict, plane: CommandPlane | str = CommandPlane.CONTROL, priority: int | None = None, timeout_s: float | None = None,) -> bool:
 
         client_name = client_id.decode(errors="ignore")
     
@@ -306,7 +311,7 @@ class ClientCommandService:
     
     def get_pmt_serial_map_clients(self, client_id: bytes, requested_channels: str | int | list[int] = "all",
                                   plane: CommandPlane | str = CommandPlane.CONTROL,
-                                  timeout_s: float = 35.0,):
+                                  timeout_s: float | None = None,):
         
         user_serial_map = {}
         client_name = client_id.decode(errors="ignore")
@@ -350,7 +355,7 @@ class ClientCommandService:
         client_id: bytes,
         requested_channels: str | int | list[int] = "all",
         plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
     ) -> dict[int, int] | None:
 
         client_name = client_id.decode(errors="ignore")
@@ -403,7 +408,7 @@ class ClientCommandService:
         client_id: bytes,
         requested_channels: str | int | list[int] = "all",
         plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 35.0,
+        timeout_s: float | None = None,
     ) -> dict[int, int] | None:
 
         client_name = client_id.decode(errors="ignore")
@@ -456,7 +461,7 @@ class ClientCommandService:
         client_id: bytes,
         requested_channels: str | int | list[int] = "all",
         plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 40.0,
+        timeout_s: float | None = None,
     ) -> dict[int, dict[str, int]] | None:
 
         client_name = client_id.decode(errors="ignore")
@@ -512,7 +517,7 @@ class ClientCommandService:
         client_id: bytes,
         requested_channels: str | int | list[int] = "all",
         plane: CommandPlane | str = CommandPlane.CONTROL,
-        timeout_s: float = 300.0,
+        timeout_s: float | None = None,
     ) -> dict[int, str] | None:
 
         client_name = client_id.decode(errors="ignore")
@@ -564,7 +569,7 @@ class ClientCommandService:
         client_id,
         command,
         payload,
-        timeout_s=10.0,
+        timeout_s=None,
         priority: int | None = None,
     ):
 
@@ -590,7 +595,7 @@ class ClientCommandService:
     def _int_keys(values: dict | None) -> dict:
         return {int(key): value for key, value in (values or {}).items()}
 
-    def get_multipmt_hardware_configuration(self, client_id: bytes, requested_channels: str | int | list[int] = "all", rc_flag: bool = False, hv_flag: bool = False, power_flag: bool = False, serial_flag: bool = False, plane=CommandPlane.CONTROL, priority: int | None = None, timeout_s: float = 60.0) -> dict:
+    def get_multipmt_hardware_configuration(self, client_id: bytes, requested_channels: str | int | list[int] = "all", rc_flag: bool = False, hv_flag: bool = False, power_flag: bool = False, serial_flag: bool = False, plane=CommandPlane.CONTROL, priority: int | None = None, timeout_s: float | None = None) -> dict:
         client_name = client_id.decode(errors="ignore")
 
         configuration = {

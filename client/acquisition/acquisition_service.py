@@ -1,6 +1,7 @@
 from common.constants import ACQUISITION_MODES
 from common.message_handler import MessageStatus
 from client.utils.logger import get_logger
+from common.timeouts import RAMP_WAIT_S, client_timeout
 
 
 class AcquisitionService:
@@ -103,10 +104,10 @@ class AcquisitionService:
                 command="hv_off_and_wait",
                 payload={
                     "channels": newly_fixed_on,
-                    "timeout_s": 90.0,
+                    "timeout_s": RAMP_WAIT_S,
                     "poll_s": 2.0,
                 },
-                timeout_s=120.0,
+                timeout_s=client_timeout("hv_off_and_wait"),
             ):
                 self.logger.error(
                     "Cannot power off channels becoming FIXED BAD"
@@ -120,7 +121,7 @@ class AcquisitionService:
         if not self._submit_hv_command(
             command="set_hv_sync",
             payload={"channels": "all"},
-            timeout_s=90.0,
+            timeout_s=client_timeout("set_hv_sync"),
         ):
             self.logger.error(
                 "Cannot synchronize HV state after "
@@ -166,7 +167,7 @@ class AcquisitionService:
             payload={
                 "channels": "all",
             },
-            timeout_s=300.0,
+            timeout_s=client_timeout("hv_off_and_wait"),
         ):
             self.logger.error(
                 "Cannot apply test mode: "
@@ -241,7 +242,7 @@ class AcquisitionService:
                 "channels": "all",
                 "acquisition_configuration": acq_info,
             },
-            timeout_s=300.0,
+            timeout_s=client_timeout("set_acquisition_configuration"),
         ):
             return {
                 "success": False,
@@ -251,7 +252,7 @@ class AcquisitionService:
         if not self._submit_hv_command(
             command="hv_on",
             payload={"channels": "all"},
-            timeout_s=90.0,
+            timeout_s=client_timeout("hv_on"),
         ):
             return {"success": False, "missing_serial_channels": missing_serial_channels}
 
@@ -336,7 +337,7 @@ class AcquisitionService:
                 "channels": hv_channels,
                 "acquisition_configuration": acq_info,
             },
-            timeout_s=300.0,
+            timeout_s=client_timeout("set_acquisition_configuration"),
         ):
             return {"success": False, "missing_serial_channels": missing_serial_channels}
         
@@ -345,7 +346,7 @@ class AcquisitionService:
         if not self._submit_hv_command(
             command="hv_on",
             payload={"channels": hv_channels},
-            timeout_s=90.0,
+            timeout_s=client_timeout("hv_on"),
         ):
             return {"success": False, "missing_serial_channels": missing_serial_channels}
 

@@ -1,6 +1,7 @@
 from client.hardware.hv.hv_interface import HV
 from client.hardware.hv.hv_messages import HVRequest, HVResponse
 from common.message_handler import MessageStatus
+from common.timeouts import RAMP_WAIT_S
 
 
 
@@ -352,7 +353,7 @@ def command_hv_off_and_wait(
 
     result = hv_interface.off_and_wait(
         channels=hv_request.payload["channels"],
-        timeout_s=hv_request.payload.get("timeout_s", 240.0),
+        timeout_s=hv_request.payload.get("timeout_s", RAMP_WAIT_S),
         poll_s=hv_request.payload.get("poll_s", 2.0),
     )
     

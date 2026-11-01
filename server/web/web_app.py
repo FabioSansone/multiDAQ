@@ -137,7 +137,6 @@ class WebControlPanel:
                     command=command,
                     payload=command_payload,
                     plane=CommandPlane.CONTROL,
-                    timeout_s=90.0,
                 )
                 replies.append(self._format_reply(client_id, reply, reason))
 
@@ -186,7 +185,6 @@ class WebControlPanel:
                     command=command,
                     payload=command_payload,
                     plane=CommandPlane.CONTROL,
-                    timeout_s=35.0,
                 )
                 replies.append(self._format_reply(client_id, reply, reason))
 

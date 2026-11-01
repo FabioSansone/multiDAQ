@@ -2,6 +2,7 @@ from common.message_handler import Channel
 from client.hardware.rc.rc_messages import RCRequest, RCMessagePriority
 
 from client.communication.priority_utils import resolve_priority_value
+from common.timeouts import client_timeout
 
 
 def _handle_rc_command(manager, message, *, rc_command: str, timeout_s: float = 30.0):
@@ -43,7 +44,7 @@ def handle_rc_start_acquisition_mode(manager, message):
         manager,
         message,
         rc_command="rc_acq_start",
-        timeout_s=30.0,
+        timeout_s=client_timeout("rc_acq_start"),
     )
 
 
@@ -52,7 +53,7 @@ def handle_rc_boot_mode(manager, message):
         manager,
         message,
         rc_command="rc_boot",
-        timeout_s=30.0,
+        timeout_s=client_timeout("rc_boot"),
     )
 
 
@@ -61,7 +62,7 @@ def handle_rc_reset(manager, message):
         manager,
         message,
         rc_command="rc_reset",
-        timeout_s=30.0,
+        timeout_s=client_timeout("rc_reset"),
     )
 
 
@@ -70,7 +71,7 @@ def handle_rc_read_register(manager, message):
         manager,
         message,
         rc_command="rc_read_register",
-        timeout_s=30.0,
+        timeout_s=client_timeout("rc_read_register"),
     )
 
 
@@ -79,7 +80,7 @@ def handle_rc_write_register(manager, message):
         manager,
         message,
         rc_command="rc_write_register",
-        timeout_s=30.0,
+        timeout_s=client_timeout("rc_write_register"),
     )
     
 def handle_rc_read_acq_registers(manager, message):
@@ -87,7 +88,7 @@ def handle_rc_read_acq_registers(manager, message):
             manager,
             message,
             rc_command="rc_read_acq_registers",
-            timeout_s=30.0,
+            timeout_s=client_timeout("rc_read_acq_registers"),
         )
 
 
@@ -96,7 +97,7 @@ def handle_rc_set_acq_registers(manager, message):
             manager,
             message,
             rc_command="set_rc_acq",
-            timeout_s=30.0,
+            timeout_s=client_timeout("set_rc_acq"),
         )
     
 def handle_rc_all_rate_monitoring(manager, message):
@@ -104,5 +105,5 @@ def handle_rc_all_rate_monitoring(manager, message):
         manager,
         message,
         rc_command="rc_all_rate_monitoring",
-        timeout_s=30.0,
+        timeout_s=client_timeout("rc_all_rate_monitoring"),
     )

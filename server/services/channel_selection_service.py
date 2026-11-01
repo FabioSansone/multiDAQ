@@ -126,7 +126,6 @@ class ChannelSelectionService:
             command="set_hv_sync",
             payload={"channels": "all"},
             plane=plane,
-            timeout_s=90.0,
         )
 
         if sync_reply is None:
@@ -265,7 +264,6 @@ class ChannelSelectionService:
                 command="set_hv_sync",
                 payload={"channels": "all"},
                 plane=plane,
-                timeout_s=90.0,
             )
 
             if sync_reply is None:
@@ -310,7 +308,6 @@ class ChannelSelectionService:
                     command="hv_on_and_wait",
                     payload={"channels": user_ok_off_channels},
                     plane=plane,
-                    timeout_s=300.0,
                 )
 
                 if on_reply is None:

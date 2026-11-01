@@ -165,7 +165,6 @@ class MonitorStreamService:
                     desired_interval_ns
                     / 1_000_000_000
                 ),
-                timeout_s=30.0,
             )
 
             if not result.get("success"):
@@ -192,7 +191,6 @@ class MonitorStreamService:
             result = self.mon_service.stop_sample(
                 client_id=client_id,
                 section=section,
-                timeout_s=30.0,
             )
 
             if not result.get("success"):

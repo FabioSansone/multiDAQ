@@ -373,7 +373,6 @@ class AcquisitionService:
                 "wait_ramp": wait_ramp,
             },
             plane=CommandPlane.ACQUISITION,
-            timeout_s=300.0,
         )
 
         if reply is None:
@@ -1466,7 +1465,6 @@ class AcquisitionService:
             command="rc_read_acq_registers",
             payload={"rc_acq_registers": ACQ_REGISTER_ADDRESSES},
             plane=CommandPlane.ACQUISITION,
-            timeout_s=30.0,
         )
 
         if reply is None:

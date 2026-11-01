@@ -1,3 +1,4 @@
+from common.timeouts import RAMP_WAIT_S
 from server.utils.logger import get_logger
 from server.utils.channels import *
 from server.services.client_command_service import CommandPlane
@@ -18,7 +19,6 @@ class ShutdownService:
     def power_off_hv_on_shutdown(
         self,
         plane: CommandPlane = CommandPlane.CONTROL,
-        timeout_s: float = 120.0
     ) -> None:
 
 
@@ -36,7 +36,6 @@ class ShutdownService:
                 command="set_hv_sync",
                 payload={"channels": "all"},
                 plane=plane,
-                timeout_s=timeout_s,
             )
 
             if sync_reply is None:
@@ -76,11 +75,10 @@ class ShutdownService:
                 command="hv_off_and_wait",
                 payload={
                     "channels": on_channels_external,
-                    "timeout_s": timeout_s,
+                    "timeout_s": RAMP_WAIT_S,
                     "poll_s": 2.0,
                 },
                 plane=plane,
-                timeout_s=timeout_s,
             )
 
             if off_reply is None:

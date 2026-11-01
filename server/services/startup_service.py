@@ -65,7 +65,6 @@ class StartupService:
                 "acquisition_configuration": acq_info,
                 "fixed_bad_channels": fixed_bad_channels,
             },
-            timeout_s=90.0,
         )
 
         if reply is None:

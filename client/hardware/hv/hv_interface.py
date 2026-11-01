@@ -3,6 +3,7 @@ from client.utils.logger import get_logger
 import threading
 from typing import List
 import time
+from common.timeouts import RAMP_WAIT_S
 
 
 
@@ -529,7 +530,7 @@ class HV:
     def get_power_state(
         self,
         channels: List[int] | str | int,
-        timeout_s: float = 300.0,
+        timeout_s: float = RAMP_WAIT_S,
         poll_s: float = 2.0,
     ):
 
@@ -614,7 +615,7 @@ class HV:
         channels,
         acq_configuration: dict,
         wait_ramp: bool = False,
-        ramp_timeout_s: float = 240.0,
+        ramp_timeout_s: float = RAMP_WAIT_S,
         poll_s: float = 2.0,
     ):
         """Set voltage and/or threshold. An entry of acq_configuration may hold only one of
@@ -1379,7 +1380,7 @@ class HV:
         }
     
 
-    def on_and_wait(self, channels: List[int] | str | int, timeout_s: float = 240.0, poll_s: float = 2.0):
+    def on_and_wait(self, channels: List[int] | str | int, timeout_s: float = RAMP_WAIT_S, poll_s: float = 2.0):
         list_channels_selected = self.hv_channels_definition(
             channels=channels,
         )
@@ -1517,7 +1518,7 @@ class HV:
     def off_and_wait(
         self,
         channels: List[int] | str | int,
-        timeout_s: float = 120.0,
+        timeout_s: float = RAMP_WAIT_S,
         poll_s: float = 2.0,
     ):
         list_channels_selected = self.hv_channels_definition(

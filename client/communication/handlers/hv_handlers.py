@@ -4,6 +4,7 @@ from common.message_handler import Channel, MessageStatus
 from client.hardware.hv.hv_messages import HVRequest, HVMessagePriority
 from client.utils.channels import channels_definition
 from client.communication.priority_utils import resolve_priority_value
+from common.timeouts import client_timeout
 
 
 def _handle_hv_command(manager, message, *, hv_command: str, timeout_s: float = 35.0):
@@ -64,7 +65,7 @@ def handle_hv_set_common_voltage(manager, message):
         manager,
         message,
         hv_command="set_common_voltage",
-        timeout_s=35.0,
+        timeout_s=client_timeout("set_common_voltage"),
     )
 
 
@@ -73,7 +74,7 @@ def handle_hv_set_common_threshold(manager, message):
         manager,
         message,
         hv_command="set_common_threshold",
-        timeout_s=35.0,
+        timeout_s=client_timeout("set_common_threshold"),
     )
 
 
@@ -82,19 +83,19 @@ def handle_hv_set_acquisition_configuration(manager, message):
         manager,
         message,
         hv_command="set_acquisition_configuration",
-        timeout_s=300.0,
+        timeout_s=client_timeout("set_acquisition_configuration"),
     )
 
 
 def handle_hv_get_voltage_channels(manager, message):
-    _handle_hv_command(manager=manager, message=message, hv_command="get_voltage_channels", timeout_s=30.0)
+    _handle_hv_command(manager=manager, message=message, hv_command="get_voltage_channels", timeout_s=client_timeout("get_voltage_channels"))
 
 
 def handle_hv_get_threshold_channels(manager, message):
-    _handle_hv_command(manager=manager, message=message, hv_command="get_threshold_channels", timeout_s=30.0)
+    _handle_hv_command(manager=manager, message=message, hv_command="get_threshold_channels", timeout_s=client_timeout("get_threshold_channels"))
 
 def handle_hv_get_volt_thr_channels(manager, message):
-    _handle_hv_command(manager=manager, message=message, hv_command="get_volt_thr_channels", timeout_s=40.0)
+    _handle_hv_command(manager=manager, message=message, hv_command="get_volt_thr_channels", timeout_s=client_timeout("get_volt_thr_channels"))
 
 
 def handle_hv_get_power_state_channels(manager, message):
@@ -102,7 +103,7 @@ def handle_hv_get_power_state_channels(manager, message):
         manager=manager,
         message=message,
         hv_command="get_power_state_channels",
-        timeout_s=300.0,
+        timeout_s=client_timeout("get_power_state_channels"),
     )
 
 
@@ -111,7 +112,7 @@ def handle_hv_on(manager, message):
         manager,
         message,
         hv_command="hv_on",
-        timeout_s=90.0,
+        timeout_s=client_timeout("hv_on"),
     )
 
 
@@ -120,7 +121,7 @@ def handle_hv_off(manager, message):
         manager,
         message,
         hv_command="hv_off",
-        timeout_s=90.0,
+        timeout_s=client_timeout("hv_off"),
     )
 
 
@@ -129,7 +130,7 @@ def handle_hv_set_hv_sync(manager, message):
         manager,
         message,
         hv_command="set_hv_sync",
-        timeout_s=90.0,
+        timeout_s=client_timeout("set_hv_sync"),
     )
 
 def handle_hv_set_on_and_wait(manager, message):
@@ -137,7 +138,7 @@ def handle_hv_set_on_and_wait(manager, message):
         manager,
         message,
         hv_command="hv_on_and_wait",
-        timeout_s=300.0,
+        timeout_s=client_timeout("hv_on_and_wait"),
     )
     
 def handle_hv_off_and_wait(manager, message):
@@ -145,7 +146,7 @@ def handle_hv_off_and_wait(manager, message):
         manager,
         message,
         hv_command="hv_off_and_wait",
-        timeout_s=150.0,
+        timeout_s=client_timeout("hv_off_and_wait"),
     )
 
 def handle_hv_set_user_bad(manager, message):
@@ -153,7 +154,7 @@ def handle_hv_set_user_bad(manager, message):
         manager,
         message,
         hv_command="hv_set_user_bad",
-        timeout_s=150.0,
+        timeout_s=client_timeout("mark_bad"),
     )
 
 def handle_hv_unset_user_bad(manager, message):
@@ -161,7 +162,7 @@ def handle_hv_unset_user_bad(manager, message):
         manager,
         message,
         hv_command="hv_unset_user_bad",
-        timeout_s=150.0,
+        timeout_s=client_timeout("unmark_bad"),
     )
         
 def handle_hv_set_pmt_serials(manager, message):
@@ -197,13 +198,13 @@ def handle_hv_set_pmt_serials(manager, message):
         command="set_pmt_serials",
         payload={"serials": converted_serials},
         status=message.status,
-        deadline_s=time.time() + 60.0,
+        deadline_s=time.time() + client_timeout("set_pmt_serials"),
     )
 
     priority = HVMessagePriority(resolve_priority_value(manager, message))
 
     hv_response = manager.runtime.hv_service.request(
-        hv_request=hv_request, priority=priority, timeout_s=60.0,
+        hv_request=hv_request, priority=priority, timeout_s=client_timeout("set_pmt_serials"),
     )
 
     reply = manager.message_handler.create_reply(
@@ -216,11 +217,11 @@ def handle_hv_set_pmt_serials(manager, message):
 
 
 def handle_get_serial_map(manager, message):
-    _handle_hv_command(manager, message, hv_command="get_serial_map", timeout_s=60.0)
+    _handle_hv_command(manager, message, hv_command="get_serial_map", timeout_s=client_timeout("get_serial_map"))
     
     
 def handle_hv_monitor_snapshot(manager, message):
-    timeout_s = 60.0
+    timeout_s = client_timeout("hv_monitor_snapshot")
 
     if manager.runtime.hv_service is None:
         manager.logger.error(

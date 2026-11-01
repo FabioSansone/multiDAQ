@@ -312,7 +312,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
         payload = {
             "channels": args.channels,
         }
-        timeout_s = 35.0
 
     elif args.command_group == "off":
         command = "hv_off"
@@ -320,7 +319,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
         payload = {
             "channels": args.channels,
         }
-        timeout_s = 35.0
 
     elif args.command_group == "set_common":
         command_map = {
@@ -341,7 +339,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
             "channels": args.channels,
             payload_key: value,
         }
-        timeout_s = 35.0
     
     elif args.command_group == "mark_bad":
         command = "mark_bad"
@@ -350,7 +347,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
             return
         target_client_ids = resolved
         payload = {"channels": args.channels}
-        timeout_s = 35.0
     
     elif args.command_group == "unmark_bad":
         command = "unmark_bad"
@@ -359,7 +355,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
             return
         target_client_ids = resolved
         payload = {"channels": args.channels}
-        timeout_s = 35.0
 
     elif args.command_group == "status":
         command = "set_hv_sync"
@@ -368,7 +363,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
             return
         target_client_ids = resolved
         payload = {"channels": args.channels}
-        timeout_s = 90.0
     
     elif args.command_group == "set_serial":
         if args.parameter == "pmt":
@@ -390,7 +384,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
             command = "set_pmt_serials"
             target_client_ids = resolved
             payload = {"serials": channel_serial_map}
-            timeout_s = 120.0
         
         
         else:
@@ -404,7 +397,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
             return
         target_client_ids = resolved
         payload = {"channels": args.channels}
-        timeout_s = 60.0
 
     else:
         self.poutput(f"Unknown HV command group: {args.command_group}")
@@ -428,7 +420,6 @@ def do_hv(self, args: argparse.Namespace) -> None:
             client_id=client_id,
             command=command,
             payload=payload,
-            timeout_s=timeout_s,
         )
 
         client_name = client_id.decode(errors="ignore")
