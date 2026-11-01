@@ -43,6 +43,7 @@ typedef struct
     int32_t fixed_bad_mask;
 
     char run_id[64];
+    char software_version[32];
 
     int32_t voltage[7];
     int32_t threshold_mv[7];

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field
 
+from common.version import __version__
 from server.services.client_command_service import CommandPlane
 from server.utils.logger import get_logger
 from server.core.server_state import ServerFSM, ServerFSMEvent
@@ -1637,6 +1638,7 @@ class AcquisitionService:
             self.logger.error(
                 "Reset refused for %s: RC15=%r",
                 client_name,
+                "software_version": __version__,
                 previous,
             )
             return False

@@ -114,6 +114,7 @@ typedef struct __attribute__((packed))
     int32_t fixed_bad_mask;
 
     char run_id[64];
+    char software_version[32];
 
     int32_t voltage[7];
     int32_t threshold_mv[7];
@@ -121,7 +122,7 @@ typedef struct __attribute__((packed))
     char hv_channel_state[7][16];
     char hv_power_state[7][16];
 
-    uint8_t reserved[1180];
+    uint8_t reserved[1148];
 
 } file_header_t;
 
@@ -561,6 +562,9 @@ void populate_meta_struct(meta_data_t *meta, char *meta_buff) {
             } else if (strcmp(key, "run_id") == 0){
                 strncpy(meta->run_id, value, sizeof(meta->run_id)-1);
                 meta->run_id[sizeof(meta->run_id)-1] = '\0';
+            } else if (strcmp(key, "software_version") == 0){
+                strncpy(meta->software_version, value, sizeof(meta->software_version)-1);
+                meta->software_version[sizeof(meta->software_version)-1] = '\0';
             } else if (strncmp(key, "voltage_ch", 10) == 0 && strlen(key) == 11) {
                 int ch = key[10] - '0';
                 if (ch >= 0 && ch < 7) {
@@ -679,6 +683,13 @@ int write_header(FILE *file, const meta_data_t *meta)
         sizeof(header.run_id),
         "%s",
         meta->run_id
+    );
+
+    snprintf(
+        header.software_version,
+        sizeof(header.software_version),
+        "%s",
+        meta->software_version
     );
 
     header.fixed_bad_mask = meta->fixed_bad_mask;
