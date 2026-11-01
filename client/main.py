@@ -32,6 +32,10 @@ def main() -> int:
         hv_port=args.hv_port,
     )
 
+    # The previous run may have ended abruptly: do not trust the state of the board
+    if not runtime.startup_safe_state():
+        logger.error("Startup safe state not fully reached, check the log before acquiring")
+
     control_manager = ControlPlaneManager(
         context=context,
         runtime=runtime,

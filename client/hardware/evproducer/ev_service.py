@@ -178,6 +178,46 @@ class EVService:
             self.process = None
             return True
 
+    def kill_stale_processes(self) -> bool:
+        """Kill every evproducer on the board, also the ones this service did not start.
+
+        The evproducer is spawned in its own session, so it survives the client when the
+        client dies abruptly (kill -9, crash). Meant to be used at startup, before this
+        service has spawned its own process. Returns True if none is left."""
+
+        name = self.EV_EXECUTABLE_NAME
+
+        def is_alive() -> bool:
+            return subprocess.run(["pgrep", "-x", name], capture_output=True).returncode == 0
+
+        try:
+            if not is_alive():
+                self.logger.info("No stale evproducer found")
+                return True
+
+            self.logger.warning("Stale evproducer found: terminating it")
+            subprocess.run(["killall", name], capture_output=True)
+
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and is_alive():
+                time.sleep(0.2)
+
+            if is_alive():
+                self.logger.warning("Stale evproducer did not terminate, killing it")
+                subprocess.run(["killall", "-KILL", name], capture_output=True)
+                time.sleep(0.5)
+
+            if is_alive():
+                self.logger.error("Stale evproducer still running")
+                return False
+
+            self.logger.info("Stale evproducer removed")
+            return True
+
+        except Exception:
+            self.logger.exception("Cannot remove the stale evproducer")
+            return False
+
     def status(self) -> dict:
         return {
             "found": self.ev_path is not None,

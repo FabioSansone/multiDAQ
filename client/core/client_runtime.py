@@ -2,6 +2,7 @@ from typing import Optional
 from client.utils.logger import get_logger
 from client.communication.identity import ClientIdentity
 from client.hardware.hv.hv_service import HVService
+from client.hardware.hv.hv_messages import HVMessagePriority
 from client.hardware.rc.rc_service import RCService
 from client.hardware.main.main_service import MainService
 from client.hardware.evproducer.ev_service import EVService
@@ -11,8 +12,12 @@ from client.hardware.feb.feb_service import FEBService
 from common.message_handler import MessageStatus, Channel
 from client.utils.channels import channels_definition
 from client.hardware.rc.rc_interface import RC_HARDWARE_SNAPSHOT
+from common.timeouts import client_timeout
+
+
 
 import queue
+import threading
 import time
 
 
@@ -65,6 +70,10 @@ class ClientRunTime:
         
         
         self._closed = False
+        self._safe_state_lock = threading.Lock()
+        self._acq_safe_lock = threading.Lock()
+        # The pulse on RC15 must not overlap with another one (the two safe states can run together)
+        self._hw_reset_lock = threading.Lock()
         
         self.boot_id = self._read_boot_id()
 
@@ -628,3 +637,267 @@ class ClientRunTime:
                 self.logger.error(f"Failed to read PMT serials for the run snapshot: {serial_error}")
 
         return snapshot
+
+
+    def _read_rc_register(self, address: int) -> int | None:
+        response = self.rc_service._submit_command(
+            command="rc_read_register",
+            payload={"address": address},
+            sender="client_runtime",
+        )
+
+        if response.status != MessageStatus.OK:
+            self.logger.error(f"Cannot read RC register {address}: {response.error}")
+            return None
+
+        return (response.result or {}).get("value")
+
+    def _write_rc_register(self, address: int, value: int) -> bool:
+        response = self.rc_service._submit_command(
+            command="rc_write_register",
+            payload={"address": address, "value": value},
+            sender="client_runtime",
+        )
+
+        if response.status != MessageStatus.OK:
+            self.logger.error(f"Cannot write RC register {address}={value}: {response.error}")
+            return False
+
+        return True
+
+    def _pulse_hardware_reset(self) -> bool:
+        with self._hw_reset_lock:
+            return self._do_pulse_hardware_reset()
+
+    def _do_pulse_hardware_reset(self) -> bool:
+        address = 15
+        reset_mask = 1 << 3
+        writable_mask = 0x1BF
+        pulse_s = 0.1  # duration already used by the verified reset
+
+        previous = self._read_rc_register(address)
+
+        if previous is None or previous & reset_mask:
+            self.logger.error(f"Hardware reset refused: RC{address}={previous!r}")
+            return False
+
+        # Keep the configuration bits, without a reset request or the old flush bit
+        base_value = previous & writable_mask & ~(reset_mask | (1 << 5))
+        held_value = base_value | reset_mask
+
+        asserted = False
+        released = False
+
+        try:
+            if self._write_rc_register(address, held_value):
+                time.sleep(pulse_s)
+                held = self._read_rc_register(address)
+                asserted = held is not None and (held & writable_mask) == held_value
+        finally:
+            # A reset left asserted would keep the DMA blocked
+            released = self._write_rc_register(address, base_value)
+
+        if not asserted:
+            self.logger.error("Hardware reset not confirmed while asserted")
+
+        after = self._read_rc_register(address)
+        released = released and after is not None and (after & writable_mask) == base_value
+
+        if not released:
+            self.logger.error(f"Hardware reset NOT released: RC{address}={after!r}")
+            return False
+
+        if asserted:
+            self.logger.info("Hardware reset pulse completed")
+
+        return asserted
+
+    def startup_safe_state(self) -> bool:
+        """Bring the board to a known safe state when the client starts: the previous client
+        may have died without running enter_safe_state (kill -9, crash, power loss), leaving
+        the channels enabled, an orphan evproducer and the HV on.
+
+        The HVService does not exist yet at this point (the server asks for it later), so it
+        is created for the occasion and dropped afterwards: the server's own request, with
+        the fixed-bad channels, must find it as before. Can last minutes (HV ramp down)."""
+
+        self.logger.warning("Startup: bringing the board to the safe state")
+
+        success = self.evproducer.kill_stale_processes()
+
+        hv_created = False
+        if self.hv_service is None:
+            hv_created = self.ensure_hv_service()
+            if not hv_created:
+                self.logger.error("Startup: HVService unavailable, HV not switched off")
+                success = False
+
+        try:
+            success = self.enter_safe_state() and success
+        finally:
+            if hv_created:
+                self.stop_hv_service()
+
+        if success:
+            self.logger.info("Startup safe state reached")
+        else:
+            self.logger.error("Startup safe state reached with errors")
+
+        return success
+
+    def enter_safe_state(self) -> bool:
+        """Switch everything off without closing the services, so that the client can go
+        back to the handshake: channels disabled, producer stopped, HV off, test mode.
+
+        Every step runs even if a previous one failed. It can last minutes (HV ramp down),
+        so it must not run in a thread that has to keep serving the sockets. A second call
+        while one is running does nothing. Returns True only if every step succeeded.
+        """
+        if not self._safe_state_lock.acquire(blocking=False):
+            self.logger.warning("Safe state already in progress, nothing to do")
+            return True
+
+        try:
+            self.logger.warning("Entering safe state")
+            overall_success = True
+
+            # The recovery worker would switch the channels on again
+            if self.hv_service is not None:
+                try:
+                    self.hv_service.stop_acq_check()
+                except Exception:
+                    self.logger.exception("Safe state: cannot stop the acquisition recovery worker")
+                    overall_success = False
+
+            # RC19 first: the channels are disabled before anything else is stopped
+            if self.rc_service is not None:
+                try:
+                    if not self.zero_rc_registers_on_shutdown():
+                        self.logger.error("Safe state: some RC registers were not reset to 0")
+                        overall_success = False
+                except Exception:
+                    self.logger.exception("Safe state: cannot reset the RC registers")
+                    overall_success = False
+            else:
+                self.logger.error("Safe state: RCService unavailable, RC registers not reset")
+                overall_success = False
+
+            try:
+                if not self.evproducer.stop():
+                    self.logger.error("Safe state: evproducer did not stop")
+                    overall_success = False
+            except Exception:
+                self.logger.exception("Safe state: cannot stop the evproducer")
+                overall_success = False
+
+            # Producer stopped and RC19=0: nothing can be sending, so the pulse cannot hit a RESET_DMA
+            if self.rc_service is not None:
+                try:
+                    if not self._pulse_hardware_reset():
+                        self.logger.error("Safe state: hardware reset pulse failed")
+                        overall_success = False
+                except Exception:
+                    self.logger.exception("Safe state: cannot pulse the hardware reset")
+                    overall_success = False
+
+            if self.hv_service is not None:
+                try:
+                    response = self.hv_service._submit_command(
+                        command="hv_off_and_wait",
+                        payload={"channels": "all"},
+                        sender="client_runtime",
+                        priority=HVMessagePriority.EMERGENCY,
+                        timeout_s=client_timeout("hv_off_and_wait"),
+                    )
+
+                    if response.status != MessageStatus.OK:
+                        self.logger.error(f"Safe state: HV off failed: {response.error}")
+                        overall_success = False
+                    else:
+                        skipped = (response.result or {}).get("skipped_channels", [])
+                        if skipped:
+                            # off_and_wait leaves the channels that are not OK alone: switch them off anyway
+                            self.logger.warning(f"Safe state: forcing OFF the HV channels that are not OK: {skipped}")
+                            force_response = self.hv_service._submit_command(
+                                command="hv_force_off",
+                                payload={"channels": skipped},
+                                sender="client_runtime",
+                                priority=HVMessagePriority.EMERGENCY,
+                                timeout_s=client_timeout("hv_force_off"),
+                            )
+
+                            if force_response.status != MessageStatus.OK:
+                                self.logger.error(f"Safe state: forced HV off failed: {force_response.error}")
+                                overall_success = False
+                            else:
+                                failed = (force_response.result or {}).get("failed_channels", [])
+                                if failed:
+                                    self.logger.error(f"Safe state: HV channels that could not be forced OFF: {failed}")
+                                    overall_success = False
+                except Exception:
+                    self.logger.exception("Safe state: cannot switch the HV off")
+                    overall_success = False
+            else:
+                self.logger.warning("Safe state: HVService unavailable, HV not switched off")
+
+            self.set_acquisition_mode("test")
+
+            if overall_success:
+                self.logger.info("Safe state reached")
+            else:
+                self.logger.error("Safe state reached with errors")
+
+            return overall_success
+
+        finally:
+            self._safe_state_lock.release()
+
+
+    def enter_acquisition_safe_state(self) -> bool:
+        if not self._acq_safe_lock.acquire(blocking=False):
+            self.logger.warning("Acquisition safe state already in progress, nothing to do")
+            return True
+
+        try:
+            self.logger.warning("Entering acquisition safe state")
+            overall_success = True
+
+            # Only RC19: the other registers (RC39 follows the HV, which stay as they are) are left alone
+            if self.rc_service is not None:
+                try:
+                    if not self._write_rc_register(19, 0):
+                        self.logger.error("Acquisition safe state: RC19 not reset to 0")
+                        overall_success = False
+                except Exception:
+                    self.logger.exception("Acquisition safe state: cannot reset RC19")
+                    overall_success = False
+            else:
+                self.logger.error("Acquisition safe state: RCService unavailable, RC19 not reset")
+                overall_success = False
+
+            try:
+                if not self.evproducer.stop():
+                    self.logger.error("Safe state: evproducer did not stop")
+                    overall_success = False
+            except Exception:
+                self.logger.exception("Safe state: cannot stop the evproducer")
+                overall_success = False
+
+            if self.rc_service is not None:
+                try:
+                    if not self._pulse_hardware_reset():
+                        self.logger.error("Safe state: hardware reset pulse failed")
+                        overall_success = False
+                except Exception:
+                    self.logger.exception("Safe state: cannot pulse the hardware reset")
+                    overall_success = False
+
+            if overall_success:
+                self.logger.info("Acquisition safe state reached")
+            else:
+                self.logger.error("Acquisition safe state reached with errors")
+
+            return overall_success
+
+        finally:
+            self._acq_safe_lock.release()
