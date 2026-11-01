@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Built automatically by the server (receiver_service) from evreceiver.c
+server/acquisition/evreceiver
