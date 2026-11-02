@@ -17,6 +17,8 @@ class ClientLivenessService:
         self._listeners: list = []
         self._listeners_lock = threading.Lock()
 
+        self._connecting = threading.Event()
+
         # Clients found complete (control, acquisition, monitoring) and already announced since their last loss
         self.client_announced = set()
         # Clients that have been complete at least once: never cleared by a loss, so that a return
@@ -128,8 +130,17 @@ class ClientLivenessService:
             returning = client_id in self.client_seen
             self.client_seen.add(client_id)
 
+        # connect prints its own messages and configures every client it finds
+        if self._connecting.is_set():
+            self.logger.info(f"Client {client_name} is now on every plane while connect is running: not announced")
+            return True
+
         if not returning:
-            self.logger.info(f"Client {client_name} is now on every plane (first connection)")
+            self.logger.info(f"Client {client_name} is now on every plane (new client), it is not operational until it is configured")
+            self.poutput(
+                f"Client {client_name} has connected on the control, acquisition and monitoring planes. "
+                "It is not operational: run 'reconfigure' to configure it and use it."
+            )
             return True
 
         self.logger.info(f"Client {client_name} is back on every plane, it is not operational until it is configured again")
@@ -188,3 +199,10 @@ class ClientLivenessService:
             except Exception:
                 name = getattr(listener, "__qualname__", repr(listener))
                 self.logger.exception(f"Client-lost listener {name} failed")
+
+
+    def begin_connect(self,) -> None:
+        self._connecting.set()
+
+    def end_connect(self) -> None:
+        self._connecting.clear()
