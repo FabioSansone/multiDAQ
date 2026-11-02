@@ -22,6 +22,7 @@ DEFAULT_CLIENT_TIMEOUT_S = 35.0
 # The server sends an empty frame to every registered client at this interval: with
 # ROUTER_MANDATORY the send fails as soon as the connection of the client is gone.
 LIVENESS_PROBE_INTERVAL_S = 10.0
+HANDSHAKE_STEP_TIMEOUT_S = 20.0
 
 # Commands that wait for a ramp (hardware wait RAMP_WAIT_S).
 _RAMP_COMMAND_S = RAMP_WAIT_S + HW_MARGIN_S
