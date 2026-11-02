@@ -8,7 +8,7 @@ from server.communication.liveness_probe import LivenessProbe
 from server.utils.logger import get_logger
 from server.core.server_state import ServerState
 from server.core.mac_id_registry import MacIdentityRegistry
-from common.timeouts import HANDSHAKE_STEP_TIMEOUT_S
+from common.timeouts import HANDSHAKE_STEP_TIMEOUT_S, CONNECT_CLIENT_WAIT_S
 import threading
 import queue
 
@@ -654,7 +654,52 @@ class ControlPlaneManager:
 
         self.logger.error("No clients connected.")
         return False
-    
+
+    def wait_for_clients(self, target: int | None = None, idle_timeout_s: float = CONNECT_CLIENT_WAIT_S) -> int:
+        """Wait for the clients to be registered on the control plane by the I/O loop (the listener
+        must be running). Returns when `target` clients are registered, or when no new client has
+        arrived for `idle_timeout_s`; with no `target` only the second condition ends the wait.
+        Returns how many clients are registered."""
+
+        if self.listener_thread is None or not self.listener_thread.is_alive():
+            self.logger.error("Cannot wait for clients: the control listener is not running")
+            return len(self.list_connected_clients())
+
+        count = len(self.list_connected_clients())
+        last_change = time.monotonic()
+        goal = "any number" if target is None else str(target)
+        self.logger.info(
+            f"Waiting for clients on the control plane: {count} registered, expected {goal}, "
+            f"giving up after {idle_timeout_s} s without a new client"
+        )
+
+        while not self.stop_listening.is_set():
+            new_count = len(self.list_connected_clients())
+
+            if new_count != count:
+                self.logger.info(f"Control plane: {new_count} client(s) registered (expected {goal})")
+                count = new_count
+                last_change = time.monotonic()
+
+            if target is not None and count >= target:
+                self.logger.info(f"Control plane: the {target} expected client(s) are registered")
+                return count
+
+            if time.monotonic() - last_change >= idle_timeout_s:
+                if target is None:
+                    self.logger.info(f"Control plane: no new client for {idle_timeout_s} s, {count} registered")
+                else:
+                    self.logger.warning(
+                        f"Control plane: no new client for {idle_timeout_s} s, "
+                        f"{count} registered instead of {target}"
+                    )
+                return count
+
+            self.stop_listening.wait(0.2)
+
+        self.logger.warning(f"Wait for clients interrupted: the control listener was stopped ({count} registered)")
+        return count
+
     def notify_shutdown_to_all_clients(self) -> bool:
         if self.socket is None:
             self.logger.error("Communication not yet established with any clients. Standard server shutdown.")

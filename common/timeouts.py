@@ -19,6 +19,9 @@ SERVER_MARGIN_S = 30.0
 
 DEFAULT_CLIENT_TIMEOUT_S = 35.0
 
+# connect waits for the clients until this long passes without a new one arriving
+CONNECT_CLIENT_WAIT_S = 20.0
+
 # The server sends an empty frame to every registered client at this interval: with
 # ROUTER_MANDATORY the send fails as soon as the connection of the client is gone.
 LIVENESS_PROBE_INTERVAL_S = 10.0
