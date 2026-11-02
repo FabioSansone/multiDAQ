@@ -1,8 +1,9 @@
 import queue
 import threading
 from typing import List, Optional
-
+from dataclasses import dataclass
 import zmq
+import time
 
 from common.message_handler import (
     Channel,
@@ -12,12 +13,18 @@ from common.message_handler import (
     ProtocolMessage,
 )
 from common.reply_handler import ReplyHandler
+from common.timeouts import LATE_HELLO_GRACE_S
 from server.communication.liveness_probe import LivenessProbe
 from server.core.server_state import ServerState
 from server.utils.logger import get_logger
 
 
 MAX_RETRIES = 5
+
+@dataclass
+class PendingHello:
+    message: ProtocolMessage
+    deadline: float
 
 
 class AcquisitionPlaneManager:
@@ -50,6 +57,9 @@ class AcquisitionPlaneManager:
         self.acq_client_admitted_callback = None
 
         self.reply_handler = ReplyHandler(logger=get_logger("reply_handler"))
+
+        # Hellos that arrived before the control plane admitted the client (only the I/O thread uses it)
+        self._pending_hellos: dict[bytes, PendingHello] = {}
 
         self.logger = get_logger("acquisition_manager")
         self.liveness_probe = LivenessProbe(self.logger)
@@ -84,6 +94,9 @@ class AcquisitionPlaneManager:
 
     def start_connection(self, port: int) -> bool:
         """Start the AcquisitionPlane ROUTER socket."""
+
+        # The waiting hellos belong to the previous socket
+        self._pending_hellos.clear()
 
         if self.socket is not None:
             try:
@@ -449,12 +462,48 @@ class AcquisitionPlaneManager:
     def _handle_late_hello(self, client_id: bytes, message: ProtocolMessage) -> None:
         """A hello arrives while the plane is being served: a client that lost this plane
         is coming back. The I/O loop must survive whatever goes wrong here."""
-        self.logger.info(f"Acquisition hello received from {client_id!r} while serving: readmitting the client")
+        if not self.server_state.is_client_on_plane(client_id=client_id, plane="control"):
+            # The client sends this hello right after its control handshake: the server may not have
+            # admitted it on the control plane yet. Keep the hello and try again, for a short time.
+            if client_id in self._pending_hellos:
+                self.logger.debug(f"Acquisition hello from {client_id!r} replaces the one already waiting")
 
+            self._pending_hellos[client_id] = PendingHello(
+                message=message,
+                deadline=time.monotonic() + LATE_HELLO_GRACE_S,
+            )
+            self.logger.info(
+                f"Acquisition hello from {client_id!r}: client not yet on the control plane, "
+                f"hello kept for up to {LATE_HELLO_GRACE_S} s"
+            )
+            return
+
+        self.logger.info(f"Acquisition hello received from {client_id!r} while serving: readmitting the client")
+        self._readmit(client_id, message)
+
+    def _readmit(self, client_id: bytes, message: ProtocolMessage) -> None:
         try:
             self._accept_hello(client_id, message)
         except Exception:
             self.logger.exception(f"Failed to readmit client {client_id!r} on the acquisition plane")
+
+    def _retry_pending_hellos(self) -> None:
+        """Called at every turn of the I/O loop: serve the waiting hellos whose client is now on the
+        control plane, drop the ones that waited too long."""
+        now = time.monotonic()
+
+        for client_id, pending in list(self._pending_hellos.items()):
+            if self.server_state.is_client_on_plane(client_id=client_id, plane="control"):
+                # Out of the dictionary first: the hello must be served once, whatever happens
+                del self._pending_hellos[client_id]
+                self.logger.info(f"Acquisition hello of {client_id!r}: client now on the control plane, readmitting it")
+                self._readmit(client_id, pending.message)
+            elif pending.deadline < now:
+                del self._pending_hellos[client_id]
+                self.logger.warning(
+                    f"Acquisition hello of {client_id!r} dropped: client still not on the control plane "
+                    f"after {LATE_HELLO_GRACE_S} s"
+                )
 
     def _acquisition_io_loop(self) -> None:
         """
@@ -485,6 +534,8 @@ class AcquisitionPlaneManager:
             self.liveness_probe.run_if_due(
                 self.socket, self.server_state.list_acquisition_clients(), self._notify_client_lost,
             )
+
+            self._retry_pending_hellos()
 
             while True:
                 try:
@@ -618,6 +669,9 @@ class AcquisitionPlaneManager:
             and self.acq_event_thread.is_alive()
         ):
             self.acq_event_thread.join(timeout=2.0)
+
+        # Nobody serves the waiting hellos any more
+        self._pending_hellos.clear()
 
         self.logger.info("Acquisition listener stopped")
 

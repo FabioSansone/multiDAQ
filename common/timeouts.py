@@ -24,6 +24,11 @@ DEFAULT_CLIENT_TIMEOUT_S = 35.0
 LIVENESS_PROBE_INTERVAL_S = 10.0
 HANDSHAKE_STEP_TIMEOUT_S = 20.0
 
+# The client says hello on the acquisition and monitoring planes right after its control handshake, but
+# the server admits it on the control plane in another thread: the hello can arrive first. The server keeps
+# it this long and tries again at every turn of the I/O loop.
+LATE_HELLO_GRACE_S = 3.0
+
 # Commands that wait for a ramp (hardware wait RAMP_WAIT_S).
 _RAMP_COMMAND_S = RAMP_WAIT_S + HW_MARGIN_S
 _HV_SYNC_S = 90.0
