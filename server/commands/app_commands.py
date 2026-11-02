@@ -108,6 +108,62 @@ def do_change_mode(self, args):
 
 
 @cmd2.with_category("Generic Commands")
+@command_guard([
+    ServerFSM.CONNECTED,
+    ServerFSM.READY,
+])
+def do_reconfigure(self, _) -> None:
+    """Configure again, in the current mode, the clients that are not operational. The others are not touched."""
+
+    common_clients = self.server_state.list_common_plane_clients()
+    operational = set(self.server_state.get_operational_clients())
+    to_reconfigure = [cid for cid in common_clients if cid not in operational]
+
+    # A client on the control plane only cannot be configured: say so instead of ignoring it
+    incomplete = [cid for cid in self.server_state.list_connected_clients() if cid not in common_clients]
+    if incomplete:
+        incomplete_names = sorted(cid.decode(errors="ignore") for cid in incomplete)
+        self.poutput(f"Clients not on the acquisition plane, they cannot be configured yet: {incomplete_names}")
+        logger.warning(f"Reconfigure: clients without the acquisition plane skipped: {incomplete_names}")
+
+    if not to_reconfigure:
+        if common_clients:
+            self.poutput("All the clients connected on both planes are operational: nothing to reconfigure.")
+            logger.info("Reconfigure: every client on both planes is already operational")
+        else:
+            self.poutput("No client is connected on both planes.")
+            logger.warning("Reconfigure: no client connected on both planes")
+        return
+
+    names = sorted(cid.decode(errors="ignore") for cid in to_reconfigure)
+    self.poutput(f"Reconfiguring {len(names)} client(s) in mode '{self.mode}': {names}")
+    logger.info(f"Reconfigure requested for {names} in mode '{self.mode}'")
+
+    success = self.startup_service.configure_clients(
+        client_ids=to_reconfigure,
+        mode=self.mode,
+        partial=True,
+    )
+
+    if not success:
+        self.poutput("Reconfiguration failed. Check the messages above and the log: the command can be run again.")
+        logger.error(f"Reconfigure failed for {names}")
+        return
+
+    # configure_clients succeeds when at least one client is ready: tell which ones are not
+    operational_now = set(self.server_state.get_operational_clients())
+    still_not_operational = sorted(cid.decode(errors="ignore") for cid in to_reconfigure if cid not in operational_now)
+
+    if still_not_operational:
+        self.poutput(f"Reconfiguration completed, but these clients are still not operational: {still_not_operational}")
+        logger.warning(f"Reconfigure completed with clients still not operational: {still_not_operational}")
+        return
+
+    self.poutput("Reconfiguration completed: every client is operational.")
+    logger.info(f"Reconfigure completed for {names}")
+
+
+@cmd2.with_category("Generic Commands")
 @command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
 def do_quit(self, _) -> bool:
     """Send quit command to all connected clients"""

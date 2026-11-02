@@ -241,6 +241,7 @@ class Server(cmd2.Cmd):
         
         #GENERIC COMMANDS#
         self.do_change_mode = app_commands.do_change_mode.__get__(self, Server)
+        self.do_reconfigure = app_commands.do_reconfigure.__get__(self, Server)
         self.do_connect = app_commands.do_connect.__get__(self, Server)
         self.do_quit = app_commands.do_quit.__get__(self, Server)
         self.do_force = app_commands.do_force.__get__(self, Server)

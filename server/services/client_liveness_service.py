@@ -135,7 +135,7 @@ class ClientLivenessService:
         self.logger.info(f"Client {client_name} is back on every plane, it is not operational until it is configured again")
         self.poutput(
             f"Client {client_name} is back on the control, acquisition and monitoring planes. "
-            "It is not operational: configure it again to use it (for example with change_mode)."
+            "It is not operational: run 'reconfigure' to configure it again and use it."
         )
         return True
 
