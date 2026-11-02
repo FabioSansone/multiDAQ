@@ -43,6 +43,7 @@ class ControlPlaneManager:
         self.event_thread: Optional[threading.Thread] = None
         self.event_callback = None
         self.client_lost_callback = None
+        self.client_admitted_callback = None
         
         self.mac_register = mac_identity_registry
 
@@ -364,6 +365,8 @@ class ControlPlaneManager:
             f"multipmt_id={multipmt_id}, batch_id={batch_id}, acq_mode={self.server_state.get_mode()}"
         )
 
+        self._notify_client_admitted(client_id)
+
         return True
 
 
@@ -605,6 +608,7 @@ class ControlPlaneManager:
 
         self.add_client(client_id, session.identity)
         self._handshake_sessions.pop(client_id, None)
+        self._notify_client_admitted(client_id=client_id)
 
         self.logger.info(
             f"Handshake completed successfully with client {client_id!r}, "
@@ -718,6 +722,19 @@ class ControlPlaneManager:
             self.logger.exception(f"Control client lost callback failed: client={client_id!r}: {exc}")
 
 
+    def _notify_client_admitted(self, client_id: bytes) -> None:
+        """The handshake is complete and the client is registered on the control plane: let the
+        registered callback decide what to do. It runs in the I/O thread, so it must not block."""
+        self.logger.info(f"Control client {client_id!r} admitted")
+
+        if self.client_admitted_callback is None:
+            return
+
+        try:
+            self.client_admitted_callback(client_id)
+        except Exception as exc:
+            self.logger.exception(f"Control client admitted callback failed: client={client_id!r}: {exc}")
+    
     def _control_io_loop(self) -> None:
         """
         Owns the ROUTER socket after the handshake.

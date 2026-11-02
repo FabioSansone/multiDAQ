@@ -225,6 +225,13 @@ class Server(cmd2.Cmd):
         self.mon_manager.mon_client_lost_callback = partial(
             self.client_liveness_service.handle_client_lost, plane=CommandPlane.MONITORING)
 
+        self.control_manager.client_admitted_callback = partial(
+            self.client_liveness_service.handle_client_plane_connected, plane=CommandPlane.CONTROL)
+        self.acq_manager.acq_client_admitted_callback = partial(
+            self.client_liveness_service.handle_client_plane_connected, plane=CommandPlane.ACQUISITION)
+        self.mon_manager.mon_client_admitted_callback = partial(
+            self.client_liveness_service.handle_client_plane_connected, plane=CommandPlane.MONITORING)
+
         # Who needs to know that a client is gone, besides the registries.
         self.client_liveness_service.register_listener(self.acquisition_service.on_client_lost)
 

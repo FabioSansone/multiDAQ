@@ -47,6 +47,7 @@ class AcquisitionPlaneManager:
         self.acq_event_thread: Optional[threading.Thread] = None
         self.acq_event_callback = None
         self.acq_client_lost_callback = None
+        self.acq_client_admitted_callback = None
 
         self.reply_handler = ReplyHandler(logger=get_logger("reply_handler"))
 
@@ -338,6 +339,8 @@ class AcquisitionPlaneManager:
             f"acq_mode={self.server_state.get_mode()}"
         )
 
+        self._notify_client_admitted(client_id)
+
         return True
 
     def handshake(self) -> bool:
@@ -431,6 +434,17 @@ class AcquisitionPlaneManager:
             self.acq_client_lost_callback(client_id)
         except Exception as exc:
             self.logger.exception(f"Acquisition client lost callback failed: client={client_id!r}: {exc}")
+
+    def _notify_client_admitted(self, client_id: bytes) -> None:
+        """The client is registered on the acquisition plane: let the registered callback decide
+        what to do. It runs in the thread that served the hello, so it must not block."""
+        if self.acq_client_admitted_callback is None:
+            return
+
+        try:
+            self.acq_client_admitted_callback(client_id)
+        except Exception as exc:
+            self.logger.exception(f"Acquisition client admitted callback failed: client={client_id!r}: {exc}")
 
     def _handle_late_hello(self, client_id: bytes, message: ProtocolMessage) -> None:
         """A hello arrives while the plane is being served: a client that lost this plane

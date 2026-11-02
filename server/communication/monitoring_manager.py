@@ -61,6 +61,7 @@ class MonitoringPlaneManager:
         self.mon_client_disconnected_callback = None
         self.mon_client_lost_callback = None
         self.mon_client_reconnected_callback = None
+        self.mon_client_admitted_callback = None
 
         self.time_sync_service = time_sync_service
         self.time_sync_waiters: dict[tuple[bytes, str], queue.Queue] = {}
@@ -381,6 +382,8 @@ class MonitoringPlaneManager:
                     f"client={client_id!r}: {exc}"
                 )
 
+        self._notify_client_admitted(client_id)
+
         return True
 
     def handshake(self) -> bool:
@@ -496,6 +499,17 @@ class MonitoringPlaneManager:
             self.mon_client_lost_callback(client_id)
         except Exception as exc:
             self.logger.exception(f"Monitoring client lost callback failed: client={client_id!r}: {exc}")
+
+    def _notify_client_admitted(self, client_id: bytes) -> None:
+        """The client is registered on the monitoring plane: let the registered callback decide
+        what to do. It runs in the thread that served the hello, so it must not block."""
+        if self.mon_client_admitted_callback is None:
+            return
+
+        try:
+            self.mon_client_admitted_callback(client_id)
+        except Exception as exc:
+            self.logger.exception(f"Monitoring client admitted callback failed: client={client_id!r}: {exc}")
 
     def _handle_late_hello(self, client_id: bytes, message: ProtocolMessage) -> None:
         """A hello arrives while the plane is being served: a client that lost this plane

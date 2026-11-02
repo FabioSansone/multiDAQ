@@ -17,6 +17,13 @@ class ClientLivenessService:
         self._listeners: list = []
         self._listeners_lock = threading.Lock()
 
+        # Clients found complete (control, acquisition, monitoring) and already announced since their last loss
+        self.client_announced = set()
+        # Clients that have been complete at least once: never cleared by a loss, so that a return
+        # can be told from a first connection
+        self.client_seen = set()
+        self._announce_lock = threading.Lock()
+
         self.poutput = output_func or (lambda message: None)
 
         self.logger = get_logger('client_liveness_service')
@@ -46,6 +53,9 @@ class ClientLivenessService:
                 self._cancel_pending_replies(client_id, plane="acquisition")
                 self._cancel_pending_replies(client_id, plane="monitoring")
 
+                with self._announce_lock:
+                    self.client_announced.discard(client_id)
+
                 self.logger.info(f"Client {client_name} removed from every plane and from the operational clients")
                 self.poutput(f"Client {client_name} lost on the control plane: removed from every plane, it has to reconnect.")
 
@@ -63,6 +73,9 @@ class ClientLivenessService:
                 self.acquisition_manager.remove_client(client_id)
                 self._cancel_pending_replies(client_id, plane="acquisition")
 
+                with self._announce_lock:
+                    self.client_announced.discard(client_id)
+
                 self.logger.info(f"Client {client_name} removed from the acquisition plane and from the operational clients")
                 self.poutput(f"Client {client_name} lost on the acquisition plane: it is no longer operational until the plane is recovered.")
 
@@ -70,6 +83,9 @@ class ClientLivenessService:
                 # The manager also stops the time-sync of the client and invalidates its streams
                 self.monitor_manager.remove_client(client_id)
                 self._cancel_pending_replies(client_id, plane="monitoring")
+
+                with self._announce_lock:
+                    self.client_announced.discard(client_id)
 
                 self.logger.info(f"Client {client_name} removed from the monitoring plane")
                 self.poutput(f"Client {client_name} lost on the monitoring plane: monitoring stopped for this client.")
@@ -81,6 +97,48 @@ class ClientLivenessService:
         self._notify_listeners(client_id=client_id, plane=plane)
 
         return True
+
+    def handle_client_plane_connected(self, client_id: bytes, plane: CommandPlane | str) -> bool:
+        """Returns True if this call found the client on every plane for the first time since its
+        last loss. The user is told only when the client had been complete before (a return)."""
+
+        client_name = client_id.decode(errors="ignore")
+
+        try:
+            plane = CommandPlane(plane)
+        except ValueError:
+            self.logger.error(f"Client {client_name} reported admitted on an unknown plane: {plane!r}")
+            return False
+
+        self.logger.info(f"Client {client_name} connected on the {plane.value} plane")
+
+        missing = [p for p in ("control", "acquisition", "monitoring") if not self.server_state.is_client_on_plane(client_id=client_id, plane=p)]
+
+        if missing:
+            self.logger.debug(f"Client {client_name} is not complete yet, missing planes: {missing}")
+            return False
+
+        # Check and update under the same lock: the planes can complete from different threads
+        with self._announce_lock:
+            if client_id in self.client_announced:
+                self.logger.info(f"Client {client_name} already announced on every plane, nothing to do")
+                return False
+
+            self.client_announced.add(client_id)
+            returning = client_id in self.client_seen
+            self.client_seen.add(client_id)
+
+        if not returning:
+            self.logger.info(f"Client {client_name} is now on every plane (first connection)")
+            return True
+
+        self.logger.info(f"Client {client_name} is back on every plane, it is not operational until it is configured again")
+        self.poutput(
+            f"Client {client_name} is back on the control, acquisition and monitoring planes. "
+            "It is not operational: configure it again to use it (for example with change_mode)."
+        )
+        return True
+
 
     def _remove_from_every_plane(self, client_id: bytes) -> None:
         # Through the managers where they do more than the registry (monitoring: time-sync and streams)
