@@ -343,6 +343,7 @@ class ServerState:
         self.pending_terminal_state: ServerFSM | None = None
         self.pending_context: dict | None = None
         self.pending_configuration_source: ServerFSM | None = None
+        self.pending_configuration_partial: bool = False
 
         self.last_event_context: dict | None = None
         self.error_context: dict | None = None
@@ -630,6 +631,7 @@ class ServerState:
                             self._common_plane_client_ids_locked(),
                         )
                     )
+
                 except ValueError as exc:
                     self.logger.error(str(exc))
                     return False
@@ -646,9 +648,17 @@ class ServerState:
                     )
                     return False
 
-                # A new configuration invalidates the previous operational set
-                # until its result is known.
-                self._clear_operational_locked()
+                partial = bool(metadata_payload.get("partial", False))
+                self.pending_configuration_partial = partial
+
+                if partial:
+                    records = [target_record for cid, target_record in self.clients.items() if cid in target_clients]
+                    for record in records:
+                        record.operational = False
+                else:
+                    # A new configuration invalidates the previous operational set
+                    # until its result is known.
+                    self._clear_operational_locked()
                 for target_client in target_clients:
                     self._set_client_state_locked(
                         target_client, ClientFSM.CONFIGURING, event_context
@@ -704,7 +714,12 @@ class ServerState:
                     )
                     return False
 
-                self._set_operational_locked(successful_clients)
+                if self.pending_configuration_partial:
+                    succ_records = [target_record for cid, target_record in self.clients.items() if cid in successful_clients]
+                    for record in succ_records:
+                        record.operational = True
+                else:
+                    self._set_operational_locked(successful_clients)
 
                 for configured_client in successful_clients:
                     self._set_client_state_locked(
@@ -745,7 +760,12 @@ class ServerState:
                     )
                     return False
 
-                self._clear_operational_locked()
+                if self.pending_configuration_partial:
+                    failed_records = [target_record for cid, target_record in self.clients.items() if cid in failed_clients]
+                    for record in failed_records:
+                        record.operational = False
+                else:
+                    self._clear_operational_locked()
 
                 for failed_client in failed_clients:
                     self._set_client_state_locked(
@@ -932,6 +952,7 @@ class ServerState:
                 ServerFSMEvent.CONFIGURATION_FAILED,
             }:
                 self.pending_configuration_source = None
+                self.pending_configuration_partial = False
 
         if present_state == next_state:
             self.logger.info(

@@ -101,7 +101,10 @@ class StartupService:
         self.logger.info(f"Client {client_name} synchronized to mode '{reply_mode}'")
         return True
 
-    def configure_clients(self, client_ids: list[bytes], mode: str) -> bool:
+    def configure_clients(self, client_ids: list[bytes], mode: str, partial: bool = False) -> bool:
+        """Synchronize `client_ids` to `mode`. By default the result replaces the whole operational set
+        (the other clients stop being operational). With `partial` only these clients change: the
+        operational flag of the others is kept."""
         if not client_ids:
             self.poutput("No clients to configure.")
             self.logger.warning("configure_clients called with no clients")
@@ -111,7 +114,7 @@ class StartupService:
             event=ServerFSMEvent.CONFIGURATION_STARTED,
             reason=f"Startup configuration for mode '{mode}'",
             source="startup_service",
-            metadata={"target_clients": client_ids},
+            metadata={"target_clients": client_ids, "partial": partial},
         )
 
         if not started:
