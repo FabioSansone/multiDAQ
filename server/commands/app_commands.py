@@ -1,5 +1,6 @@
 import argparse
 import cmd2
+from common.timeouts import CONNECT_CLIENT_WAIT_S
 from server.utils.logger import get_logger
 from server.utils.channels import *
 from server.core.server_state import command_guard, ServerFSM, ServerFSMEvent
@@ -504,23 +505,13 @@ def do_list_clients(self, _) -> None:
 #CONNECTION COMMANDS#
 #####################
 
-connect_parser = argparse.ArgumentParser()
-connect_parser.add_argument("--num_clients", type=int, help="The number of clients expected to connect", default=1)
-connect_parser.add_argument("--control_port", type=int, help="Selects the port to establish the connection", default=8888)
-connect_parser.add_argument("--acq_port", type=int, help="Selects the port to establish the acquisition connection", default=8889)
-connect_parser.add_argument("--mon_port", type=int, help="Selects the port to establish the monitoring connection", default=8890,)
-
-@cmd2.with_argparser(connect_parser)
-@cmd2.with_category("Connection Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONTROL_CONNECTED])
-def do_connect(self, args: argparse.Namespace) -> None:
-    """Wait for one or more clients to connect through the control and acquisition planes."""
+def _run_connect(self, args) -> None:
 
     requested_clients = args.num_clients
 
     logger.info(f"Connect command received: num_clients={requested_clients}")
 
-    if requested_clients <= 0:
+    if requested_clients is not None and requested_clients <= 0:
         self.poutput("num_clients must be greater than 0")
         logger.warning(f"Invalid num_clients value: {requested_clients}")
         return
@@ -529,6 +520,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
         self.control_manager.listener_thread is not None
         and self.control_manager.listener_thread.is_alive()
     )
+
     acq_listener_was_running = (
         self.acq_manager.acq_listener_thread is not None
         and self.acq_manager.acq_listener_thread.is_alive()
@@ -539,9 +531,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
         and self.mon_manager.mon_listener_thread.is_alive()
     )
 
-    if control_listener_was_running:
-        self.poutput("Stopping control listener temporarily to accept new handshakes...")
-        self.control_manager.stop_listener()
+
 
     if acq_listener_was_running:
         self.poutput("Stopping acquisition listener temporarily to accept new handshakes...")
@@ -557,8 +547,6 @@ def do_connect(self, args: argparse.Namespace) -> None:
         if not started:
             self.poutput("Failed to start control connection.")
             logger.error(f"Failed to start control connection on port {args.control_port}")
-            if control_listener_was_running:
-                self.control_manager.start_listener()
             if acq_listener_was_running:
                 self.acq_manager.start_listener()
             if mon_listener_was_running:
@@ -566,22 +554,40 @@ def do_connect(self, args: argparse.Namespace) -> None:
                 self.monitoring_service.start_time_sync_scheduler()
             return
 
+    # Clear first, then start: a listener that was already running owns queues with real messages
+    if not control_listener_was_running:
+        self.control_manager.clear_queues()
+
+    # The I/O loop of the control plane admits the clients: it stays on for the whole connect
+    if not self.control_manager.start_listener():
+        self.poutput("Failed to start control listener.")
+        logger.error("Failed to start control listener")
+        if acq_listener_was_running:
+            self.acq_manager.start_listener()
+        if mon_listener_was_running:
+            self.mon_manager.start_listener()
+            self.monitoring_service.start_time_sync_scheduler()
+        return
+
     already_connected = len(self.server_state.list_connected_clients())
-    target_total = max(requested_clients, already_connected)
+    target_total = None if requested_clients is None else max(requested_clients, already_connected)
 
-    self.control_manager.num_multi_clients = target_total
-    self.control_manager.clear_queues()
-
-    self.poutput(
-        f"Trying to reach {target_total} connected client(s). "
-        f"Currently connected: {already_connected}."
-    )
+    if target_total is None:
+        self.poutput(
+            "Waiting for clients (no fixed number: the wait ends when no new client arrives for "
+            f"{CONNECT_CLIENT_WAIT_S:g} s). Currently connected: {already_connected}."
+        )
+    else:
+        self.poutput(
+            f"Trying to reach {target_total} connected client(s). "
+            f"Currently connected: {already_connected}."
+        )
 
     current_state = self.server_state.get_server_state()
-    control_ready = self.control_manager.handshake()
+    connected_count = self.control_manager.wait_for_clients(target=target_total)
     connected = self.server_state.list_connected_clients()
 
-    if not control_ready or not connected:
+    if connected_count <= 0 or not connected:
         self.server_state.process_event(
             event=ServerFSMEvent.CONTROL_CONNECTION_FAILED,
             reason="No clients connected during control-plane handshake",
@@ -589,14 +595,22 @@ def do_connect(self, args: argparse.Namespace) -> None:
         )
         self.poutput("No clients connected.")
         logger.warning("No clients connected after control-plane handshake.")
-        if control_listener_was_running:
-            self.control_manager.start_listener()
         if acq_listener_was_running:
             self.acq_manager.start_listener()
         if mon_listener_was_running:
             self.mon_manager.start_listener()
             self.monitoring_service.start_time_sync_scheduler()
         return
+
+    if target_total is not None and len(connected) < target_total:
+        self.poutput(
+            f"Only {len(connected)} of {target_total} client(s) connected: "
+            "continuing with the connected ones."
+        )
+        logger.warning(
+            f"Control plane reached {len(connected)} of {target_total} clients: "
+            "continuing with the connected ones"
+        )
 
     if current_state == ServerFSM.DISCONNECTED:
         control_transitioned = self.server_state.process_event(
@@ -612,10 +626,11 @@ def do_connect(self, args: argparse.Namespace) -> None:
 
     decoded_clients = [cid.decode(errors="ignore") for cid in connected]
 
-    self.poutput(f"Control plane ready with {len(connected)}/{target_total} client(s).")
+    expected = "" if target_total is None else f"/{target_total}"
+    self.poutput(f"Control plane ready with {len(connected)}{expected} client(s).")
     self.poutput(f"Connected clients: {decoded_clients}")
     logger.info(
-        f"Control plane ready with {len(connected)}/{target_total} clients: {decoded_clients}"
+        f"Control plane ready with {len(connected)}{expected} clients: {decoded_clients}"
     )
 
     if self.acq_manager.socket is None:
@@ -623,8 +638,6 @@ def do_connect(self, args: argparse.Namespace) -> None:
         if not started:
             self.poutput("Failed to start acquisition connection.")
             logger.error(f"Failed to start acquisition connection on port {args.acq_port}")
-            if control_listener_was_running:
-                self.control_manager.start_listener()
             if acq_listener_was_running:
                 self.acq_manager.start_listener()
             if mon_listener_was_running:
@@ -645,8 +658,6 @@ def do_connect(self, args: argparse.Namespace) -> None:
         )
         self.poutput("Acquisition plane handshake failed.")
         logger.error("Acquisition plane handshake failed.")
-        if control_listener_was_running:
-            self.control_manager.start_listener()
         if acq_listener_was_running:
             self.acq_manager.start_listener()
         if mon_listener_was_running:
@@ -729,14 +740,9 @@ def do_connect(self, args: argparse.Namespace) -> None:
                 "Monitoring Plane handshake did not connect any clients."
             )
 
-    self.control_manager.clear_queues()
     self.acq_manager.clear_queues()
     self.mon_manager.clear_queues()
 
-    if not self.control_manager.start_listener():
-        logger.error("Failed to start control listener")
-        self.poutput("Failed to start control listener")
-        return
 
     if not self.acq_manager.start_listener():
         logger.error("Failed to start acquisition listener")
@@ -771,8 +777,30 @@ def do_connect(self, args: argparse.Namespace) -> None:
                         f"client={client_name}"
                     )
                     
+    # Before the list: a client that completes in between is announced (and maybe configured twice)
+    # instead of being neither configured nor announced
+    self.client_liveness_service.end_connect()
     client_ids = self.server_state.list_common_plane_clients()
     self.startup_service.configure_clients(client_ids=client_ids, mode=self.mode)
+
+
+connect_parser = argparse.ArgumentParser()
+connect_parser.add_argument("--num_clients", type=int, help="The number of clients expected to connect", default=None)
+connect_parser.add_argument("--control_port", type=int, help="Selects the port to establish the connection", default=8888)
+connect_parser.add_argument("--acq_port", type=int, help="Selects the port to establish the acquisition connection", default=8889)
+connect_parser.add_argument("--mon_port", type=int, help="Selects the port to establish the monitoring connection", default=8890,)
+
+@cmd2.with_argparser(connect_parser)
+@cmd2.with_category("Connection Commands")
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONTROL_CONNECTED])
+def do_connect(self, args: argparse.Namespace) -> None:
+    """Wait for one or more clients to connect through the control and acquisition planes."""
+    self.client_liveness_service.begin_connect()
+    try:
+        _run_connect(self, args)
+    finally:
+        self.client_liveness_service.end_connect()
+
 
 ########################
 #DETECTOR CONFIGURATION#
