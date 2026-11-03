@@ -9,6 +9,7 @@ from client.core.client_runtime import ClientRunTime
 from client.communication.control_manager import ControlPlaneManager
 from client.communication.acquisition_manager import AcquisitionPlaneManager
 from client.communication.monitoring_manager import MonitoringPlaneManager
+from common.timeouts import PLANE_HELLO_WAIT_S
 
 
 def main() -> int:
@@ -83,7 +84,7 @@ def main() -> int:
                 time.sleep(1)
                 continue
 
-            if not acquisition_manager.handshake(max_retries=None):
+            if not acquisition_manager.handshake(timeout_ms=int(PLANE_HELLO_WAIT_S * 1000), max_retries=None):
                 logger.error("Acquisition-plane handshake failed")
                 time.sleep(1)
                 continue
@@ -95,7 +96,7 @@ def main() -> int:
                 time.sleep(1)
                 continue
 
-            if not monitoring_manager.handshake(max_retries=None):
+            if not monitoring_manager.handshake(timeout_ms=int(PLANE_HELLO_WAIT_S * 1000), max_retries=None):
                 logger.error("Monitoring-plane handshake failed")
                 time.sleep(1)
                 continue

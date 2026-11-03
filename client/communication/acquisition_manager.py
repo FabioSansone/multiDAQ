@@ -216,13 +216,28 @@ class AcquisitionPlaneManager:
             self.logger.error("Failed to send acquisition hello message")
             return False
 
-        message, reason = self.receive_message(timeout_ms)
+        deadline = time.monotonic() + timeout_ms / 1000
 
-        if message is None:
-            self.logger.error(
-                f"Acquisition handshake failed while waiting for server acquisition ready: {reason}"
-            )
-            return False
+        while True:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            message, reason = self.receive_message(max(remaining_ms, 0))
+
+            if message is None:
+                self.logger.error(
+                    f"Acquisition handshake failed while waiting for server acquisition ready: {reason}"
+                )
+                return False
+
+            # The ready of an earlier attempt that the server answered late: it is not for this hello
+            if (
+                message.msg_type == MessageType.HANDSHAKE
+                and message.phase == "acquisition_ready"
+                and message.in_reply_to != acq_hello_message.request_id
+            ):
+                self.logger.warning("Ignoring the acquisition ready of an earlier hello")
+                continue
+
+            break
 
         if message.msg_type != MessageType.HANDSHAKE:
             self.logger.error(

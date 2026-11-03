@@ -32,6 +32,11 @@ HANDSHAKE_STEP_TIMEOUT_S = 20.0
 # it this long and tries again at every turn of the I/O loop.
 LATE_HELLO_GRACE_S = 3.0
 
+# The client says hello on the acquisition and monitoring planes right after its control handshake, but a
+# server running connect starts serving them only when the wait for the other clients is over: the client
+# must wait for the ready longer than that, or it gives up just before the server answers.
+PLANE_HELLO_WAIT_S = CONNECT_CLIENT_WAIT_S + HANDSHAKE_STEP_TIMEOUT_S
+
 # A client that comes back on the monitoring plane gets its sample streams started again. The command can
 # reach it before its own command thread is up: the reconciliation is tried a few times, a few seconds apart.
 STREAM_RECONCILE_ATTEMPTS = 3

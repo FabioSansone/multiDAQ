@@ -265,13 +265,28 @@ class MonitoringPlaneManager:
             self.logger.error("Failed to send monitoring hello message")
             return False
 
-        message, reason, _ = self.receive_message(timeout_ms)
+        deadline = time.monotonic() + timeout_ms / 1000
 
-        if message is None:
-            self.logger.error(
-                f"Monitoring handshake failed while waiting for server monitoring ready: {reason}"
-            )
-            return False
+        while True:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            message, reason, _ = self.receive_message(max(remaining_ms, 0))
+
+            if message is None:
+                self.logger.error(
+                    f"Monitoring handshake failed while waiting for server monitoring ready: {reason}"
+                )
+                return False
+
+            # The ready of an earlier attempt that the server answered late: it is not for this hello
+            if (
+                message.msg_type == MessageType.HANDSHAKE
+                and message.phase == "monitoring_ready"
+                and message.in_reply_to != mon_hello_message.request_id
+            ):
+                self.logger.warning("Ignoring the monitoring ready of an earlier hello")
+                continue
+
+            break
 
         if message.msg_type != MessageType.HANDSHAKE:
             self.logger.error(
