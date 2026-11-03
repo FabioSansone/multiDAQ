@@ -139,7 +139,8 @@ class ClientLivenessService:
             self.logger.info(f"Client {client_name} is now on every plane (new client), it is not operational until it is configured")
             self.poutput(
                 f"Client {client_name} has connected on the control, acquisition and monitoring planes. "
-                "It is not operational: run 'reconfigure' to configure it and use it."
+                "It is not operational: run 'reconfigure' to configure it and use it. "
+                "If a monitoring session is running, run 'monitor save start' (or 'monitor show start') again to include it."
             )
             return True
 
