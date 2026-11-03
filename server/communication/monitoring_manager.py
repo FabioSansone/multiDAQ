@@ -355,7 +355,7 @@ class MonitoringPlaneManager:
             return False
 
         if self.server_state.is_client_on_plane(client_id=client_id, plane="monitoring"):
-            self.logger.warning(f"Client {client_id!r} is already registered on the monitoring plane: previous session considered lost")
+            self.logger.debug(f"Client {client_id!r} is already registered on the monitoring plane: previous session considered lost")
             self._notify_client_lost(client_id)
 
         self.add_client(client_id)
@@ -490,7 +490,7 @@ class MonitoringPlaneManager:
     def _notify_client_lost(self, client_id: bytes) -> None:
         """The ROUTER told us the client is gone: let the registered callback decide what to do.
         It runs in the I/O thread, so it must not block."""
-        self.logger.warning(f"Monitoring client {client_id!r} lost")
+        self.logger.debug(f"Monitoring client {client_id!r} lost")
 
         if self.mon_client_lost_callback is None:
             return

@@ -25,6 +25,9 @@ class ClientLivenessService:
         # can be told from a first connection
         self.client_seen = set()
         self._announce_lock = threading.Lock()
+        # (client, plane) whose loss has been reported and that has not been complete again since: a client that
+        # repeats its hello while it is still joining is reported once, not at every hello
+        self._loss_reported = set()
 
         self.poutput = output_func or (lambda message: None)
 
@@ -42,7 +45,14 @@ class ClientLivenessService:
             self.logger.error(f"Client {client_name} reported lost on an unknown plane: {plane!r}")
             return False
 
-        self.logger.warning(f"Client {client_name} reported lost on the {plane.value} plane")
+        with self._announce_lock:
+            repeated = (client_id, plane) in self._loss_reported
+            self._loss_reported.add((client_id, plane))
+
+        if repeated:
+            self.logger.debug(f"Client {client_name} lost again on the {plane.value} plane before being complete again: not reported")
+        else:
+            self.logger.warning(f"Client {client_name} reported lost on the {plane.value} plane")
 
         if not self.server_state.is_client_on_plane(client_id=client_id, plane=plane.value):
             self.logger.info(f"Client {client_name} is no longer registered on the {plane.value} plane, nothing to do")
@@ -57,9 +67,13 @@ class ClientLivenessService:
 
                 with self._announce_lock:
                     self.client_announced.discard(client_id)
+                    # The whole client starts again: the other planes will be reported afresh
+                    self._loss_reported.discard((client_id, CommandPlane.ACQUISITION))
+                    self._loss_reported.discard((client_id, CommandPlane.MONITORING))
 
-                self.logger.info(f"Client {client_name} removed from every plane and from the operational clients")
-                self.poutput(f"Client {client_name} lost on the control plane: removed from every plane, it has to reconnect.")
+                if not repeated:
+                    self.logger.info(f"Client {client_name} removed from every plane and from the operational clients")
+                    self.poutput(f"Client {client_name} lost on the control plane: removed from every plane, it has to reconnect.")
 
             elif plane == CommandPlane.ACQUISITION:
                 # Before the removal, so that the log shows the state the client was in
@@ -78,8 +92,9 @@ class ClientLivenessService:
                 with self._announce_lock:
                     self.client_announced.discard(client_id)
 
-                self.logger.info(f"Client {client_name} removed from the acquisition plane and from the operational clients")
-                self.poutput(f"Client {client_name} lost on the acquisition plane: it is no longer operational until the plane is recovered.")
+                if not repeated:
+                    self.logger.info(f"Client {client_name} removed from the acquisition plane and from the operational clients")
+                    self.poutput(f"Client {client_name} lost on the acquisition plane: it is no longer operational until the plane is recovered.")
 
             elif plane == CommandPlane.MONITORING:
                 # The manager also stops the time-sync of the client and invalidates its streams
@@ -89,8 +104,9 @@ class ClientLivenessService:
                 with self._announce_lock:
                     self.client_announced.discard(client_id)
 
-                self.logger.info(f"Client {client_name} removed from the monitoring plane")
-                self.poutput(f"Client {client_name} lost on the monitoring plane: monitoring stopped for this client.")
+                if not repeated:
+                    self.logger.info(f"Client {client_name} removed from the monitoring plane")
+                    self.poutput(f"Client {client_name} lost on the monitoring plane: monitoring stopped for this client.")
 
         except Exception:
             self.logger.exception(f"Failed to handle the loss of client {client_name} on the {plane.value} plane")
@@ -127,6 +143,7 @@ class ClientLivenessService:
                 return False
 
             self.client_announced.add(client_id)
+            self._loss_reported = {key for key in self._loss_reported if key[0] != client_id}
             returning = client_id in self.client_seen
             self.client_seen.add(client_id)
 
