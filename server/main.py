@@ -308,10 +308,27 @@ class Server(cmd2.Cmd):
         
         self.mon_manager.mon_sample_callback = self.monitor_sample_dispatcher.dispatch
         self.mon_manager.mon_client_disconnected_callback = self.monitor_stream_service.invalidate_client_actual_state
-        self.mon_manager.mon_client_reconnected_callback = self.monitor_stream_service.invalidate_client_actual_state
+        self.mon_manager.mon_client_reconnected_callback = self._on_monitoring_client_reconnected
         self.mon_manager.mon_event_callback = (self.monitor_event_dispatcher.dispatch)
 
     
+
+    def _on_monitoring_client_reconnected(self, client_id: bytes) -> None:
+        """A client is back on the monitoring plane (runs in its I/O thread: it must not wait for the network).
+        Its producers may be gone with its process: the streams are started again in the background."""
+        self.monitor_stream_service.invalidate_client_actual_state(client_id)
+        self.monitor_stream_service.reconcile_client_streams_in_background(
+            client_id, on_done=self._report_stream_reconciliation,
+        )
+
+    def _report_stream_reconciliation(self, client_id: bytes, success: bool) -> None:
+        if success:
+            return
+
+        self.poutput(
+            f"Client {client_id.decode(errors='ignore')}: the monitoring streams could not be started again "
+            "after it came back. Start the monitoring again (for example 'monitor save start')."
+        )
 
     def set_mode(self, new_mode: str) -> bool:
 

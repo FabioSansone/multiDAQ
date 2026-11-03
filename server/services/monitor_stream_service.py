@@ -4,6 +4,7 @@ import time
 import copy
 from enum import Enum
 
+from common.timeouts import STREAM_RECONCILE_ATTEMPTS, STREAM_RECONCILE_RETRY_S
 from server.utils.logger import get_logger
 from common.message_handler import Channel
 
@@ -53,6 +54,11 @@ class MonitorStreamService:
         self.mon_service = monitor_service
 
         self._producer_locks: dict[tuple[bytes, Channel],threading.Lock] = {}
+
+        # Reconciliations running in the background, one at a time per client
+        self._reconcile_lock = threading.Lock()
+        self._reconcile_running: set[bytes] = set()
+        self._reconcile_again: set[bytes] = set()
         
         self.logger = get_logger("monitor_stream_service")
         self.logger.debug("Monitoring Stream Service initialized")
@@ -723,3 +729,89 @@ class MonitorStreamService:
             )
 
         return all_success
+
+
+    def reconcile_client_streams_in_background(self, client_id: bytes, on_done=None) -> bool:
+        """Reconcile the streams of a client that came back, in a worker thread: the callbacks of the
+        monitoring plane run in its I/O thread and must not wait for the network, and the reconciliation
+        sends commands and waits for their replies.
+
+        `on_done(client_id, success)` is called by the worker when it is over. If a reconciliation of the
+        same client is already running it is asked to go through again once it ends (the client may have
+        restarted meanwhile) and this call returns False."""
+
+        with self._reconcile_lock:
+            if client_id in self._reconcile_running:
+                self._reconcile_again.add(client_id)
+                self.logger.info(
+                    f"Monitoring stream reconciliation already running for client={client_id!r}: it will run again"
+                )
+                return False
+
+            self._reconcile_running.add(client_id)
+
+        threading.Thread(
+            target=self._reconcile_worker,
+            args=(client_id, on_done),
+            daemon=True,
+            name="monitor-stream-reconcile",
+        ).start()
+
+        return True
+
+    def _reconcile_worker(self, client_id: bytes, on_done) -> None:
+        success = False
+
+        try:
+            while True:
+                success = self._reconcile_with_retries(client_id)
+
+                with self._reconcile_lock:
+                    if client_id in self._reconcile_again:
+                        self._reconcile_again.discard(client_id)
+                        continue
+
+                    self._reconcile_running.discard(client_id)
+                    break
+
+        except Exception:
+            self.logger.exception(f"Monitoring stream reconciliation crashed: client={client_id!r}")
+            success = False
+
+            with self._reconcile_lock:
+                self._reconcile_running.discard(client_id)
+                self._reconcile_again.discard(client_id)
+
+        if on_done is None:
+            return
+
+        try:
+            on_done(client_id, success)
+        except Exception:
+            self.logger.exception(f"Monitoring stream reconciliation callback failed: client={client_id!r}")
+
+    def _reconcile_with_retries(self, client_id: bytes) -> bool:
+        """The streams that are already running are left alone (action NONE): trying again is safe."""
+
+        for attempt in range(1, STREAM_RECONCILE_ATTEMPTS + 1):
+            if not self.mon_service.monitoring_manager.is_client_connected(client_id):
+                self.logger.warning(
+                    f"Monitoring stream reconciliation stopped: client={client_id!r} left the monitoring plane again"
+                )
+                return False
+
+            if self.reconcile_client_streams(client_id=client_id):
+                return True
+
+            if attempt < STREAM_RECONCILE_ATTEMPTS:
+                self.logger.warning(
+                    f"Monitoring stream reconciliation failed for client={client_id!r} "
+                    f"(attempt {attempt}/{STREAM_RECONCILE_ATTEMPTS}), trying again in {STREAM_RECONCILE_RETRY_S} s"
+                )
+                time.sleep(STREAM_RECONCILE_RETRY_S)
+
+        self.logger.error(
+            f"Monitoring stream reconciliation failed for client={client_id!r} "
+            f"after {STREAM_RECONCILE_ATTEMPTS} attempts"
+        )
+        return False

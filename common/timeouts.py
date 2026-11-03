@@ -32,6 +32,11 @@ HANDSHAKE_STEP_TIMEOUT_S = 20.0
 # it this long and tries again at every turn of the I/O loop.
 LATE_HELLO_GRACE_S = 3.0
 
+# A client that comes back on the monitoring plane gets its sample streams started again. The command can
+# reach it before its own command thread is up: the reconciliation is tried a few times, a few seconds apart.
+STREAM_RECONCILE_ATTEMPTS = 3
+STREAM_RECONCILE_RETRY_S = 5.0
+
 # Commands that wait for a ramp (hardware wait RAMP_WAIT_S).
 _RAMP_COMMAND_S = RAMP_WAIT_S + HW_MARGIN_S
 _HV_SYNC_S = 90.0
