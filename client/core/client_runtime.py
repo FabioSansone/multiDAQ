@@ -22,6 +22,10 @@ import time
 
 
 SHUTDOWN_ZERO_REGISTERS = [19, 15, 1, 0, 39, 16, 18]
+# RC1 and RC0 keep the FEBs in data mode, and the HV boards answer on the Modbus only through the FEBs:
+# the safe state zeroes them after the HV off, not before
+SAFE_STATE_FIRST_REGISTERS = [19, 15]
+SAFE_STATE_LAST_REGISTERS = [1, 0, 39, 16, 18]
 RC39_CHANNEL_MASK = 0x7F
 RC39_EXTERNAL_RATE_BIT = 1 << 7
 RC39_AUTO_RATE_BIT = 1 << 8
@@ -250,10 +254,10 @@ class ClientRunTime:
         self.start_thr = None
         self.logger.debug("Acquisition configuration cleared")
 
-    def zero_rc_registers_on_shutdown(self) -> bool:
+    def zero_rc_registers_on_shutdown(self, registers: list[int] | None = None) -> bool:
         overall_success = True
 
-        for address in SHUTDOWN_ZERO_REGISTERS:
+        for address in registers or SHUTDOWN_ZERO_REGISTERS:
             response = self.rc_service._submit_command(
                 command="rc_write_register",
                 payload={
@@ -712,6 +716,29 @@ class ClientRunTime:
 
         return asserted
 
+    def _open_hv_link(self) -> bool:
+        """Put the FEBs in data mode (rc_acq_start: RC1, RC0 and RC39), the only way to reach the HV
+        boards on the Modbus. RC19 is zeroed first, so that nothing can be acquired while they are on."""
+        if self.rc_service is None:
+            self.logger.error("Safe state: RCService unavailable, the HV boards cannot be reached")
+            return False
+
+        for command, payload in (
+            ("rc_write_register", {"address": 19, "value": 0}),
+            ("rc_acq_start", {"channels": "all"}),
+        ):
+            response = self.rc_service._submit_command(
+                command=command,
+                payload=payload,
+                sender="client_runtime_safe_state",
+            )
+
+            if response.status != MessageStatus.OK:
+                self.logger.error(f"Safe state: the HV boards cannot be reached, {command} failed: {response.error}")
+                return False
+
+        return True
+
     def startup_safe_state(self) -> bool:
         """Bring the board to a known safe state when the client starts: the previous client
         may have died without running enter_safe_state (kill -9, crash, power loss), leaving
@@ -727,6 +754,10 @@ class ClientRunTime:
 
         hv_created = False
         if self.hv_service is None:
+            # The HVService checks the address of every channel when it starts: the FEBs must already answer
+            if not self._open_hv_link():
+                success = False
+
             hv_created = self.ensure_hv_service()
             if not hv_created:
                 self.logger.error("Startup: HVService unavailable, HV not switched off")
@@ -772,7 +803,7 @@ class ClientRunTime:
             # RC19 first: the channels are disabled before anything else is stopped
             if self.rc_service is not None:
                 try:
-                    if not self.zero_rc_registers_on_shutdown():
+                    if not self.zero_rc_registers_on_shutdown(SAFE_STATE_FIRST_REGISTERS):
                         self.logger.error("Safe state: some RC registers were not reset to 0")
                         overall_success = False
                 except Exception:
@@ -801,6 +832,10 @@ class ClientRunTime:
                     overall_success = False
 
             if self.hv_service is not None:
+                # RC1 and RC0 are still on only if nothing zeroed them since the last mode: do not count on it
+                if not self._open_hv_link():
+                    overall_success = False
+
                 try:
                     response = self.hv_service._submit_command(
                         command="hv_off_and_wait",
@@ -839,6 +874,16 @@ class ClientRunTime:
                     overall_success = False
             else:
                 self.logger.warning("Safe state: HVService unavailable, HV not switched off")
+
+            # After the HV off: the FEBs are not needed any more
+            if self.rc_service is not None:
+                try:
+                    if not self.zero_rc_registers_on_shutdown(SAFE_STATE_LAST_REGISTERS):
+                        self.logger.error("Safe state: some RC registers were not reset to 0")
+                        overall_success = False
+                except Exception:
+                    self.logger.exception("Safe state: cannot reset the RC registers")
+                    overall_success = False
 
             self.set_acquisition_mode("test")
 
