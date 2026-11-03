@@ -339,7 +339,7 @@ class HVModBus:
         try:
             self._safe_write_coil(addr=1, value=True, slave=slave, desc="power on")
         except ModbusException as e:
-            self.logger.error(f"Error occured powering on channel {self.ch_addr}:{e}")
+            self.logger.error(f"Error occured powering on channel {slave}:{e}")
             raise e
     
     def powerOff(self, slave=None):
@@ -347,7 +347,7 @@ class HVModBus:
         try:
             self._safe_write_coil(addr=1, value=False, slave=slave, desc="power off")
         except ModbusException as e:
-            self.logger.error(f"Error occured powering off channel {self.ch_addr}:{e}")
+            self.logger.error(f"Error occured powering off channel {slave}:{e}")
             raise e
     
     def reset(self, slave=None):
@@ -355,7 +355,7 @@ class HVModBus:
         try:
             self._safe_write_coil(addr=2, value=True, slave=slave, desc="reset")
         except ModbusException as e:
-            self.logger.error(f"Error occured resetting channel {self.ch_addr}:{e}")
+            self.logger.error(f"Error occured resetting channel {slave}:{e}")
             raise e
     
     def getInfo(self, slave=None):
