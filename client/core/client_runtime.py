@@ -762,6 +762,9 @@ class ClientRunTime:
             if not hv_created:
                 self.logger.error("Startup: HVService unavailable, HV not switched off")
                 success = False
+            else:
+                # The thread that executes the HV commands: the AcquisitionService starts it, but it does not run yet
+                self.hv_service.start()
 
         try:
             success = self.enter_safe_state() and success
