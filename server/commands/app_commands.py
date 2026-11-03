@@ -749,7 +749,8 @@ def _run_connect(self, args) -> None:
         self.poutput("Failed to start acquisition listener")
         return
 
-    if mon_ready:
+    # The listener also starts with no monitoring client yet: one that arrives later is served from here on
+    if self.mon_manager.socket is not None:
         if not self.mon_manager.start_listener():
             logger.error("Failed to start monitoring listener")
             self.poutput("Failed to start monitoring listener")
