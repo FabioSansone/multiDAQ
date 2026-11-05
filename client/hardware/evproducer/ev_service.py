@@ -1,7 +1,8 @@
 import subprocess
+from datetime import datetime
 from pathlib import Path
 import time
-from client.utils.logger import get_logger
+from client.utils.logger import LoggerManager, get_logger
 
 
 class EVService:
@@ -20,6 +21,7 @@ class EVService:
 
         self.ev_path = self._find_ev_path()
         self.process: subprocess.Popen | None = None
+        self.output_path: Path | None = None
 
     def _find_ev_path(self) -> Path | None:
         for path in self.EV_POSSIBLE_PATHS:
@@ -60,15 +62,35 @@ class EVService:
             return False
     
     def _spawn_evproducer(self, server_ip: str, client_id: int | None = None) -> subprocess.Popen:
-        return subprocess.Popen(
-            [str(self.ev_path), "--host", server_ip, "--id", str(client_id)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            start_new_session=True,
-        )
-    
+        # The output goes to a file, not to a pipe: nobody reads a pipe after the startup check,
+        # and a full pipe would block the evproducer on its next write.
+        log_dir = getattr(LoggerManager, "_log_dir", Path.cwd())
+        self.output_path = log_dir / f"evproducer_{datetime.now().strftime('%Y%m%d')}.log"
+
+        with open(self.output_path, "a") as output:
+            output.write(f"\n===== {datetime.now().isoformat(timespec='seconds')} start, client id {client_id} =====\n")
+            output.flush()
+
+            return subprocess.Popen(
+                [str(self.ev_path), "--host", server_ip, "--id", str(client_id)],
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+    def _output_tail(self, max_bytes: int = 2000) -> str:
+        if self.output_path is None:
+            return ""
+
+        try:
+            with open(self.output_path, "rb") as output:
+                output.seek(0, 2)
+                output.seek(max(0, output.tell() - max_bytes))
+                return output.read().decode(errors="replace").strip()
+        except OSError:
+            return ""
+
     def _check_process_alive_after_startup(self, process: subprocess.Popen)-> bool:
         startup_check_time_s = 1.0
         check_interval_s = 0.2
@@ -79,17 +101,13 @@ class EVService:
             return_code = process.poll()
             
             if return_code is not None:
-                stdout, stderr = process.communicate(timeout=1)
-
                 self.logger.error(
                     f"evproducer exited during startup with return code {return_code}"
                 )
 
-                if stdout.strip():
-                    self.logger.error(f"evproducer stdout: {stdout.strip()}")
-
-                if stderr.strip():
-                    self.logger.error(f"evproducer stderr: {stderr.strip()}")
+                tail = self._output_tail()
+                if tail:
+                    self.logger.error(f"evproducer output (from {self.output_path}): {tail}")
 
                 return False
             
