@@ -84,33 +84,36 @@ class FEBService:
         """Put the FEB in boot mode and flash it, trying again if stm32flash fails.
 
         Every attempt starts from the RC reset, since a failed attempt leaves the
-        bootloader in an unknown state."""
+        bootloader in an unknown state. The Modbus line is kept quiet during each attempt."""
 
         for attempt in range(1, self.FLASH_ATTEMPTS + 1):
-            if not self._submit_rc_command(
-                command="rc_reset",
-                payload={"channels": "all"},
-                timeout_s=30.0,
-            ):
-                self.logger.error(
-                    f"Failed to reset RC before boot mode for FEB channel {ch}"
-                )
-                return False
+            # The checks of the HV service read the Modbus line while stm32flash talks to the bootloader
+            # and disturb it: they wait until the attempt is over
+            with self.runtime.hv_service.exclusive_modbus():
+                if not self._submit_rc_command(
+                    command="rc_reset",
+                    payload={"channels": "all"},
+                    timeout_s=30.0,
+                ):
+                    self.logger.error(
+                        f"Failed to reset RC before boot mode for FEB channel {ch}"
+                    )
+                    return False
 
-            time.sleep(0.1)
+                time.sleep(0.1)
 
-            if not self._submit_rc_command(
-                command="rc_boot",
-                payload={"channels": str(ch)},
-                timeout_s=30.0,
-            ):
-                self.logger.error(f"Failed to put FEB channel {ch} in boot mode")
-                return False
+                if not self._submit_rc_command(
+                    command="rc_boot",
+                    payload={"channels": str(ch)},
+                    timeout_s=30.0,
+                ):
+                    self.logger.error(f"Failed to put FEB channel {ch} in boot mode")
+                    return False
 
-            time.sleep(0.1)
+                time.sleep(0.1)
 
-            if self._flash(baud=baud, firmware=firmware, port=port):
-                return True
+                if self._flash(baud=baud, firmware=firmware, port=port):
+                    return True
 
             if self._resolve_firmware_path(firmware) is None:
                 # A missing firmware file is not going to appear at the next attempt

@@ -3,6 +3,7 @@ import queue
 import threading
 import time
 import itertools
+from contextlib import contextmanager
 
 from client.utils.logger import get_logger
 from client.hardware.hv.hv_interface import HV
@@ -124,6 +125,16 @@ class HVService:
             self.logger.error(f"Error while updating stored HV parameters after {hv_request.command}: {e}")
         
         
+    @contextmanager
+    def exclusive_modbus(self):
+        """Keep the Modbus line quiet while a FEB is flashed through its bootloader.
+
+        Every Modbus access of the HV worker (and so every check of the check loop) takes the same
+        lock: while it is held here they wait, and run when it is released. It must not be held
+        while waiting for a reply of the HV worker."""
+        with self.hv.hv.hardware_lock:
+            yield
+
     def _submit_command(self, *, command: str, payload: dict, sender: str, priority: HVMessagePriority = HVMessagePriority.CONTROL, timeout_s: float = 35.0,) -> HVResponse:
         hv_request = HVRequest(
             protocol_version=PROTOCOL_VERSION,
