@@ -45,6 +45,12 @@ program_parser.add_argument("--firmware", type=str, default=None,
 program_parser.add_argument("--port", type=str, default="/dev/ttyPS1", help="UART port used by stm32flash on the client")
 program_parser.add_argument("--standard-addr", type=int, default=None, help="Optional default FEB Modbus address after flashing")
 
+align_parser = rc_subparsers.add_parser("align_hv",
+                                        help="Set the HV address of each FEB to its RC channel + 1, without flashing the firmware")
+align_parser.add_argument("--channels", type=str, default="all",
+                          help='Channels selected. Can be "all" or comma separated string list')
+align_parser.add_argument("--standard-addr", type=int, default=None, help="Optional Modbus address to look for first when scanning the FEB")
+
 
 
 
@@ -55,6 +61,7 @@ COMMAND_FSM_MAP = {
     "read": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING},
     "write": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "program_feb": {ServerFSM.READY, ServerFSM.CONNECTED},
+    "align_hv": {ServerFSM.READY, ServerFSM.CONNECTED},
     "get_rc_acq": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING}
 }
 
@@ -65,6 +72,7 @@ COMMAND_MAP = {
     "read": "rc_read_register",
     "write": "rc_write_register",
     "program_feb": "feb_program",
+    "align_hv": "feb_program",
     "get_rc_acq": "rc_read_acq_registers"
 }
 
@@ -107,6 +115,13 @@ def do_rc(self, args: argparse.Namespace) -> None:
             "standard_addr": args.standard_addr,
         }
 
+    elif args.parameter == "align_hv":
+        payload = {
+            "channels": args.channels,
+            "standard_addr": args.standard_addr,
+            "flash": False,
+        }
+
     elif args.parameter == "read":
         payload = {"address": args.address}
 
@@ -138,14 +153,15 @@ def do_rc(self, args: argparse.Namespace) -> None:
         result = reply_payload.get("result", {})
         error = reply_payload.get("error")
 
-        if args.parameter == "program_feb":
+        if args.parameter in ("program_feb", "align_hv"):
             successful = result.get("successful_channels", [])
             failed = result.get("failed_channels", [])
+            operation = "FEB programming" if args.parameter == "program_feb" else "HV address alignment"
 
             if status == "ok":
-                self.poutput(f"Client {client_name}: FEB programming completed. Successful channels: {successful}")
+                self.poutput(f"Client {client_name}: {operation} completed. Successful channels: {successful}")
             else:
-                self.poutput(f"Client {client_name}: FEB programming failed. Successful: {successful}, failed: {failed}")
+                self.poutput(f"Client {client_name}: {operation} failed. Successful: {successful}, failed: {failed}")
                 if error:
                     self.poutput(f"Client {client_name}: error: {error}")
             continue

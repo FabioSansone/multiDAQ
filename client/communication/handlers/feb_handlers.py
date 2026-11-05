@@ -10,6 +10,7 @@ def handle_feb_program(manager, message):
         firmware=payload.get("firmware"),
         port=payload.get("port", "/dev/ttyPS1"),
         standard_addr=payload.get("standard_addr"),
+        flash=payload.get("flash", True),
     )
 
     status = MessageStatus.OK if result.get("success") else MessageStatus.ERROR

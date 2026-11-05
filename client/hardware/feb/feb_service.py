@@ -15,6 +15,11 @@ class FEBService:
         "HKL031V4A.hex",
     ]
 
+    # stm32flash sometimes cannot talk to the bootloader ("Failed to init device",
+    # "Failed to read ACK byte"): the FEB is put in boot mode again and the flash is retried
+    FLASH_ATTEMPTS = 3
+    FLASH_RETRY_PAUSE_S = 1.0
+
     def __init__(self, runtime):
         self.runtime = runtime
         self.logger = get_logger("feb_service")
@@ -74,6 +79,55 @@ class FEBService:
         except Exception as e:
             self.logger.error(f"Unexpected error during FEB flashing: {e}")
             return False
+
+    def _boot_and_flash(self, ch: int, baud: int, firmware: str | None, port: str) -> bool:
+        """Put the FEB in boot mode and flash it, trying again if stm32flash fails.
+
+        Every attempt starts from the RC reset, since a failed attempt leaves the
+        bootloader in an unknown state."""
+
+        for attempt in range(1, self.FLASH_ATTEMPTS + 1):
+            if not self._submit_rc_command(
+                command="rc_reset",
+                payload={"channels": "all"},
+                timeout_s=30.0,
+            ):
+                self.logger.error(
+                    f"Failed to reset RC before boot mode for FEB channel {ch}"
+                )
+                return False
+
+            time.sleep(0.1)
+
+            if not self._submit_rc_command(
+                command="rc_boot",
+                payload={"channels": str(ch)},
+                timeout_s=30.0,
+            ):
+                self.logger.error(f"Failed to put FEB channel {ch} in boot mode")
+                return False
+
+            time.sleep(0.1)
+
+            if self._flash(baud=baud, firmware=firmware, port=port):
+                return True
+
+            if self._resolve_firmware_path(firmware) is None:
+                # A missing firmware file is not going to appear at the next attempt
+                return False
+
+            if attempt < self.FLASH_ATTEMPTS:
+                self.logger.warning(
+                    f"Firmware flash failed for FEB channel {ch} "
+                    f"(attempt {attempt}/{self.FLASH_ATTEMPTS}), trying again"
+                )
+                time.sleep(self.FLASH_RETRY_PAUSE_S)
+
+        self.logger.error(
+            f"Firmware flash failed for FEB channel {ch} "
+            f"after {self.FLASH_ATTEMPTS} attempts"
+        )
+        return False
 
     def _submit_rc_command(
         self,
@@ -232,11 +286,15 @@ class FEBService:
         firmware: str | None = None,
         port: str = "/dev/ttyPS1",
         standard_addr: int | None = None,
+        flash: bool = True,
     ) -> dict:
+        """Flash the FEBs (unless flash is False) and set the HV address of each one to its RC channel + 1.
+
+        With flash=False only the address alignment is done, the firmware is left as it is."""
 
         self.logger.info(
-            f"Starting FEB programming: channels={channels}, baud={baud}, "
-            f"firmware={firmware}, port={port}, standard_addr={standard_addr}"
+            f"Starting FEB {'programming' if flash else 'HV address alignment'}: channels={channels}, "
+            f"baud={baud}, firmware={firmware}, port={port}, standard_addr={standard_addr}"
         )
         
         if self.runtime.hv_service is None:
@@ -329,43 +387,19 @@ class FEBService:
                 f"expected final HV address {hv_ch}"
             )
 
-            if not self._submit_rc_command(
-                command="rc_reset",
-                payload={"channels": "all"},
-                timeout_s=30.0,
-            ):
-                self.logger.error(
-                    f"Failed to reset RC before boot mode for FEB channel {ch}"
-                )
-                failed_channels.append(ch)
-                hv.moveToBad(hv_ch)
-                continue
+            if flash:
+                if not self._boot_and_flash(
+                    ch=ch,
+                    baud=baud,
+                    firmware=firmware,
+                    port=port,
+                ):
+                    self.logger.error(f"Firmware flash failed for FEB channel {ch}")
+                    failed_channels.append(ch)
+                    hv.moveToBad(hv_ch)
+                    continue
 
-            time.sleep(0.1)
-
-            if not self._submit_rc_command(
-                command="rc_boot",
-                payload={"channels": str(ch)},
-                timeout_s=30.0,
-            ):
-                self.logger.error(f"Failed to put FEB channel {ch} in boot mode")
-                failed_channels.append(ch)
-                hv.moveToBad(hv_ch)
-                continue
-
-            time.sleep(0.1)
-
-            if not self._flash(
-                baud=baud,
-                firmware=firmware,
-                port=port,
-            ):
-                self.logger.error(f"Firmware flash failed for FEB channel {ch}")
-                failed_channels.append(ch)
-                hv.moveToBad(hv_ch)
-                continue
-
-            time.sleep(1.0)
+                time.sleep(1.0)
 
             if not self._submit_rc_command(
                 command="rc_feb_reset_after_flash",
@@ -414,7 +448,7 @@ class FEBService:
             hv.moveToOff(hv_ch)
 
             self.logger.info(
-                f"FEB channel {ch} programmed successfully; "
+                f"FEB channel {ch} {'programmed' if flash else 'aligned'} successfully; "
                 f"expected HV address is now {hv_ch}"
             )
 
@@ -434,7 +468,7 @@ class FEBService:
             "data_mode_ok": data_mode_ok,
             "hv_restore_ok": hv_restore_ok,
             "acq_mode": self.runtime.acq_mode,
-            "firmware": str(self._resolve_firmware_path(firmware)),
+            "firmware": str(self._resolve_firmware_path(firmware)) if flash else None,
             "baud": baud,
             "port": port,
             "standard_addr": standard_addr,
