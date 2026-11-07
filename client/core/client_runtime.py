@@ -116,6 +116,11 @@ class ClientRunTime:
         if self.hv_service is not None:
             return True
 
+        # The HVService checks the address of every channel when it is created, and the HV boards
+        # answer only if the FEBs are in data mode: the safe state leaves them out of it
+        if not self._open_hv_link():
+            self.logger.warning("HV link not opened: the channels may not answer to the address check")
+
         try:
             self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=fixed_bad_channels or [], state_change_callback=self.sync_rc_register_39_with_hv, hv_parameters_callback=self.update_hv_parameters_after_command)
             self.monitor_sample_service.set_hv_service(self.hv_service)
