@@ -1,3 +1,4 @@
+import signal
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -184,13 +185,15 @@ class EVService:
 
         try:
             self.logger.info(f"Stopping evproducer PID {self.process.pid}")
-            self.process.terminate()
-            self.process.wait(timeout=5)
+            # SIGINT, not SIGTERM: only the SIGINT handler lets the producer stop its data threads
+            # and reset the DMA before exiting; SIGTERM kills it with the DMA channel mid-transfer
+            self.process.send_signal(signal.SIGINT)
+            self.process.wait(timeout=10)
             self.process = None
             return True
 
         except subprocess.TimeoutExpired:
-            self.logger.warning("evproducer did not terminate, killing it")
+            self.logger.warning("evproducer did not exit after SIGINT, killing it")
             self.process.kill()
             self.process.wait()
             self.process = None
@@ -214,9 +217,9 @@ class EVService:
                 return True
 
             self.logger.warning("Stale evproducer found: terminating it")
-            subprocess.run(["killall", name], capture_output=True)
+            subprocess.run(["killall", "-INT", name], capture_output=True)
 
-            deadline = time.monotonic() + 3.0
+            deadline = time.monotonic() + 8.0
             while time.monotonic() < deadline and is_alive():
                 time.sleep(0.2)
 

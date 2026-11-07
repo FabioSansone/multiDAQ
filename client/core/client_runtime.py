@@ -834,15 +834,8 @@ class ClientRunTime:
                 self.logger.exception("Safe state: cannot stop the evproducer")
                 overall_success = False
 
-            # TEST: Producer stopped and RC19=0: nothing can be sending, so the pulse cannot hit a RESET_DMA
-            # TEST: if self.rc_service is not None:
-            # TEST:     try:
-            # TEST:         if not self._pulse_hardware_reset():
-            # TEST:             self.logger.error("Safe state: hardware reset pulse failed")
-            # TEST:             overall_success = False
-            # TEST:     except Exception:
-            # TEST:         self.logger.exception("Safe state: cannot pulse the hardware reset")
-            # TEST:         overall_success = False
+            # No hardware reset pulse here: without the software RESET of the producer before and after it
+            # it leaves the DMA stuck. The server does software-hardware-software before every acquisition.
 
             if self.hv_service is not None:
                 # RC1 and RC0 are still on only if nothing zeroed them since the last mode: do not count on it
@@ -941,14 +934,8 @@ class ClientRunTime:
                 self.logger.exception("Safe state: cannot stop the evproducer")
                 overall_success = False
 
-            # TEST: if self.rc_service is not None:
-            # TEST:     try:
-            # TEST:         if not self._pulse_hardware_reset():
-            # TEST:             self.logger.error("Safe state: hardware reset pulse failed")
-            # TEST:             overall_success = False
-            # TEST:     except Exception:
-            # TEST:         self.logger.exception("Safe state: cannot pulse the hardware reset")
-            # TEST:         overall_success = False
+            # No hardware reset pulse here: without the software RESET of the producer before and after it
+            # it leaves the DMA stuck. The server does software-hardware-software before every acquisition.
 
             if overall_success:
                 self.logger.info("Acquisition safe state reached")

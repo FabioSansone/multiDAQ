@@ -1180,6 +1180,16 @@ class AcquisitionService:
                 errors[client_id] = "missing run metadata"
                 continue
 
+            # Stato noto prima di ogni avvio: STOP, RESET sw, impulso hw, RESET sw.
+            # Il producer è vivo e RC19=0, quindi nulla è in transito.
+            if not self._run_client_step(
+                "Pre-acquisition reset",
+                lambda cid: self.flush_client(client_id=cid),
+                client_id,
+            ):
+                errors[client_id] = "pre-acquisition reset failed"
+                continue
+
             masks[client_id] = mask
 
             # L'header descrive la misura prevista, non lo zero della preparazione.
