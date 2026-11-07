@@ -78,6 +78,8 @@ class ClientRunTime:
         self._acq_safe_lock = threading.Lock()
         # The pulse on RC15 must not overlap with another one (the two safe states can run together)
         self._hw_reset_lock = threading.Lock()
+        # Two planes can ask for the HVService together: only one must open the serial line
+        self._hv_service_lock = threading.Lock()
         
         self.boot_id = self._read_boot_id()
 
@@ -112,25 +114,28 @@ class ClientRunTime:
 
         return f"{multipmt_id}-{batch_id}-{mac_suffix}"
 
-    def ensure_hv_service(self, fixed_bad_channels: list[int] | None = None) -> bool:
-        if self.hv_service is not None:
-            return True
+    def ensure_hv_service(self, fixed_bad_channels: list[int] | None = None, hv_policy: str | None = None) -> bool:
+        """hv_policy is used only if the service has to be created: an existing one keeps its own."""
+        with self._hv_service_lock:
+            if self.hv_service is not None:
+                return True
 
-        # The HVService checks the address of every channel when it is created, and the HV boards
-        # answer only if the FEBs are in data mode: the safe state leaves them out of it
-        if not self._open_hv_link():
-            self.logger.warning("HV link not opened: the channels may not answer to the address check")
+            # The HVService checks the address of every channel when it is created, and the HV boards
+            # answer only if the FEBs are in data mode: the safe state leaves them out of it
+            if not self._open_hv_link():
+                self.logger.warning("HV link not opened: the channels may not answer to the address check")
 
-        try:
-            self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=fixed_bad_channels or [], state_change_callback=self.sync_rc_register_39_with_hv, hv_parameters_callback=self.update_hv_parameters_after_command)
-            self.monitor_sample_service.set_hv_service(self.hv_service)
-            self.logger.info("HVService initialized")
-            return True
+            try:
+                policy_kwargs = {"hv_policy": hv_policy} if hv_policy is not None else {}
+                self.hv_service = HVService(hv_port=self.hv_port,fixed_bad_channels=fixed_bad_channels or [], state_change_callback=self.sync_rc_register_39_with_hv, hv_parameters_callback=self.update_hv_parameters_after_command, **policy_kwargs)
+                self.monitor_sample_service.set_hv_service(self.hv_service)
+                self.logger.info("HVService initialized")
+                return True
 
-        except Exception as e:
-            self.logger.error(f"Cannot initialize HVService: {e}")
-            self.hv_service = None
-            return False
+            except Exception as e:
+                self.logger.error(f"Cannot initialize HVService: {e}")
+                self.hv_service = None
+                return False
 
     def stop_hv_service(self) -> None:
         if self.hv_service is None:

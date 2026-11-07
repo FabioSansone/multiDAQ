@@ -7,7 +7,22 @@ from client.communication.priority_utils import resolve_priority_value
 from common.timeouts import client_timeout
 
 
+# Read-only commands: the server may ask them before the mode sync that creates the HVService
+READ_ONLY_HV_COMMANDS = {
+    "get_serial_map",
+    "get_voltage_channels",
+    "get_threshold_channels",
+    "get_volt_thr_channels",
+    "get_power_state_channels",
+}
+
+
 def _handle_hv_command(manager, message, *, hv_command: str, timeout_s: float = 35.0):
+    if manager.runtime.hv_service is None and hv_command in READ_ONLY_HV_COMMANDS:
+        # monitor_only until the mode sync sets the policy it needs
+        if manager.runtime.ensure_hv_service(hv_policy="monitor_only"):
+            manager.runtime.hv_service.start()
+
     if manager.runtime.hv_service is None:
         manager.logger.error(f"Cannot execute HV command {hv_command}: HVService unavailable")
         reply = manager.message_handler.create_reply(
