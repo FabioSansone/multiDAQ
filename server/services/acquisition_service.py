@@ -13,6 +13,8 @@ from server.utils.json_parser import JsonParser
 from server.utils.channels import N_CHANNELS, hv_to_user_channels
 
 ACQ_REGISTER_ADDRESSES = [0, 1, 10, 15, 16, 18, 19, 31, 39]
+# Default del firmware del registro 31: logica majority con molteplicità 4
+AUTO_TRIGGER_REG31_DEFAULT = 0b00001111
 
 TRIGGER_REG15_MASK = (
     (1 << 1)   # trigger enable
@@ -870,9 +872,13 @@ class AcquisitionService:
         #
         # Register 31
         #
-        reg31_value = 0
+        # Fuori dall'auto trigger il registro 31 non viene azzerato: azzerarlo azzera anche la rate
+        # del registro 28. Si scrive il valore di default del firmware, così non resta nemmeno la
+        # condizione di un'acquisizione auto precedente.
+        reg31_value = AUTO_TRIGGER_REG31_DEFAULT
 
         if trigger_config.mode == "auto":
+            reg31_value = 0
 
             #
             # MAJORITY
