@@ -76,8 +76,6 @@ class ClientRunTime:
         self._closed = False
         self._safe_state_lock = threading.Lock()
         self._acq_safe_lock = threading.Lock()
-        # The pulse on RC15 must not overlap with another one (the two safe states can run together)
-        self._hw_reset_lock = threading.Lock()
         # Two planes can ask for the HVService together: only one must open the serial line
         self._hv_service_lock = threading.Lock()
         
@@ -678,53 +676,6 @@ class ClientRunTime:
             return False
 
         return True
-
-    def _pulse_hardware_reset(self) -> bool:
-        with self._hw_reset_lock:
-            return self._do_pulse_hardware_reset()
-
-    def _do_pulse_hardware_reset(self) -> bool:
-        address = 15
-        reset_mask = 1 << 3
-        writable_mask = 0x1BF
-        pulse_s = 0.1  # duration already used by the verified reset
-
-        previous = self._read_rc_register(address)
-
-        if previous is None or previous & reset_mask:
-            self.logger.error(f"Hardware reset refused: RC{address}={previous!r}")
-            return False
-
-        # Keep the configuration bits, without a reset request or the old flush bit
-        base_value = previous & writable_mask & ~(reset_mask | (1 << 5))
-        held_value = base_value | reset_mask
-
-        asserted = False
-        released = False
-
-        try:
-            if self._write_rc_register(address, held_value):
-                time.sleep(pulse_s)
-                held = self._read_rc_register(address)
-                asserted = held is not None and (held & writable_mask) == held_value
-        finally:
-            # A reset left asserted would keep the DMA blocked
-            released = self._write_rc_register(address, base_value)
-
-        if not asserted:
-            self.logger.error("Hardware reset not confirmed while asserted")
-
-        after = self._read_rc_register(address)
-        released = released and after is not None and (after & writable_mask) == base_value
-
-        if not released:
-            self.logger.error(f"Hardware reset NOT released: RC{address}={after!r}")
-            return False
-
-        if asserted:
-            self.logger.info("Hardware reset pulse completed")
-
-        return asserted
 
     def _open_hv_link(self) -> bool:
         """Put the FEBs in data mode (rc_acq_start: RC1, RC0 and RC39), the only way to reach the HV
