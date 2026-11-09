@@ -60,6 +60,7 @@ CLIENT_TIMEOUT_S = {
     "hv_off": 90.0,
     "hv_force_off": 90.0,
     "set_hv_sync": _HV_SYNC_S,
+    "restore_hv_configuration": 2 * _RAMP_COMMAND_S,  # off_and_wait, then on_and_wait
     "hv_on_and_wait": _RAMP_COMMAND_S,
     "hv_off_and_wait": _RAMP_COMMAND_S,
     "mark_bad": 150.0,

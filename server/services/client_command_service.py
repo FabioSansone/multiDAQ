@@ -685,3 +685,45 @@ class ClientCommandService:
             self.logger.warning(f"Hardware configuration of client {client_name} incomplete: {configuration['errors']}")
 
         return configuration
+
+    def restore_hv_configuration(
+        self,
+        client_id: bytes,
+        configuration: dict[int, dict],
+        plane: CommandPlane | str = CommandPlane.CONTROL,
+        timeout_s: float | None = None,
+    ) -> bool:
+
+        client_name = client_id.decode(errors="ignore")
+
+        reply, reason = self.send_hv_command(
+            client_id=client_id,
+            command="restore_hv_configuration",
+            payload={
+                "configuration": configuration,
+            },
+            plane=plane,
+            timeout_s=timeout_s,
+        )
+
+        if reply is None:
+            self.logger.error(
+                f"HV configuration restore failed for "
+                f"client {client_name}: {reason}"
+            )
+            return False
+
+        payload = reply.payload or {}
+        status = payload.get("status")
+        result = payload.get("result", {})
+        error = payload.get("error")
+
+        if status != "ok":
+            self.logger.error(
+                f"HV configuration restore failed for "
+                f"client {client_name}: {error}; "
+                f"failed_channels={result.get('failed_channels', [])}"
+            )
+            return False
+
+        return True

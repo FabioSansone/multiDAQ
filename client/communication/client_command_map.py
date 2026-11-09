@@ -38,6 +38,8 @@ COMMAND_MAP = {
     "get_serial_map": handle_get_serial_map,
     
     "hv_monitor_snapshot": handle_hv_monitor_snapshot,
+
+    "restore_hv_configuration": handle_hv_restore_configuration,
     
     #RC Handlers
     "rc_acq_start": handle_rc_start_acquisition_mode,

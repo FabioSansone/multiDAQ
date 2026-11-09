@@ -776,6 +776,124 @@ class HV:
 
         return failed
 
+    def restore_configuration(
+        self,
+        configuration: dict[int, dict],
+    ):
+
+        requested_channels = sorted(
+            int(ch)
+            for ch in configuration
+        )
+
+        successful = []
+        failed = []
+        channel_results = {}
+
+        #
+        # First force channels originally OFF to OFF.
+        #
+        channels_to_off = [
+            ch
+            for ch, parameters in configuration.items()
+            if parameters.get("power_state") == "off"
+        ]
+
+        if channels_to_off:
+            off_result = self.off_and_wait(
+                channels=channels_to_off,
+            )
+
+            failed.extend(
+                off_result.get("failed_channels", [])
+            )
+            failed.extend(off_result.get("skipped_channels", []))
+
+        #
+        # Restore voltage and threshold.
+        #
+        for channel, parameters in configuration.items():
+
+            channel = int(channel)
+
+            channel_ok = True
+            channel_result = {}
+
+            try:
+
+                if "voltage" in parameters:
+                    self.hv.setVoltageSet(
+                        value=int(round(parameters["voltage"])),
+                        slave=channel,
+                    )
+
+                    channel_result["voltage"] = True
+
+                if "threshold" in parameters:
+                    self.hv.setThreshold(
+                        value=int(round(parameters["threshold"])),
+                        slave=channel,
+                    )
+
+                    channel_result["threshold"] = True
+
+            except Exception as e:
+
+                self.logger.error(
+                    f"Problem restoring HV configuration "
+                    f"on channel {channel}: {e}"
+                )
+
+                channel_ok = False
+                channel_result["error"] = str(e)
+
+                self.moveToBad(channel)
+
+            channel_results[channel] = channel_result
+
+            if not channel_ok:
+                failed.append(channel)
+
+        #
+        # Restore channels originally ON.
+        #
+        channels_to_on = [
+            ch
+            for ch, parameters in configuration.items()
+            if parameters.get("power_state") == "on"
+            and ch not in failed
+        ]
+
+        if channels_to_on:
+
+            on_result = self.on_and_wait(
+                channels=channels_to_on,
+            )
+
+            failed.extend(
+                on_result.get("failed_channels", [])
+            )
+            failed.extend(on_result.get("skipped_channels", []))
+
+        failed = sorted(set(failed))
+
+        successful = [
+            ch
+            for ch in requested_channels
+            if ch not in failed
+        ]
+
+        return {
+            "requested_channels": requested_channels,
+            "successful_channels": successful,
+            "failed_channels": failed,
+            "channel_results": channel_results,
+            "bad_channels": self.getBadChannels(),
+            "ok_channels": self.getOkChannels(),
+            "on_channels": self.getOnChannels(),
+            "off_channels": self.getOffChannels(),
+        }
+
     def get_ch_status(self, channels: List[int] | str | int):
 
         list_channels_selected = self.hv_channels_definition(

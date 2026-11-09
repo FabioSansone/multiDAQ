@@ -323,3 +323,98 @@ def handle_hv_monitor_snapshot(manager, message):
 
     manager.queue_message(reply)
               
+
+
+def handle_hv_restore_configuration(manager, message):
+
+    timeout_s = client_timeout("restore_hv_configuration")
+
+    if manager.runtime.hv_service is None:
+        manager.logger.error(
+            "Cannot restore HV configuration: HVService unavailable"
+        )
+
+        reply = manager.message_handler.create_reply(
+            channel=Channel.HV,
+            in_reply_to=message.request_id,
+            payload={
+                "hv_request_id": message.request_id,
+                "status": "error",
+                "result": {},
+                "error": "HVService unavailable",
+            },
+            sender="client",
+            status=MessageStatus.ERROR,
+        )
+
+        manager.queue_message(reply)
+        return
+
+    try:
+        raw_configuration = (
+            message.payload.get("configuration", {})
+        )
+
+        hv_configuration = {
+            int(channel) + 1: dict(parameters)
+            for channel, parameters
+            in raw_configuration.items()
+        }
+
+    except Exception as e:
+        manager.logger.error(
+            f"Invalid HV restore configuration: {e}"
+        )
+
+        reply = manager.message_handler.create_reply(
+            channel=Channel.HV,
+            in_reply_to=message.request_id,
+            payload={
+                "hv_request_id": message.request_id,
+                "status": "error",
+                "result": {},
+                "error": f"Invalid restore configuration: {e}",
+            },
+            sender="client",
+            status=MessageStatus.ERROR,
+        )
+
+        manager.queue_message(reply)
+        return
+
+    hv_request = HVRequest(
+        protocol_version=message.protocol_version,
+        request_id=message.request_id,
+        sender=f"{manager.plane_name}_manager",
+        command="restore_hv_configuration",
+        payload={
+            "configuration": hv_configuration,
+        },
+        status=message.status,
+        deadline_s=time.time() + timeout_s,
+    )
+
+    priority = HVMessagePriority(
+        resolve_priority_value(manager, message)
+    )
+
+    hv_response = manager.runtime.hv_service.request(
+        hv_request=hv_request,
+        priority=priority,
+        timeout_s=timeout_s,
+    )
+
+    reply = manager.message_handler.create_reply(
+        channel=Channel.HV,
+        in_reply_to=message.request_id,
+        payload={
+            "hv_request_id": hv_response.request_id,
+            "status": hv_response.status.value,
+            "result": hv_response.result,
+            "error": hv_response.error,
+        },
+        sender="client",
+        status=hv_response.status,
+    )
+
+    manager.queue_message(reply)

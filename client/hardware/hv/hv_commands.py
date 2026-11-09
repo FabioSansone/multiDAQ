@@ -750,6 +750,23 @@ def command_hv_monitor_snapshot(
     )
 
 
+def command_restore_hv_configuration(
+    protocol_version: int,
+    hv_interface: HV,
+    hv_request: HVRequest,
+) -> HVResponse:
+
+    result = hv_interface.restore_configuration(
+        configuration=hv_request.payload["configuration"],
+    )
+
+    return _wrap_hv_action(
+        protocol_version,
+        hv_request,
+        result,
+    )
+
+
 COMMAND_HANDLERS = {
     "set_common_voltage": command_common_voltage,
     "set_common_threshold": command_common_threshold,
@@ -787,4 +804,6 @@ COMMAND_HANDLERS = {
     "hv_status_alarm_monitoring": command_hv_status_alarm_monitoring,
     "hv_channel_lists": command_hv_channel_lists,
     "hv_monitor_snapshot": command_hv_monitor_snapshot,
+
+    "restore_hv_configuration": command_restore_hv_configuration,
 }
