@@ -17,6 +17,8 @@ dependencies = [
     "prometheus_client",
     # The server starts the web control panel (flask) unless it is run with --no-web.
     "flask",
+    # Optical instruments (Thorlabs filter wheels and polarizer) of the calibration.
+    "pylablib",
 ]
 
 [tool.setuptools.dynamic]

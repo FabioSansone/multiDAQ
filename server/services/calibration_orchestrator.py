@@ -7,10 +7,11 @@ from server.utils.logger import get_logger
 
 class CalibrationOrchestrator:
 
-    def __init__(self, server_state, acquisition_service, channel_selection_service, command_service, get_mode, output_func=None) -> None:
+    def __init__(self, server_state, acquisition_service, channel_selection_service, command_service, optical_service, get_mode, output_func=None) -> None:
         self.acquisition_service = acquisition_service
         self.channel_selection_service = channel_selection_service
         self.command_service = command_service
+        self.optical_service = optical_service
         self.poutput = output_func or (lambda message: None)
         self.get_mode = get_mode
         self.server_state = server_state

@@ -20,6 +20,7 @@ from server.services.channel_selection_service import ChannelSelectionService
 from server.services.acquisition_orchestrator import AcquisitionOrchestrator
 from server.services.acquisition_service import AcquisitionService
 from server.services.calibration_orchestrator import CalibrationOrchestrator
+from server.services.optical_instrument_service import OpticalInstrumentService
 from server.services.monitoring_service import MonitoringService
 from server.services.monitoring_orchestrator import MonitoringOrchestrator
 from server.services.shutdown_service import ShutdownService
@@ -187,11 +188,25 @@ class Server(cmd2.Cmd):
             output_func=self.poutput,
         )
 
+        # Optical instruments are optional: without them the server starts anyway.
+        self.optical_instrument_service = OpticalInstrumentService()
+
+        if self.optical_instrument_service.initialize():
+            self.poutput("Optical instruments initialized successfully.")
+        else:
+            self.poutput(
+                "WARNING: optical instruments are unavailable. "
+                "Optical calibration commands will not be available "
+                "until the devices can be initialized."
+            )
+            self.logger.warning("Optical instruments unavailable at server startup")
+
         self.calibration_orchestrator = CalibrationOrchestrator(
             server_state=self.server_state,
             acquisition_service=self.acquisition_service,
             channel_selection_service=self.channel_selection_service,
             command_service=self.client_command_service,
+            optical_service=self.optical_instrument_service,
             get_mode=lambda: self.mode,
             output_func=self.poutput,
         )
@@ -559,6 +574,9 @@ def main() -> int:
         data_receiver_service.stop_persistent_receiver()
 
         context.term()
+
+        if not app.optical_instrument_service.close():
+            app.logger.warning("Optical instruments closed with errors")
 
     return 0
 
