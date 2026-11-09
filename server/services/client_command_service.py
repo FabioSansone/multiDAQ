@@ -3,7 +3,7 @@ from typing import Optional
 
 from common.message_handler import Channel, ProtocolMessage
 from common.timeouts import server_timeout
-from server.utils.channels import normalize_user_channels
+from server.utils.channels import normalize_user_channels, hv_to_user_channels
 from server.utils.logger import get_logger
 
 
@@ -692,7 +692,11 @@ class ClientCommandService:
         configuration: dict[int, dict],
         plane: CommandPlane | str = CommandPlane.CONTROL,
         timeout_s: float | None = None,
-    ) -> bool:
+    ) -> tuple[bool, list[int]]:
+        """Put voltage, threshold and power state back (configuration keyed by user
+        channel). Returns (success, failed_channels): the failed channels are in user
+        numbering and are empty when the client did not say which ones failed (no
+        reply, or an error without detail)."""
 
         client_name = client_id.decode(errors="ignore")
 
@@ -711,19 +715,21 @@ class ClientCommandService:
                 f"HV configuration restore failed for "
                 f"client {client_name}: {reason}"
             )
-            return False
+            return False, []
 
         payload = reply.payload or {}
         status = payload.get("status")
-        result = payload.get("result", {})
+        result = payload.get("result") or {}
         error = payload.get("error")
+
+        failed_channels = sorted(hv_to_user_channels(result.get("failed_channels", [])))
 
         if status != "ok":
             self.logger.error(
                 f"HV configuration restore failed for "
                 f"client {client_name}: {error}; "
-                f"failed_channels={result.get('failed_channels', [])}"
+                f"failed_channels={failed_channels}"
             )
-            return False
+            return False, failed_channels
 
-        return True
+        return True, []

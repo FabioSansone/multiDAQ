@@ -81,6 +81,8 @@ class ClientCalibrationSession:
     current_point: ScanPoint | None = None
 
     restore_succeeded: bool | None = None
+    # User channels the hardware restore could not put back (empty if all, or if unknown).
+    restore_failed_channels: list[int] = field(default_factory=list)
     error: str | None = None
 
 
@@ -114,9 +116,17 @@ class CalibrationScanSpec:
 
 class CalibrationService:
 
-    def __init__(self, command_service: ClientCommandService):
+    def __init__(
+        self,
+        command_service: ClientCommandService,
+        restore_hv_values: Callable[[bytes, dict[int, dict]], tuple[list[int], list[int]]] | None = None,
+    ):
 
         self.command_service = command_service
+
+        # Puts voltage and threshold back without touching the power state
+        # (AcquisitionService.restore_hv_override): used when restore_power_state is False.
+        self.restore_hv_values = restore_hv_values
 
         self._lock = threading.RLock()
 
@@ -796,7 +806,12 @@ class CalibrationService:
             return True
 
 
-    def mark_restore_result(self, client_id, succeeded: bool) -> bool:
+    def mark_restore_result(
+        self,
+        client_id,
+        succeeded: bool,
+        failed_channels: list[int] | None = None,
+    ) -> bool:
 
         with self._lock:
             if self.current_run is None or self.current_run.status != CalibrationStatus.FINALIZING:
@@ -819,6 +834,7 @@ class CalibrationService:
                 return False
 
             session.restore_succeeded = bool(succeeded)
+            session.restore_failed_channels = sorted(failed_channels or [])
             session.status = CalibrationStatus.FINISHED
 
             if succeeded:
@@ -1132,10 +1148,51 @@ class CalibrationService:
             return True
 
 
+    def _restore_voltage_threshold(
+        self,
+        client_id: bytes,
+        hv_parameters: dict[int, dict[str, Any]],
+    ) -> tuple[bool, list[int]]:
+        """Voltage and threshold only, through the restore_hv_values callback.
+        Returns (success, failed_channels) in user numbering."""
+
+        if self.restore_hv_values is None:
+            self.logger.error(
+                f"Cannot restore voltage/threshold of {client_id!r}: "
+                "no HV restore callback was given"
+            )
+            return False, sorted(hv_parameters)
+
+        previous = {}
+        for channel, parameters in hv_parameters.items():
+            values = {
+                name: parameters[name]
+                for name in ("voltage", "threshold")
+                if parameters.get(name) is not None
+            }
+            if values:
+                previous[channel] = values
+
+        if not previous:
+            return True, []
+
+        restored, not_restored = self.restore_hv_values(client_id, previous)
+
+        return not not_restored, sorted(not_restored)
+
+
     def restore_hardware_snapshot(
         self,
         client_id: bytes,
+        restore_power_state: bool = True,
     ) -> bool:
+        """
+        restore_power_state=True: voltage, threshold and power state, with the atomic
+        restore_hv_configuration command (calibration and multipmt modes).
+        restore_power_state=False: only voltage and threshold, with the HV restore
+        callback that uses set_acquisition_configuration (test mode, HV monitor-only,
+        where the power state must not be touched).
+        """
 
         with self._lock:
 
@@ -1176,7 +1233,7 @@ class CalibrationService:
 
 
         restore_ok = True
-
+        failed_channels: list[int] = []
 
         #
         # Restore HV Configuration
@@ -1184,11 +1241,21 @@ class CalibrationService:
         if snapshot.hv_parameters:
 
             try:
-                hv_ok = self.command_service.restore_hv_configuration(
-                    client_id=client_id,
-                    configuration=snapshot.hv_parameters,
-                    plane=CommandPlane.CONTROL,
-                )
+                if restore_power_state:
+                    hv_ok, failed_channels = self.command_service.restore_hv_configuration(
+                        client_id=client_id,
+                        configuration=snapshot.hv_parameters,
+                        plane=CommandPlane.CONTROL,
+                    )
+                    if not hv_ok and not failed_channels:
+                        # No detail from the client: any channel may be wrong.
+                        failed_channels = sorted(snapshot.hv_parameters)
+
+                else:
+                    hv_ok, failed_channels = self._restore_voltage_threshold(
+                        client_id=client_id,
+                        hv_parameters=snapshot.hv_parameters,
+                    )
 
                 if not hv_ok:
                     restore_ok = False
@@ -1199,6 +1266,7 @@ class CalibrationService:
                     f"for client {client_id!r}"
                 )
                 restore_ok = False
+                failed_channels = sorted(snapshot.hv_parameters)
 
 
         #
@@ -1239,6 +1307,7 @@ class CalibrationService:
         if not self.mark_restore_result(
             client_id=client_id,
             succeeded=restore_ok,
+            failed_channels=failed_channels,
         ):
             self.logger.error(
                 f"Failed to record restore result for client {client_id!r}"
