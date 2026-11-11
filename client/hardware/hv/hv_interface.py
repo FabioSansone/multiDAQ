@@ -1044,14 +1044,12 @@ class HV:
             channel_state = state_lookup.get(ch, {"channel_state": "unknown", "power_state": None})
  
             try:
-                voltage = self.hv.getVoltage(slave=ch)
-                current = self.hv.getCurrent(slave=ch)
-                temperature = self.hv.convertTemperature(self.hv.getTemperature(slave=ch))
- 
+                snapshot = self.hv.readChannelSnapshot(slave=ch)
+
                 result["channels"][ch] = {
-                    "voltage": voltage,
-                    "current": current,
-                    "temperature": temperature,
+                    "voltage": snapshot["voltage"],
+                    "current": snapshot["current"],
+                    "temperature": snapshot["temperature"],
                     **channel_state,
                 }
  
@@ -1084,12 +1082,11 @@ class HV:
             channel_state = state_lookup.get(ch, {"channel_state": "unknown", "power_state": None})
  
             try:
-                hw_status = self.hv.getStatus(slave=ch)
-                hw_alarm = self.hv.getAlarm(slave=ch)
- 
+                snapshot = self.hv.readChannelSnapshot(slave=ch)
+
                 result["channels"][ch] = {
-                    "hw_status": hw_status,
-                    "hw_alarm": hw_alarm,
+                    "hw_status": snapshot["status"],
+                    "hw_alarm": snapshot["alarm"],
                     **channel_state,
                 }
  

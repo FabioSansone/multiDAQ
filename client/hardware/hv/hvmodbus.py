@@ -331,7 +331,7 @@ class HVModBus:
     
     def getVref(self, slave=None):
         slave = self.ch_addr if slave is None else slave
-        rr = self._safe_read(addr=0x2E, count=1, slave=slave, desc="get vref")
+        rr = self._safe_read(addr=0x2C, count=1, slave=slave, desc="get vref")
         return rr[0] / 10
     
     def powerOn(self, slave=None):
@@ -358,47 +358,70 @@ class HVModBus:
             self.logger.error(f"Error occured resetting channel {slave}:{e}")
             raise e
     
+    def readChannelSnapshot(self, slave=None):
+        """
+        Read voltage, current, temperature, status and alarm of a channel with a
+        single Modbus request (registers 0x06..0x2E), so that all the values refer
+        to the same instant. Raises ModbusException if the read fails.
+        """
+        slave = self.ch_addr if slave is None else slave
+        first, last = 0x06, 0x2E
+        rr = self._safe_read(addr=first, count=last - first + 1, slave=slave, desc="get channel snapshot")
+
+        def reg(addr):
+            return rr[addr - first]
+
+        # Same decoding as getVoltage/getCurrent: two registers, high word second.
+        voltage = self.client.convert_from_registers([reg(0x2B), reg(0x2A)], data_type=self.client.DATATYPE.INT32) / 1000
+        current = self.client.convert_from_registers([reg(0x29), reg(0x28)], data_type=self.client.DATATYPE.INT32) / 1000
+
+        return {
+            "status": self.statusString(reg(0x06)),
+            "alarm": self.alarmString(reg(0x2E)),
+            "voltage": voltage,
+            "current": current,
+            "temperature": self.convertTemperature(reg(0x07)),
+        }
+
     def getInfo(self, slave=None):
         slave = self.ch_addr if slave==None else slave
-        l = None
         try:
-            l = self.client.read_holding_registers(address=0x02, count=1, device_id=slave).registers
-            fwver = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x08, count=6, device_id=slave).registers
-            pmtsn = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x0E, count=6, device_id=slave).registers
-            hvsn = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x14, count=6, device_id=slave).registers
-            febsn = struct.pack(f'>{len(l)}h', *l).decode()
-            l = self.client.read_holding_registers(address=0x04, count=2, device_id=slave).registers
-            devid = (l[1] << 16) + l[0]
+            # One lock for the whole sequence, so that no other thread talks to the
+            # serial line between the reads; each read also checks the connection.
+            with self.hardware_lock:
+                l = self._safe_read(addr=0x02, count=1, slave=slave, desc="get firmware version")
+                fwver = struct.pack(f'>{len(l)}h', *l).decode()
+                l = self._safe_read(addr=0x08, count=6, slave=slave, desc="get pmt serial")
+                pmtsn = struct.pack(f'>{len(l)}h', *l).decode()
+                l = self._safe_read(addr=0x0E, count=6, slave=slave, desc="get hv serial")
+                hvsn = struct.pack(f'>{len(l)}h', *l).decode()
+                l = self._safe_read(addr=0x14, count=6, slave=slave, desc="get feb serial")
+                febsn = struct.pack(f'>{len(l)}h', *l).decode()
+                l = self._safe_read(addr=0x04, count=2, slave=slave, desc="get device id")
+                devid = (l[1] << 16) + l[0]
             return (fwver, pmtsn, hvsn, febsn, devid)
-        except ModbusException as e:
-            self.logger.error(f"Error occured getting info of channel {self.ch_addr}:{e}")
-            raise e
         except Exception as e:
             self.logger.error(f"Error occured getting info of channel {self.ch_addr}:{e}")
             raise e
-    
+
     def readMonRegisters(self, slave=None):
         slave = self.ch_addr if slave==None else slave
-        rr = None
         monData = {}
         try:
-            rr = self.client.read_holding_registers(address=0, count=48, device_id=slave)
-            monData['status'] = rr.registers[0x0006]
-            monData['Vset'] = rr.registers[0x0026]
-            monData['V'] = ((rr.registers[0x002B] << 16) + rr.registers[0x002A]) / 1000
-            monData['I'] = ((rr.registers[0x0029] << 16) + rr.registers[0x0028]) / 1000
-            monData['T'] = self.convertTemperature(rr.registers[0x0007])
-            monData['rateUP'] = rr.registers[0x0023]
-            monData['rateDN'] = rr.registers[0x0024]
-            monData['limitV'] = rr.registers[0x0027]
-            monData['limitI'] = rr.registers[0x0025]
-            monData['limitT'] = rr.registers[0x002F]
-            monData['limitTRIP'] = rr.registers[0x0022]
-            monData['threshold'] = rr.registers[0x002D]
-            monData['alarm'] = rr.registers[0x002E]
+            rr = self._safe_read(addr=0, count=48, slave=slave, desc="read monitoring registers")
+            monData['status'] = rr[0x0006]
+            monData['Vset'] = rr[0x0026]
+            monData['V'] = ((rr[0x002B] << 16) + rr[0x002A]) / 1000
+            monData['I'] = ((rr[0x0029] << 16) + rr[0x0028]) / 1000
+            monData['T'] = self.convertTemperature(rr[0x0007])
+            monData['rateUP'] = rr[0x0023]
+            monData['rateDN'] = rr[0x0024]
+            monData['limitV'] = rr[0x0027]
+            monData['limitI'] = rr[0x0025]
+            monData['limitT'] = rr[0x002F]
+            monData['limitTRIP'] = rr[0x0022]
+            monData['threshold'] = rr[0x002D]
+            monData['alarm'] = rr[0x002E]
             return monData
         except ModbusException as e:
             self.logger.error(f"Error occured reading monitoring registers of channel {self.ch_addr}:{e}")
