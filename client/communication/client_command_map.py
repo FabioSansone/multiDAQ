@@ -5,12 +5,16 @@ from client.communication.handlers.acquisition_handler import *
 from client.communication.handlers.feb_handlers import *
 from client.communication.handlers.main_handlers import *
 from client.communication.handlers.monitoring_handlers import *
+from client.communication.handlers.calibration_handler import *
 
 COMMAND_MAP = {
     #System Handlers
     "server_shutdown": handle_server_shutdown,
     'set_acq_mode_sync': handle_set_acq_mode_sync,
     "get_multipmt_configuration": handle_get_multipmt_configuration,
+
+    #Calibration Handlers
+    "pedestal_calibration": handle_pedestal_calibration,
     
     #HV Handlers
     "hv_on": handle_hv_on,
