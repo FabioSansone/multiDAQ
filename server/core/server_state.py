@@ -1562,6 +1562,47 @@ class ServerState:
 
         return self.get_client_id_by_batch_id(batch_id)
     
+    def resolve_client_ids(
+        self,
+        *,
+        client_id: bytes | None = None,
+        multipmt_id: str | None = None,
+        batch_id: str | None = None,
+        all_clients: bool = False,
+    ) -> list[bytes]:
+        """Clients named by exactly one selector. all_clients: every connected client.
+        Empty list if the selectors are not exactly one, or nobody matches."""
+
+        selectors_provided = sum(
+            (
+                client_id is not None,
+                multipmt_id is not None,
+                batch_id is not None,
+                bool(all_clients),
+            )
+        )
+
+        if selectors_provided != 1:
+            self.logger.error(
+                "Client target resolution requires exactly one selector among "
+                "client_id, multipmt_id, batch_id or all_clients"
+            )
+            return []
+
+        if all_clients:
+            return self.list_connected_clients()
+
+        if client_id is not None:
+            with self._lock:
+                return [client_id] if client_id in self.clients else []
+
+        if multipmt_id is not None:
+            resolved = self.get_client_id_by_multipmt_id(multipmt_id)
+            return [resolved] if resolved is not None else []
+
+        resolved = self.get_client_id_by_batch_id(batch_id)
+        return [resolved] if resolved is not None else []
+
     def is_client_operational(
         self,
         client_id: bytes,

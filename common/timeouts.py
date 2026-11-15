@@ -86,6 +86,8 @@ CLIENT_TIMEOUT_S = {
     # Composite commands: the budget is the sum of the steps the client can run.
     # get_multipmt_configuration also reads the power state, which can wait for a ramp.
     "get_multipmt_configuration": _RAMP_COMMAND_S,
+    # pedestal preparation: hv_off_and_wait, then rc_write_register (RC12)
+    "pedestal_calibration": _RAMP_COMMAND_S + 30.0,
     # fixed-bad update (off_and_wait + sync), then off_and_wait, set_acquisition_configuration, hv_on
     "set_acq_mode_sync": (
         _RAMP_COMMAND_S + _HV_SYNC_S

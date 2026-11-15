@@ -110,6 +110,21 @@ class ClientCommandService:
             channel=channel, command=command, payload=payload, sender="server", priority=priority,
         )
 
+    def send_calibration_command(self, client_id, command, payload,
+                                 plane=CommandPlane.ACQUISITION, timeout_s=None, priority: int | None = None):
+        """Hardware preparation of a calibration, executed by the client (e.g. pedestal_calibration).
+        Without timeout_s the wait is derived from the command (common.timeouts)."""
+        normalized_plane = self._normalize_plane(plane)
+        if normalized_plane is None:
+            return None, "invalid command plane"
+
+        calibration_command = self._create_command(
+            plane=normalized_plane, channel=Channel.ACQUISITION, command=command, payload=payload, priority=priority,
+        )
+        return self._send_command_and_wait_reply(
+            client_id=client_id, message=calibration_command, plane=normalized_plane, timeout_s=timeout_s,
+        )
+
     def send_hv_command(self, client_id, command, payload,
                         plane=CommandPlane.CONTROL, timeout_s=None, priority: int | None = None):
         normalized_plane = self._normalize_plane(plane)
