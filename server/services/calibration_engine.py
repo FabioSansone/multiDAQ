@@ -41,7 +41,7 @@ class CalibrationEngine:
         self.logger.debug("Calibration Engine initialized")
 
 
-    def start_scan(self, calibration_spec: CalibrationScanSpec, calibration_mode: CalibrationMode, client_channels_targets: dict[bytes, list[int]], trigger_configuration: TriggerConfiguration, duration: float | None, acq_type: str, run_id: str | int | None) -> bool:
+    def start_scan(self, calibration_spec: CalibrationScanSpec, calibration_mode: CalibrationMode, client_channels_targets: dict[bytes, list[int]], trigger_configuration: TriggerConfiguration | None, duration: float | None, acq_type: str, run_id: str | int | None, file_format: str = "csv") -> bool:
         """
         Prepare a calibration and start its worker thread, then return: the scan itself
         runs in the thread. Nothing here touches the hardware.
@@ -78,6 +78,15 @@ class CalibrationEngine:
 
         if duration is None or duration <= 0:
             self.logger.error(f"Cannot start calibration scan: invalid duration {duration!r}, expected a positive number of seconds")
+            return False
+
+        if file_format not in ("csv", "bin"):
+            self.logger.error(f"Cannot start calibration scan: invalid file format {file_format!r}, expected csv or bin")
+            return False
+
+        # Without a trigger configuration the RC19 mask is built from the RC19 of the snapshot.
+        if trigger_configuration is None and 19 not in calibration_spec.snapshot_spec.rc_register:
+            self.logger.error("Cannot start calibration scan: without a trigger configuration the snapshot must include RC19")
             return False
 
         client_ids = list(client_channels_targets.keys())
@@ -159,6 +168,7 @@ class CalibrationEngine:
                     "duration": duration,
                     "acq_type": acq_type,
                     "run_id": run_id,
+                    "file_format": file_format,
                     "client_run_folders": client_run_folders,
                     "finalization_target": finalization_target,
                 },
@@ -403,22 +413,23 @@ class CalibrationEngine:
         return overall_success
 
 
-    def _run_scan_loop(self, calibration_spec: CalibrationScanSpec, calibration_mode: CalibrationMode, trigger_configuration: TriggerConfiguration, duration: float | None, acq_type: str, run_id: str | int | None, client_run_folders: dict[bytes, Path], finalization_target: ServerFSM) -> None:
+    def _run_scan_loop(self, calibration_spec: CalibrationScanSpec, calibration_mode: CalibrationMode, trigger_configuration: TriggerConfiguration | None, duration: float | None, acq_type: str, run_id: str | int | None, file_format: str, client_run_folders: dict[bytes, Path], finalization_target: ServerFSM) -> None:
 
         scan_loop_outcome = CalibrationLoopOutcome.FAILED
 
         try:
-            if not self._resolve_channels():
-                return
-
-            if not self._take_snapshots(calibration_spec):
-                return
-
-            if not self._disable_rc19():
-                return
-
-            if not self._run_prepare_run(calibration_spec):
-                return
+            # A phase that returns False either failed or was interrupted by a stop:
+            # the stop request tells the two cases apart (ABORTED, not FAILED).
+            for phase_ok in (
+                lambda: self._resolve_channels(),
+                lambda: self._take_snapshots(calibration_spec),
+                lambda: self._disable_rc19(),
+                lambda: self._run_prepare_run(calibration_spec),
+            ):
+                if not phase_ok():
+                    if self._stop_requested():
+                        scan_loop_outcome = CalibrationLoopOutcome.STOPPED
+                    return
 
             scan_loop_outcome = self._run_points(
                 calibration_spec=calibration_spec,
@@ -426,6 +437,7 @@ class CalibrationEngine:
                 duration=duration,
                 acq_type=acq_type,
                 run_id=run_id,
+                file_format=file_format,
                 client_run_folders=client_run_folders,
             )
 
@@ -563,7 +575,7 @@ class CalibrationEngine:
         self.logger.info(f"prepare_run completed: {len(active_clients)} active client(s)")
         return True
 
-    def _run_points(self, calibration_spec: CalibrationScanSpec, trigger_configuration: TriggerConfiguration, duration: float | None, acq_type: str, run_id: str | int | None, client_run_folders: dict[bytes, Path]) -> CalibrationLoopOutcome:
+    def _run_points(self, calibration_spec: CalibrationScanSpec, trigger_configuration: TriggerConfiguration | None, duration: float | None, acq_type: str, run_id: str | int | None, file_format: str, client_run_folders: dict[bytes, Path]) -> CalibrationLoopOutcome:
 
         calibration_points = calibration_spec.points
         total_points = len(calibration_points)
@@ -583,7 +595,7 @@ class CalibrationEngine:
 
             self.logger.info(f"Point {index + 1}/{total_points}: suffix={point.suffix}, parameters={point.parameters}")
 
-            ok = self._run_point(point=point, calibration_spec=calibration_spec, trigger_configuration=trigger_configuration, duration=duration, acq_type=acq_type, run_id=run_id, client_run_folders=client_run_folders, is_last_point=is_last_point)
+            ok = self._run_point(point=point, calibration_spec=calibration_spec, trigger_configuration=trigger_configuration, duration=duration, acq_type=acq_type, run_id=run_id, file_format=file_format, client_run_folders=client_run_folders, is_last_point=is_last_point)
 
             if not ok:
                 if self._stop_requested():
@@ -614,7 +626,7 @@ class CalibrationEngine:
         self.calibration_service.mark_client_failed(client_id=client_id, error=error)
 
 
-    def _run_point(self, point: ScanPoint, calibration_spec: CalibrationScanSpec, trigger_configuration: TriggerConfiguration, duration: float | None, acq_type: str, run_id: str | int | None, client_run_folders: dict[bytes, Path], is_last_point: bool) -> bool:
+    def _run_point(self, point: ScanPoint, calibration_spec: CalibrationScanSpec, trigger_configuration: TriggerConfiguration | None, duration: float | None, acq_type: str, run_id: str | int | None, file_format: str, client_run_folders: dict[bytes, Path], is_last_point: bool) -> bool:
         """
         One point: set it, prepare it (shared), apply it (per client), configure the trigger
         with the final channels, acquire, and record the outcome per client.
@@ -670,16 +682,19 @@ class CalibrationEngine:
         session_result = self.acquisition_service.run_acquisition_session(
             client_ids=acquisition_clients,
             acq_type=acq_type,
+            file_format=file_format,
             suffix=point.suffix,
             run_id=run_id,
             run_folder_clients=client_run_folders,
             duration=duration,
             reason=f"calibration point {point.index} ({point.suffix}) ended",
-            reset_trigger_config=is_last_point,
+            # Without trigger configuration the trigger registers were never written: nothing to reset
+            # (and the snapshot does not hold them, so a reset could not be undone).
+            reset_trigger_config=is_last_point and trigger_configuration is not None,
         )
 
         # At the last point the session also resets the trigger of the clients it finalized.
-        if is_last_point:
+        if is_last_point and trigger_configuration is not None:
             for cid in acquisition_clients:
                 client_result = session_result.clients.get(cid)
                 if client_result is not None and client_result.finalized and cid in self._trigger_clients_to_reset:
@@ -752,24 +767,41 @@ class CalibrationEngine:
                 self.calibration_service.mark_client_failed(client_id=cid, error=f"apply_point failed at point {point.index}: {exc}")
 
 
-    def _configure_trigger_for_clients(self, trigger_configuration: TriggerConfiguration) -> None:
-        """RC trigger registers and intended RC19 mask of each active client, with its final channels."""
+    def _configure_trigger_for_clients(self, trigger_configuration: TriggerConfiguration | None) -> None:
+        """
+        RC trigger registers and intended RC19 mask of each active client, with its final channels.
+
+        With a trigger configuration the registers are written and the clients are remembered, so
+        that finalization resets them. Without it (e.g. the pedestal) the trigger registers are not
+        touched, the clients are not remembered, and the RC19 mask comes from the snapshot.
+        """
 
         for cid in self.calibration_service.get_active_clients():
             if self._stop_requested():
                 return
 
+            name = cid.decode(errors="ignore")
             effective_channels = self.calibration_service.get_effective_channels(client_id=cid)
 
-            # Remembered before writing: a write that fails halfway leaves registers to reset.
-            if cid not in self._trigger_clients_to_reset:
-                self._trigger_clients_to_reset.append(cid)
-
             try:
+                if trigger_configuration is None:
+                    session = self.calibration_service.get_session(client_id=cid)
+                    snapshot = session.hardware_snapshot if session is not None else None
+                    snapshot_rc19 = snapshot.rc_registers.get(19) if snapshot is not None else None
+
+                    if not self.acquisition_service.prepare_rc19_from_snapshot(client_id=cid, snapshot_rc19=snapshot_rc19, effective_channels=effective_channels):
+                        self._fail_client(cid, "RC19 preparation failed")
+
+                    continue
+
+                # Remembered before writing: a write that fails halfway leaves registers to reset.
+                if cid not in self._trigger_clients_to_reset:
+                    self._trigger_clients_to_reset.append(cid)
+
                 if not self.acquisition_service.configure_acquisition_client(client_id=cid, trigger_config=trigger_configuration, effective_channels=effective_channels):
                     self._fail_client(cid, "trigger configuration failed")
             except Exception as exc:
-                self.logger.exception(f"Trigger configuration raised an exception for client {cid.decode(errors='ignore')}")
+                self.logger.exception(f"Trigger configuration raised an exception for client {name}")
                 self.calibration_service.mark_client_failed(client_id=cid, error=f"trigger configuration failed: {exc}")
 
     def _enter_calibration_finalization(self, scan_loop_outcome: CalibrationLoopOutcome, finalization_target: ServerFSM) -> None:
@@ -1133,6 +1165,11 @@ class CalibrationEngine:
                 self._finalization_target = None
 
     def _stop_requested(self) -> bool:
+        return self._calibration_run_stop.is_set()
+
+    def stop_requested(self) -> bool:
+        """True if a stop was requested for the calibration in progress. For the callbacks
+        of the calibrations (prepare_run, ...), which run in the thread of the worker."""
         return self._calibration_run_stop.is_set()
 
     

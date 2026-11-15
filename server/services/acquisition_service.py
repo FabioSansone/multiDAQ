@@ -1050,6 +1050,50 @@ class AcquisitionService:
 
         return True
 
+    def prepare_rc19_from_snapshot(self, client_id: bytes, snapshot_rc19: int | None, effective_channels: list[int]) -> bool:
+        """
+        Acquisition without writing the trigger registers (e.g. the pedestal): RC19 is
+        disabled and the intended mask is kept for the enabling after START, like in
+        configure_acquisition_client.
+
+        The mask is the channel bits of effective_channels plus the non-channel bits of the
+        RC19 that the client had before (snapshot_rc19), limited to the 9 bits of RC19 (the
+        ones that save the triggers are 7 and 8).
+        """
+
+        client_name = client_id.decode(errors="ignore")
+
+        if type(snapshot_rc19) is not int:
+            self.logger.error(f"Cannot prepare RC19 for client {client_name}: no RC19 in the hardware snapshot")
+            return False
+
+        if not effective_channels or any(type(ch) is not int or not 0 <= ch <= 6 for ch in effective_channels):
+            self.logger.error(f"Cannot prepare RC19 for client {client_name}: invalid effective channels {effective_channels!r}")
+            return False
+
+        channel_mask = 0
+        for channel in effective_channels:
+            channel_mask |= 1 << channel
+
+        intended_rc19 = (snapshot_rc19 & 0x1FF & ~0x7F) | channel_mask
+
+        with self._session_lock:
+            self._prepared_rc19.pop(client_id, None)
+
+        # RC19 stays at zero until file and producer are ready (see configure_acquisition_client).
+        if not self.disable_rc_channels(client_ids=[client_id]):
+            return False
+
+        with self._session_lock:
+            self._prepared_rc19[client_id] = intended_rc19
+
+        self.logger.info(
+            f"RC19 prepared without trigger configuration for client {client_name}: "
+            f"channels={effective_channels}, intended RC19={intended_rc19}"
+        )
+
+        return True
+
     def configure_acquisition_end_client(self, client_id: bytes,) -> bool:
     
         client_name = client_id.decode(errors="ignore")
