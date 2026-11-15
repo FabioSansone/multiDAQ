@@ -1148,6 +1148,27 @@ class CalibrationService:
             return True
 
 
+    def abandon_run(self, reason: str) -> bool:
+        """
+        Drop the current run whatever its state. Only for a run left behind by a
+        finalization that could not finish it (finish_run returned None): the caller
+        must be sure that no worker is running. The hardware is NOT restored here.
+        """
+        with self._lock:
+            if self.current_run is None:
+                return True
+
+            self.logger.error(
+                "Abandoning calibration run: "
+                f"type={self.current_run.calibration_type}, "
+                f"status={self.current_run.status.value}, reason={reason}"
+            )
+
+            self._reset_run_locked()
+
+            return True
+
+
     def _restore_voltage_threshold(
         self,
         client_id: bytes,
