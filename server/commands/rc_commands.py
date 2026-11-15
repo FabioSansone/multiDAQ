@@ -54,15 +54,18 @@ align_parser.add_argument("--standard-addr", type=int, default=None, help="Optio
 
 
 
+# Only the commands that read, without changing the hardware, are allowed during a calibration.
+CALIBRATION_STATES = {ServerFSM.CALIBRATING, ServerFSM.CALIBRATION_SEQUENCE, ServerFSM.CALIBRATION_FINALIZING}
+
 COMMAND_FSM_MAP = {
     "start": {ServerFSM.READY, ServerFSM.CONNECTED},
     "reset": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "boot": {ServerFSM.READY, ServerFSM.CONNECTED},
-    "read": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING},
+    "read": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING, *CALIBRATION_STATES},
     "write": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "program_feb": {ServerFSM.READY, ServerFSM.CONNECTED},
     "align_hv": {ServerFSM.READY, ServerFSM.CONNECTED},
-    "get_rc_acq": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING}
+    "get_rc_acq": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, ServerFSM.ACQUIRING, *CALIBRATION_STATES}
 }
 
 COMMAND_MAP = {
@@ -79,7 +82,7 @@ COMMAND_MAP = {
 
 @cmd2.with_argparser(rc_parser)
 @cmd2.with_category("RC Commands")
-@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ACQUIRING, ServerFSM.ERROR])
+@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ACQUIRING, ServerFSM.ERROR, *CALIBRATION_STATES])
 def do_rc(self, args: argparse.Namespace) -> None:
     """RunControl commands."""
 

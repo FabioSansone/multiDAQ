@@ -20,6 +20,8 @@ from server.services.channel_selection_service import ChannelSelectionService
 from server.services.acquisition_orchestrator import AcquisitionOrchestrator
 from server.services.acquisition_service import AcquisitionService
 from server.services.calibration_orchestrator import CalibrationOrchestrator
+from server.services.calibration_service import CalibrationService
+from server.services.calibration_engine import CalibrationEngine
 from server.services.optical_instrument_service import OpticalInstrumentService
 from server.services.monitoring_service import MonitoringService
 from server.services.monitoring_orchestrator import MonitoringOrchestrator
@@ -211,6 +213,19 @@ class Server(cmd2.Cmd):
             output_func=self.poutput,
         )
         
+        # Restore of voltage/threshold only (test mode): the callback goes through the acquisition service.
+        self.calibration_service = CalibrationService(
+            command_service=self.client_command_service,
+            restore_hv_values=lambda client_id, previous: self.acquisition_service.restore_hv_override(client_id=client_id, previous=previous),
+        )
+
+        self.calibration_engine = CalibrationEngine(
+            server_state=self.server_state,
+            calibration_service=self.calibration_service,
+            acquisition_service=self.acquisition_service,
+            channel_selection_service=self.channel_selection_service,
+        )
+
         self.mon_orchestrator = MonitoringOrchestrator(
             monitoring_service=self.monitoring_service,
             monitor_stream_service=self.monitor_stream_service,
@@ -276,6 +291,7 @@ class Server(cmd2.Cmd):
         #CALIBRATION COMMANDS#
         self.do_calibration = calibration_commands.do_calibration.__get__(self, Server)
         self.do_recheck_calibration = (calibration_commands.do_recheck_calibration.__get__(self, Server))
+        self.do_stop_calibration = calibration_commands.do_stop_calibration.__get__(self, Server)
         
         #MONITORING COMMANDS#
         self.do_monitor = mon_commands.do_monitor.__get__(self, Server)

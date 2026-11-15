@@ -165,7 +165,7 @@ def do_reconfigure(self, _) -> None:
 
 
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.ERROR])
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.CALIBRATING, ServerFSM.CALIBRATION_SEQUENCE, ServerFSM.CALIBRATION_FINALIZING, ServerFSM.ERROR])
 def do_quit(self, _) -> bool:
     """Send quit command to all connected clients"""
 
@@ -180,6 +180,10 @@ def do_quit(self, _) -> bool:
         logger.error("DISCONNECT_REQUESTED rejected by FSM")
         return False
 
+
+    # The worker is stopped and the restore of the hardware ends before the rest of the shutdown.
+    if not self.calibration_engine.stop_for_shutdown():
+        self.poutput("The calibration did not end in time: shutting down anyway.")
 
     self.stop_monitoring_runtime()
     self.acquisition_orchestrator.stop()
@@ -319,7 +323,7 @@ force_subparsers.add_parser(
 )
 @cmd2.with_argparser(force_parser)
 @cmd2.with_category("Generic Commands")
-@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.CONFIGURING, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.FINALIZING, ServerFSM.ERROR])
+@command_guard([ServerFSM.DISCONNECTED, ServerFSM.CONNECTED, ServerFSM.CONTROL_CONNECTED, ServerFSM.CONFIGURING, ServerFSM.READY, ServerFSM.ACQUIRING, ServerFSM.FINALIZING, ServerFSM.CALIBRATING, ServerFSM.CALIBRATION_SEQUENCE, ServerFSM.CALIBRATION_FINALIZING, ServerFSM.ERROR])
 def do_force(self, args: argparse.Namespace) -> bool:
     """
     Force operations that do not depend on client replies.
@@ -347,6 +351,10 @@ def do_force(self, args: argparse.Namespace) -> bool:
                 f"shutdown failed: {exc}"
             )
             
+        # The restore of the hardware is not interrupted: the worker ends it before the shutdown.
+        if not self.calibration_engine.stop_for_shutdown():
+            self.poutput("The calibration did not end in time: forcing the shutdown anyway.")
+
         self.acquisition_orchestrator.stop()
         self.acquisition_service.wait_for_session_end(timeout=5.0)
     

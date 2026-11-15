@@ -8,6 +8,10 @@ from server.utils.channels import hv_to_user_channels, normalize_user_channels
 logger = get_logger("hv_commands")
 
 
+# Only the commands that read, without changing the hardware, are allowed during a calibration.
+# "status" is not one of them: it sends set_hv_sync, which recovers BAD channels and aligns the power state.
+CALIBRATION_STATES = {ServerFSM.CALIBRATING, ServerFSM.CALIBRATION_SEQUENCE, ServerFSM.CALIBRATION_FINALIZING}
+
 COMMAND_FSM_MAP = {
     "on": {ServerFSM.READY, ServerFSM.CONNECTED},
     "off": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
@@ -16,7 +20,7 @@ COMMAND_FSM_MAP = {
     "unmark_bad": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "status": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
     "set_serial": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
-    "get_serial_map": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR},
+    "get_serial_map": {ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, *CALIBRATION_STATES},
 }
 
 
@@ -273,7 +277,7 @@ pmt_parser.add_argument("--multipmt_ids", type=str, default=None, help='Comma se
 
 @cmd2.with_argparser(hv_parser)
 @cmd2.with_category("HV Commands")
-@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR])
+@command_guard([ServerFSM.READY, ServerFSM.CONNECTED, ServerFSM.ERROR, *CALIBRATION_STATES])
 def do_hv(self, args: argparse.Namespace) -> None:
     """HV commands: hv on, hv off, hv set_common voltage, hv set_common threshold."""
 

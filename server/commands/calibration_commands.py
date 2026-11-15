@@ -161,3 +161,18 @@ recheck_parser.add_argument(
 def do_recheck_calibration(self, args: argparse.Namespace) -> None:
     """Re-check PMT serial calibration matching for a client, without changing acquisition mode: recheck_calibration --multipmt-id ..."""
     self.calibration_orchestrator.recheck_calibration(args)
+
+
+@cmd2.with_category("Calibration Commands")
+@command_guard([
+    ServerFSM.CALIBRATING,
+    ServerFSM.CALIBRATION_SEQUENCE,
+    ServerFSM.CALIBRATION_FINALIZING,
+])
+def do_stop_calibration(self, _) -> None:
+    """Stop the running calibration. The hardware is restored anyway; a restore already in progress is not interrupted."""
+
+    if self.calibration_engine.request_stop():
+        self.poutput("Calibration stop requested; the hardware restore runs in the background.")
+    else:
+        self.poutput("The calibration cannot be stopped now (see the log).")
