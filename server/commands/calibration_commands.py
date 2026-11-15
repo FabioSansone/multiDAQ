@@ -128,13 +128,134 @@ scan_ttp_parser.add_argument(
 #     help="Force recompilation of evreceiver before starting acquisition.",
 # )
 
+#
+# ==========================
+# PEDESTAL CALIBRATION
+# ==========================
+#
+
+pedestal_parser = calibration_subparsers.add_parser(
+    "pedestal",
+    help=(
+        "Acquire the electronic pedestal "
+        "for the selected PMT channels."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--duration",
+    type=float,
+    default=60.0,
+    help=(
+        "Pedestal acquisition duration in seconds. "
+        "Default: 60."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--type",
+    dest="acq_type",
+    type=str,
+    default="pedestal",
+    help=(
+        "Acquisition type folder name. "
+        "Default: pedestal."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--suffix",
+    type=str,
+    default="pedestal",
+    help=(
+        "Output file suffix. "
+        "Default: pedestal."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--run-id",
+    type=str,
+    default=None,
+    help=(
+        "Optional run ID. If omitted, "
+        "automatic acquisition folder is created."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--file-format",
+    choices=["csv", "bin"],
+    default="csv",
+    help=(
+        "Output file format. Default: csv."
+    ),
+)
+
+
+pedestal_parser.add_argument(
+    "--channels",
+    type=str,
+    default="all",
+    help=(
+        'Channels selected. Can be "all" '
+        "or a comma-separated list."
+    ),
+)
+
+
+#
+# Target selection.
+#
+
+pedestal_target_group = (
+    pedestal_parser
+    .add_mutually_exclusive_group()
+)
+
+
+pedestal_target_group.add_argument(
+    "--multipmt-id",
+    type=str,
+    default=None,
+    help="Target client by multiPMT ID.",
+)
+
+
+pedestal_target_group.add_argument(
+    "--batch-id",
+    type=str,
+    default=None,
+    help="Target client by batch ID.",
+)
+
+
+pedestal_target_group.add_argument(
+    "--all-clients",
+    action="store_true",
+    help=(
+        "Run the pedestal calibration on all eligible clients. "
+        "This is also the default when no target "
+        "selector is specified."
+    ),
+)
+
 
 @cmd2.with_argparser(calibration_parser)
 @cmd2.with_category("Calibration Commands")
 @command_guard([ServerFSM.READY])
-@acquisition_guard([AcquisitionMode.TEST, AcquisitionMode.CALIBRATION]) #TEST should be deleted after testing the system
+@acquisition_guard([AcquisitionMode.TEST, AcquisitionMode.CALIBRATION, AcquisitionMode.MULTIPMT])
 def do_calibration(self, args: argparse.Namespace) -> None:
-    """Calibration commands: calibration scan_ttp ..."""
+    """Calibration commands: calibration scan_ttp ..., calibration pedestal ..."""
+
+    if args.command == "pedestal":
+        self.calibration_orchestrator.pedestal(args)
+        return
 
     if args.command == "scan_ttp":
         self.calibration_orchestrator.scan_ttp(args)

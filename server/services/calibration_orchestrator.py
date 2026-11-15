@@ -1,22 +1,178 @@
 import time
 import threading
 from server.services.client_command_service import CommandPlane
+from server.services.calibration_service import CalibrationMode, CalibrationScanSpec, HardwareSnapshotSpec, ScanPoint
 from server.core.server_state import ServerFSM, ServerFSMEvent
 from server.utils.logger import get_logger
 
 
 class CalibrationOrchestrator:
 
-    def __init__(self, server_state, acquisition_service, channel_selection_service, command_service, optical_service, get_mode, output_func=None) -> None:
+    def __init__(self, server_state, acquisition_service, channel_selection_service, command_service, calibration_service, calibration_engine, optical_service, get_mode, output_func=None) -> None:
         self.acquisition_service = acquisition_service
         self.channel_selection_service = channel_selection_service
         self.command_service = command_service
+        self.calibration_service = calibration_service
+        self.calibration_engine = calibration_engine
         self.optical_service = optical_service
         self.poutput = output_func or (lambda message: None)
         self.get_mode = get_mode
         self.server_state = server_state
         self.logger = get_logger("calibration_orchestrator")
         self.logger.debug("Calibration Orchestrator initialized")
+
+    ####################
+    #Common to the runs#
+    ####################
+
+    def _resolve_calibration_targets(self, *, multipmt_id: str | None = None, batch_id: str | None = None, all_clients: bool = False, channels: str | int | list[int] = "all") -> dict[bytes, list[int]]:
+        """Clients and requested channels of a calibration; empty dictionary (and a message
+        for the user) if there is nothing to calibrate."""
+
+        resolution = self.channel_selection_service.resolve_calibration_targets(
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+            all_clients=all_clients,
+            channels=channels,
+            require_acquisition_plane=True,
+        )
+
+        if resolution.unresolved_target:
+            self.logger.error(f"Calibration target resolution failed: {resolution.unresolved_target}")
+            self.poutput(f"Calibration target resolution failed: {resolution.unresolved_target}")
+            return {}
+
+        for rejected_client, reason in resolution.rejected_clients.items():
+            client_name = rejected_client.decode(errors="ignore")
+            self.logger.warning(f"Calibration target rejected: client={client_name}, reason={reason}")
+            self.poutput(f"Client {client_name} excluded from calibration: {reason}")
+
+        if not resolution.targets:
+            self.poutput("No eligible clients remain for calibration.")
+            return {}
+
+        return resolution.targets
+
+    ################################
+    #Pedestal Calibration Procedure#
+    ################################
+
+    def _fail_pedestal_client(self, client_id: bytes, error: str) -> None:
+        """Excludes a client from the run; the others go on."""
+
+        client_name = client_id.decode(errors="ignore")
+        self.logger.error(f"Pedestal preparation failed for {client_name}: {error}")
+
+        if not self.calibration_service.mark_client_failed(client_id=client_id, error=error):
+            self.logger.error(f"Client {client_name} could not be marked as failed in the calibration run")
+
+    def _prepare_pedestal_run(self) -> bool:
+        """Runs once in the calibration worker thread: every active client turns its HV off
+        and sets RC12=1. True if at least one client is ready (or if a stop was requested:
+        the engine then ends the run without marking the clients as failed)."""
+
+        clients_to_prepare = list(self.calibration_service.get_active_clients())
+        self.logger.info(f"Pedestal preparation: {len(clients_to_prepare)} client(s) to prepare")
+
+        for cid in clients_to_prepare:
+            client_name = cid.decode(errors="ignore")
+
+            if self.calibration_engine.stop_requested():
+                self.logger.warning("Stop requested during the pedestal preparation: the remaining clients are not prepared")
+                return True
+
+            try:
+                channels = self.calibration_service.get_effective_channels(client_id=cid)
+
+                if not channels:
+                    self._fail_pedestal_client(cid, "no effective channels")
+                    continue
+
+                self.logger.info(f"Pedestal preparation of {client_name}: channels={list(channels)}")
+
+                reply, reason = self.command_service.send_calibration_command(
+                    client_id=cid,
+                    command="pedestal_calibration",
+                    payload={"channels": list(channels)},
+                )
+
+                if reply is None:
+                    self._fail_pedestal_client(cid, f"pedestal_calibration not completed: {reason}")
+                    continue
+
+                if reply.payload.get("status") != "ok":
+                    error = reply.payload.get("error") or "pedestal_calibration rejected by the client"
+                    self._fail_pedestal_client(cid, str(error))
+                    continue
+
+                self.logger.info(f"Pedestal preparation of {client_name} completed")
+
+            except Exception as exc:
+                self.logger.exception(f"Unexpected error in the pedestal preparation of {client_name}")
+                self._fail_pedestal_client(cid, f"unexpected error: {exc}")
+
+        ready_clients = self.calibration_service.get_active_clients()
+        self.logger.info(f"Pedestal preparation finished: {len(ready_clients)} client(s) ready")
+        return bool(ready_clients)
+
+    def pedestal(self, args) -> bool:
+        """calibration pedestal: one acquisition with the HV off and RC12=1, no trigger configuration."""
+
+        self.poutput("Pedestal calibration requested.")
+
+        all_clients = bool(getattr(args, "all_clients", False))
+        multipmt_id = getattr(args, "multipmt_id", None)
+        batch_id = getattr(args, "batch_id", None)
+
+        # No selector means every eligible client.
+        if multipmt_id is None and batch_id is None:
+            all_clients = True
+
+        if args.duration <= 0:
+            self.poutput("Pedestal duration must be greater than zero.")
+            return False
+
+        targets = self._resolve_calibration_targets(
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+            all_clients=all_clients,
+            channels=args.channels,
+        )
+
+        if not targets:
+            return False
+
+        # RC12 and RC19 are changed by the pedestal; the HV power state too, except in test mode
+        # (HV monitor-only: it is not touched, and neither is it restored).
+        snapshot_spec = HardwareSnapshotSpec(
+            rc_register=(12, 19),
+            hv_power_state=self.get_mode() != "test",
+        )
+
+        scan_spec = CalibrationScanSpec(
+            calibration_type="pedestal",
+            points=(ScanPoint(index=0, suffix=args.suffix),),
+            snapshot_spec=snapshot_spec,
+            prepare_run=self._prepare_pedestal_run,
+        )
+
+        started = self.calibration_engine.start_scan(
+            calibration_spec=scan_spec,
+            calibration_mode=CalibrationMode.SAFE,
+            client_channels_targets=targets,
+            trigger_configuration=None,
+            duration=args.duration,
+            acq_type=args.acq_type,
+            run_id=args.run_id,
+            file_format=args.file_format,
+        )
+
+        if not started:
+            self.poutput("Pedestal calibration could not start. See log for details.")
+            return False
+
+        self.poutput(f"Pedestal calibration started on {len(targets)} client(s). Use stop_calibration to stop it.")
+        return True
 
     ####################################
     #Time-To-Peak Calibration Procedure#

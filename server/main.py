@@ -203,16 +203,6 @@ class Server(cmd2.Cmd):
             )
             self.logger.warning("Optical instruments unavailable at server startup")
 
-        self.calibration_orchestrator = CalibrationOrchestrator(
-            server_state=self.server_state,
-            acquisition_service=self.acquisition_service,
-            channel_selection_service=self.channel_selection_service,
-            command_service=self.client_command_service,
-            optical_service=self.optical_instrument_service,
-            get_mode=lambda: self.mode,
-            output_func=self.poutput,
-        )
-        
         # Restore of voltage/threshold only (test mode): the callback goes through the acquisition service.
         self.calibration_service = CalibrationService(
             command_service=self.client_command_service,
@@ -224,6 +214,18 @@ class Server(cmd2.Cmd):
             calibration_service=self.calibration_service,
             acquisition_service=self.acquisition_service,
             channel_selection_service=self.channel_selection_service,
+        )
+
+        self.calibration_orchestrator = CalibrationOrchestrator(
+            server_state=self.server_state,
+            acquisition_service=self.acquisition_service,
+            channel_selection_service=self.channel_selection_service,
+            command_service=self.client_command_service,
+            calibration_service=self.calibration_service,
+            calibration_engine=self.calibration_engine,
+            optical_service=self.optical_instrument_service,
+            get_mode=lambda: self.mode,
+            output_func=self.poutput,
         )
 
         self.mon_orchestrator = MonitoringOrchestrator(
