@@ -1,5 +1,6 @@
 import time
 import threading
+from server.services.acquisition_service import TriggerConfiguration
 from server.services.client_command_service import CommandPlane
 from server.services.calibration_service import CalibrationMode, CalibrationScanSpec, HardwareSnapshotSpec, ScanPoint
 from server.core.server_state import ServerFSM, ServerFSMEvent
@@ -172,6 +173,201 @@ class CalibrationOrchestrator:
             return False
 
         self.poutput(f"Pedestal calibration started on {len(targets)} client(s). Use stop_calibration to stop it.")
+        return True
+
+    ###########################
+    #SPE Calibration Procedure#
+    ###########################
+
+    def _prepare_optics(self, *, near_wheel: int, far_wheel: int, polarizer: float) -> bool:
+        """Fixed optics of a run (filter wheels and polarizer), shared by all the clients.
+        Runs in the calibration worker thread; a stop request interrupts it between the movements."""
+
+        if not self.optical_service.ensure_initialized():
+            self.logger.error("Cannot prepare the optics: optical instruments unavailable")
+            return False
+
+        movements = (
+            ("near wheel", lambda: self.optical_service.move_wheel(position=near_wheel, which_wheel="near")),
+            ("far wheel", lambda: self.optical_service.move_wheel(position=far_wheel, which_wheel="far")),
+            ("polarizer", lambda: self.optical_service.move_polarizer(position=polarizer)),
+        )
+
+        for name, move in movements:
+            if self.calibration_engine.stop_requested():
+                self.logger.warning("Stop requested during the optics preparation")
+                return True  # not a failure: the engine ends the run as stopped, without failing the clients
+
+            if not move():
+                self.logger.error(f"Optics preparation failed: {name} did not reach its position")
+                return False
+
+        self.logger.info(f"Optics ready: near={near_wheel}, far={far_wheel}, polarizer={polarizer}")
+        return True
+
+    def _build_spe_run_id(self, args) -> str:
+        if args.run_id is not None:
+            return args.run_id
+
+        return (
+            f"spe_near{args.near_wheel}_far{args.far_wheel}_pol{args.polarizer:g}"
+            f"_v{args.voltage}_thr{args.threshold:g}_dur{args.duration:g}"
+            f"_delay{args.delay_ns}_win{args.window_ns}"
+        )
+
+    def _apply_spe_point(self, client_id: bytes, point: ScanPoint) -> bool:
+        """HV of the SPE point on one client. Channels that cannot be configured or switched on
+        are dropped from the effective channels (the RC19 mask is built afterwards); False only
+        if no channel is ready."""
+
+        client_name = client_id.decode(errors="ignore")
+        effective_channels = self.calibration_service.get_effective_channels(client_id=client_id)
+
+        if not effective_channels:
+            self.logger.error(f"Cannot apply the SPE point to {client_name}: no effective channels")
+            return False
+
+        reply, reason = self.command_service.send_calibration_command(
+            client_id=client_id,
+            command="spe_calibration",
+            payload={
+                "channels": list(effective_channels),
+                "spe_voltage": point.parameters["voltage"],
+                "spe_threshold": point.parameters["threshold"],
+            },
+        )
+
+        if reply is None:
+            self.logger.error(f"SPE preparation failed for client {client_name}: {reason}")
+            return False
+
+        payload = reply.payload or {}
+
+        if payload.get("status") != "ok":
+            self.logger.error(f"SPE preparation rejected by client {client_name}: {payload.get('error')}")
+            return False
+
+        # Only channels that were requested can be ready.
+        ready_channels = sorted(set(payload.get("successful_channels") or []) & set(effective_channels))
+
+        if not ready_channels:
+            self.logger.error(f"SPE preparation of client {client_name}: no channel is ready")
+            return False
+
+        excluded_channels = sorted(set(effective_channels) - set(ready_channels))
+
+        if excluded_channels:
+            self.logger.warning(f"SPE preparation of client {client_name}: channels {excluded_channels} excluded, ready: {ready_channels}")
+            self.poutput(f"Client {client_name}: channels {excluded_channels} excluded from the SPE calibration.")
+
+            if not self.calibration_service.set_effective_channels(client_id=client_id, channels=ready_channels):
+                self.logger.error(f"Cannot update the effective channels of client {client_name}")
+                return False
+
+        return True
+
+    def spe(self, args) -> bool:
+        """calibration spe: one acquisition with fixed optics, common HV voltage and threshold
+        and the external trigger. Calibration mode only."""
+
+        self.poutput("SPE calibration requested.")
+
+        if self.get_mode() != "calibration":
+            self.poutput("SPE calibration is available only in CALIBRATION mode.")
+            return False
+
+        if args.duration <= 0:
+            self.poutput("SPE duration must be greater than zero.")
+            return False
+
+        if args.window_ns <= 0 or args.window_ns % 5 != 0:
+            self.poutput("SPE trigger window must be positive and a multiple of 5 ns.")
+            return False
+
+        if args.delay_ns < 0 or args.delay_ns % 5 != 0:
+            self.poutput("SPE trigger delay must be non-negative and a multiple of 5 ns.")
+            return False
+
+        all_clients = bool(getattr(args, "all_clients", False))
+        multipmt_id = getattr(args, "multipmt_id", None)
+        batch_id = getattr(args, "batch_id", None)
+
+        # No selector means every eligible client.
+        if multipmt_id is None and batch_id is None:
+            all_clients = True
+
+        targets = self._resolve_calibration_targets(
+            multipmt_id=multipmt_id,
+            batch_id=batch_id,
+            all_clients=all_clients,
+            channels=args.channels,
+        )
+
+        if not targets:
+            return False
+
+        trigger_configuration = TriggerConfiguration(
+            mode="external",
+            input_type=args.trigger_input,
+            polarity=args.polarity,
+            window_ns=args.window_ns,
+            delay_ns=args.delay_ns,
+            save_external=True,
+            save_auto=False,
+        )
+
+        point = ScanPoint(
+            index=0,
+            suffix=args.suffix,
+            parameters={"voltage": args.voltage, "threshold": args.threshold},
+            metadata={
+                "near_wheel": args.near_wheel,
+                "far_wheel": args.far_wheel,
+                "polarizer": args.polarizer,
+                "trigger_input": args.trigger_input,
+                "trigger_polarity": args.polarity,
+                "delay_ns": args.delay_ns,
+                "window_ns": args.window_ns,
+                "duration_s": args.duration,
+            },
+        )
+
+        # The trigger registers (15, 16, 18), RC19, and the HV voltage, threshold and power state are changed.
+        snapshot_spec = HardwareSnapshotSpec(
+            rc_register=(15, 16, 18, 19),
+            hv_voltage=True,
+            hv_threshold=True,
+            hv_power_state=True,
+        )
+
+        scan_spec = CalibrationScanSpec(
+            calibration_type="spe",
+            points=(point,),
+            snapshot_spec=snapshot_spec,
+            prepare_run=lambda: self._prepare_optics(
+                near_wheel=args.near_wheel,
+                far_wheel=args.far_wheel,
+                polarizer=args.polarizer,
+            ),
+            apply_point=self._apply_spe_point,
+        )
+
+        started = self.calibration_engine.start_scan(
+            calibration_spec=scan_spec,
+            calibration_mode=CalibrationMode.SAFE,
+            client_channels_targets=targets,
+            trigger_configuration=trigger_configuration,
+            duration=args.duration,
+            acq_type=args.acq_type,
+            run_id=self._build_spe_run_id(args),
+            file_format=args.file_format,
+        )
+
+        if not started:
+            self.poutput("SPE calibration could not start. See log for details.")
+            return False
+
+        self.poutput(f"SPE calibration started on {len(targets)} client(s). Use stop_calibration to stop it.")
         return True
 
     ####################################

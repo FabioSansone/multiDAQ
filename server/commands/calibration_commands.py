@@ -246,15 +246,60 @@ pedestal_target_group.add_argument(
 )
 
 
+#
+# ==========================
+# SPE CALIBRATION
+# ==========================
+#
+
+spe_parser = calibration_subparsers.add_parser(
+    "spe",
+    help="Acquire Single Photoelectron (SPE) spectra using optical instruments and HV (calibration mode only).",
+)
+
+# Acquisition configuration.
+spe_parser.add_argument("--duration", type=float, default=1800.0, help="SPE acquisition duration in seconds. Default: 1800 (30 minutes).")
+spe_parser.add_argument("--type", dest="acq_type", type=str, default="spe", help="Acquisition type folder name. Default: spe.")
+spe_parser.add_argument("--suffix", type=str, default="spe", help="Output file suffix. Default: spe.")
+spe_parser.add_argument("--run-id", type=str, default=None, help="Optional run ID. If omitted, an automatic ID is generated from the SPE configuration.")
+spe_parser.add_argument("--file-format", choices=["csv", "bin"], default="csv", help="Output file format. Default: csv.")
+spe_parser.add_argument("--channels", type=str, default="all", help='PMT channels selected. Can be "all" or a comma-separated list.')
+
+# Optical hardware configuration.
+spe_parser.add_argument("--near-wheel", type=int, default=10, help="Near filter-wheel position. Default: 10.")
+spe_parser.add_argument("--far-wheel", type=int, default=8, help="Far filter-wheel position. Default: 8.")
+spe_parser.add_argument("--polarizer", type=float, default=50.0, help="Polarizer position in degrees. Default: 50.")
+
+# HV configuration.
+spe_parser.add_argument("--voltage", type=int, default=1450, help="Common PMT voltage in V. Default: 1450.")
+spe_parser.add_argument("--threshold", type=float, default=45.0, help="Common PMT threshold. Default: 45.")
+
+# Trigger configuration: the SPE always uses the external trigger.
+spe_parser.add_argument("--input", dest="trigger_input", choices=["differential", "single-ended"], default="single-ended", help="External trigger electrical input. Default: single-ended.")
+spe_parser.add_argument("--polarity", choices=["default", "inverted"], default="default", help="External trigger polarity. Default: default.")
+spe_parser.add_argument("--delay-ns", type=int, default=800, help="External trigger delay in ns. Hardware resolution: 5 ns. Default: 800.")
+spe_parser.add_argument("--window-ns", type=int, default=400, help="Acquisition window in ns. Hardware resolution: 5 ns. Default: 400.")
+
+# Target selection.
+spe_target_group = spe_parser.add_mutually_exclusive_group()
+spe_target_group.add_argument("--multipmt-id", type=str, default=None, help="Target client by multiPMT ID.")
+spe_target_group.add_argument("--batch-id", type=str, default=None, help="Target client by batch ID.")
+spe_target_group.add_argument("--all-clients", action="store_true", help="Run the SPE calibration on all eligible clients. This is also the default when no target selector is specified.")
+
+
 @cmd2.with_argparser(calibration_parser)
 @cmd2.with_category("Calibration Commands")
 @command_guard([ServerFSM.READY])
 @acquisition_guard([AcquisitionMode.TEST, AcquisitionMode.CALIBRATION, AcquisitionMode.MULTIPMT])
 def do_calibration(self, args: argparse.Namespace) -> None:
-    """Calibration commands: calibration scan_ttp ..., calibration pedestal ..."""
+    """Calibration commands: calibration scan_ttp ..., calibration pedestal ..., calibration spe ..."""
 
     if args.command == "pedestal":
         self.calibration_orchestrator.pedestal(args)
+        return
+
+    if args.command == "spe":
+        self.calibration_orchestrator.spe(args)
         return
 
     if args.command == "scan_ttp":
