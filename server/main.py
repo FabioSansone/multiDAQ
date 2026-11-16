@@ -294,6 +294,7 @@ class Server(cmd2.Cmd):
         self.do_calibration = calibration_commands.do_calibration.__get__(self, Server)
         self.do_recheck_calibration = (calibration_commands.do_recheck_calibration.__get__(self, Server))
         self.do_stop_calibration = calibration_commands.do_stop_calibration.__get__(self, Server)
+        self.do_optical_status = calibration_commands.do_optical_status.__get__(self, Server)
         
         #MONITORING COMMANDS#
         self.do_monitor = mon_commands.do_monitor.__get__(self, Server)

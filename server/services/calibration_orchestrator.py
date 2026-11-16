@@ -1,5 +1,7 @@
 import time
 import threading
+from rich.console import Console
+from rich.table import Table
 from server.services.acquisition_service import TriggerConfiguration
 from server.services.client_command_service import CommandPlane
 from server.services.calibration_service import CalibrationMode, CalibrationScanSpec, HardwareSnapshotSpec, ScanPoint
@@ -17,6 +19,7 @@ class CalibrationOrchestrator:
         self.calibration_engine = calibration_engine
         self.optical_service = optical_service
         self.poutput = output_func or (lambda message: None)
+        self.console = Console()
         self.get_mode = get_mode
         self.server_state = server_state
         self.logger = get_logger("calibration_orchestrator")
@@ -53,6 +56,72 @@ class CalibrationOrchestrator:
             return {}
 
         return resolution.targets
+
+    ################
+    #Optical status#
+    ################
+
+    def optical_status(self) -> bool:
+        """optical_status: table with the current positions of the near wheel, the far wheel and the
+        polarizer. Read only, but it talks to the devices: refused while a calibration is using them."""
+
+        if self.server_state.get_server_state() in (
+            ServerFSM.CALIBRATING,
+            ServerFSM.CALIBRATION_SEQUENCE,
+            ServerFSM.CALIBRATION_FINALIZING,
+        ):
+            self.poutput("The optical instruments are in use by a calibration: status not available now.")
+            return False
+
+        try:
+            status = self.optical_service.get_status()
+        except Exception:
+            self.logger.exception("Optical status: reading the instruments raised an exception")
+            self.poutput("Cannot read the optical instruments (see the log).")
+            return False
+
+        table = Table(title="Optical instruments", show_header=True, header_style="bold")
+        table.add_column("Instrument")
+        table.add_column("Position", justify="right")
+        table.add_column("State")
+        table.add_column("Device")
+
+        unavailable = "[bold red]unavailable[/bold red]"
+
+        for label, key in (("Near wheel", "near_wheel"), ("Far wheel", "far_wheel")):
+            info = status.get(key)
+
+            if info is None:
+                table.add_row(label, "-", unavailable, "-")
+                continue
+
+            table.add_row(
+                label,
+                f"{info['current_position']} / {info['position_count']}",
+                "[green]ok[/green]",
+                str(info.get("device_id") or info.get("device_path") or "-"),
+            )
+
+        polarizer = status.get("polarizer")
+
+        if polarizer is None:
+            table.add_row("Polarizer", "-", unavailable, "-")
+        else:
+            table.add_row(
+                "Polarizer",
+                f"{polarizer['current_position']:.2f} °",
+                "[green]ok[/green]",
+                str(polarizer.get("device_path") or "-"),
+            )
+
+        self.console.print(table)
+
+        if not status.get("initialized"):
+            self.poutput("WARNING: the optical instruments are not (all) available.")
+            self.logger.warning(f"Optical status: instruments not fully available: {status}")
+            return False
+
+        return True
 
     ################################
     #Pedestal Calibration Procedure#

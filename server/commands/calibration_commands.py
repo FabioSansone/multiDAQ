@@ -389,3 +389,9 @@ def do_stop_calibration(self, _) -> None:
         self.poutput("Calibration stop requested; the hardware restore runs in the background.")
     else:
         self.poutput("The calibration cannot be stopped now (see the log).")
+
+
+@cmd2.with_category("Calibration Commands")
+def do_optical_status(self, _) -> None:
+    """Show the current positions of the near wheel, the far wheel and the polarizer."""
+    self.calibration_orchestrator.optical_status()
