@@ -83,6 +83,8 @@ class ClientCalibrationSession:
     restore_succeeded: bool | None = None
     # User channels the hardware restore could not put back (empty if all, or if unknown).
     restore_failed_channels: list[int] = field(default_factory=list)
+    # User channels excluded during the run that the client could not confirm to be off.
+    channels_not_confirmed_off: list[int] = field(default_factory=list)
     error: str | None = None
 
 
@@ -1337,6 +1339,34 @@ class CalibrationService:
 
         return restore_ok
 
+
+    def add_channels_not_confirmed_off(
+        self,
+        client_id: bytes,
+        channels: list[int],
+    ) -> bool:
+        """Records excluded channels whose HV could not be confirmed off (kept in the manifest)."""
+
+        with self._lock:
+
+            if (
+                self.current_run is None
+                or self.current_run.status != CalibrationStatus.RUNNING
+            ):
+                return False
+
+            session = self._sessions.get(client_id)
+
+            if session is None or session.status != CalibrationStatus.RUNNING:
+                return False
+
+            for channel in channels:
+                if isinstance(channel, int) and channel not in session.channels_not_confirmed_off:
+                    session.channels_not_confirmed_off.append(channel)
+
+            session.channels_not_confirmed_off.sort()
+
+            return True
 
     def set_effective_channels(
         self,

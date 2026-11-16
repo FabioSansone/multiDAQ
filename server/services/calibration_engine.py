@@ -354,6 +354,7 @@ class CalibrationEngine:
             },
             "requested_channels": list(session.requested_channels),
             "effective_channels_final": list(session.effective_channels),
+            "channels_not_confirmed_off": list(session.channels_not_confirmed_off),
             "requested_points": [self._scan_point_to_dict(point) for point in session.requested_points],
             "completed_points": [self._scan_point_to_dict(point) for point in session.completed_points],
             "client_outcome": session.outcome.value if session.outcome is not None else None,

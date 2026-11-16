@@ -205,60 +205,85 @@ class CalibrationOrchestrator:
         self.logger.info(f"Optics ready: near={near_wheel}, far={far_wheel}, polarizer={polarizer}")
         return True
 
-    def _build_spe_run_id(self, args) -> str:
-        if args.run_id is not None:
-            return args.run_id
+    def _check_optical_run_arguments(self, args, label: str) -> bool:
+        """Checks shared by the calibrations with optics, HV and external trigger (calibration mode only)."""
 
-        return (
-            f"spe_near{args.near_wheel}_far{args.far_wheel}_pol{args.polarizer:g}"
-            f"_v{args.voltage}_thr{args.threshold:g}_dur{args.duration:g}"
-            f"_delay{args.delay_ns}_win{args.window_ns}"
-        )
+        if self.get_mode() != "calibration":
+            self.poutput(f"{label} calibration is available only in CALIBRATION mode.")
+            return False
 
-    def _apply_spe_point(self, client_id: bytes, point: ScanPoint) -> bool:
-        """HV of the SPE point on one client. Channels that cannot be configured or switched on
-        are dropped from the effective channels (the RC19 mask is built afterwards); False only
-        if no channel is ready."""
+        if args.duration <= 0:
+            self.poutput(f"{label} duration must be greater than zero.")
+            return False
 
+        if args.window_ns <= 0 or args.window_ns % 5 != 0:
+            self.poutput(f"{label} trigger window must be positive and a multiple of 5 ns.")
+            return False
+
+        if args.delay_ns < 0 or args.delay_ns % 5 != 0:
+            self.poutput(f"{label} trigger delay must be non-negative and a multiple of 5 ns.")
+            return False
+
+        return True
+
+    def _apply_hv_point(self, client_id: bytes, point: ScanPoint, calibration_name: str) -> bool:
+        """HV of a point with common voltage and threshold, on one client (command
+        '<calibration_name>_calibration'). Channels that cannot be configured or switched on
+        are dropped from the effective channels (the RC19 mask is built afterwards), so they
+        are not asked again at the next points; False only if no channel is ready."""
+
+        label = calibration_name.upper()
         client_name = client_id.decode(errors="ignore")
         effective_channels = self.calibration_service.get_effective_channels(client_id=client_id)
 
         if not effective_channels:
-            self.logger.error(f"Cannot apply the SPE point to {client_name}: no effective channels")
+            self.logger.error(f"Cannot apply the {label} point {point.index} to {client_name}: no effective channels")
             return False
 
         reply, reason = self.command_service.send_calibration_command(
             client_id=client_id,
-            command="spe_calibration",
+            command=f"{calibration_name}_calibration",
             payload={
                 "channels": list(effective_channels),
-                "spe_voltage": point.parameters["voltage"],
-                "spe_threshold": point.parameters["threshold"],
+                f"{calibration_name}_voltage": point.parameters["voltage"],
+                f"{calibration_name}_threshold": point.parameters["threshold"],
             },
         )
 
         if reply is None:
-            self.logger.error(f"SPE preparation failed for client {client_name}: {reason}")
+            self.logger.error(f"{label} preparation of point {point.index} failed for client {client_name}: {reason}")
             return False
 
         payload = reply.payload or {}
 
+        # Excluded channels are forced off by the client; the ones it could not confirm off
+        # are noted (also when the client fails altogether: they may still be powered).
+        not_off_channels = sorted(set(payload.get("not_off_channels") or []) & set(effective_channels))
+
+        if not_off_channels:
+            self.logger.error(f"{label} point {point.index} of client {client_name}: channels {not_off_channels} are not confirmed off")
+            self.poutput(f"WARNING: client {client_name}: channels {not_off_channels} could not be confirmed off.")
+
+            if not self.calibration_service.add_channels_not_confirmed_off(client_id=client_id, channels=not_off_channels):
+                self.logger.error(f"Cannot record the channels not confirmed off of client {client_name}")
+
         if payload.get("status") != "ok":
-            self.logger.error(f"SPE preparation rejected by client {client_name}: {payload.get('error')}")
+            self.logger.error(f"{label} preparation of point {point.index} rejected by client {client_name}: {payload.get('error')}")
             return False
 
         # Only channels that were requested can be ready.
         ready_channels = sorted(set(payload.get("successful_channels") or []) & set(effective_channels))
 
         if not ready_channels:
-            self.logger.error(f"SPE preparation of client {client_name}: no channel is ready")
+            self.logger.error(f"{label} preparation of point {point.index} of client {client_name}: no channel is ready")
             return False
 
         excluded_channels = sorted(set(effective_channels) - set(ready_channels))
 
         if excluded_channels:
-            self.logger.warning(f"SPE preparation of client {client_name}: channels {excluded_channels} excluded, ready: {ready_channels}")
-            self.poutput(f"Client {client_name}: channels {excluded_channels} excluded from the SPE calibration.")
+            forced_off_channels = sorted(set(payload.get("forced_off_channels") or []) & set(excluded_channels))
+            self.logger.warning(f"{label} point {point.index} of client {client_name}: channels {excluded_channels} excluded (forced off: {forced_off_channels}), ready: {ready_channels}")
+            self.poutput(f"Client {client_name}: channels {excluded_channels} excluded from the {label} calibration.")
 
             if not self.calibration_service.set_effective_channels(client_id=client_id, channels=ready_channels):
                 self.logger.error(f"Cannot update the effective channels of client {client_name}")
@@ -266,27 +291,11 @@ class CalibrationOrchestrator:
 
         return True
 
-    def spe(self, args) -> bool:
-        """calibration spe: one acquisition with fixed optics, common HV voltage and threshold
-        and the external trigger. Calibration mode only."""
+    def _start_optical_scan(self, args, calibration_name: str, points: tuple[ScanPoint, ...], run_id: str) -> bool:
+        """Common part of spe and gain: targets, external trigger, snapshot, optics in
+        prepare_run (fixed for the whole run), HV of the point in apply_point."""
 
-        self.poutput("SPE calibration requested.")
-
-        if self.get_mode() != "calibration":
-            self.poutput("SPE calibration is available only in CALIBRATION mode.")
-            return False
-
-        if args.duration <= 0:
-            self.poutput("SPE duration must be greater than zero.")
-            return False
-
-        if args.window_ns <= 0 or args.window_ns % 5 != 0:
-            self.poutput("SPE trigger window must be positive and a multiple of 5 ns.")
-            return False
-
-        if args.delay_ns < 0 or args.delay_ns % 5 != 0:
-            self.poutput("SPE trigger delay must be non-negative and a multiple of 5 ns.")
-            return False
+        label = calibration_name.upper()
 
         all_clients = bool(getattr(args, "all_clients", False))
         multipmt_id = getattr(args, "multipmt_id", None)
@@ -316,22 +325,6 @@ class CalibrationOrchestrator:
             save_auto=False,
         )
 
-        point = ScanPoint(
-            index=0,
-            suffix=args.suffix,
-            parameters={"voltage": args.voltage, "threshold": args.threshold},
-            metadata={
-                "near_wheel": args.near_wheel,
-                "far_wheel": args.far_wheel,
-                "polarizer": args.polarizer,
-                "trigger_input": args.trigger_input,
-                "trigger_polarity": args.polarity,
-                "delay_ns": args.delay_ns,
-                "window_ns": args.window_ns,
-                "duration_s": args.duration,
-            },
-        )
-
         # The trigger registers (15, 16, 18), RC19, and the HV voltage, threshold and power state are changed.
         snapshot_spec = HardwareSnapshotSpec(
             rc_register=(15, 16, 18, 19),
@@ -341,15 +334,15 @@ class CalibrationOrchestrator:
         )
 
         scan_spec = CalibrationScanSpec(
-            calibration_type="spe",
-            points=(point,),
+            calibration_type=calibration_name,
+            points=points,
             snapshot_spec=snapshot_spec,
             prepare_run=lambda: self._prepare_optics(
                 near_wheel=args.near_wheel,
                 far_wheel=args.far_wheel,
                 polarizer=args.polarizer,
             ),
-            apply_point=self._apply_spe_point,
+            apply_point=lambda client_id, point: self._apply_hv_point(client_id, point, calibration_name),
         )
 
         started = self.calibration_engine.start_scan(
@@ -359,16 +352,103 @@ class CalibrationOrchestrator:
             trigger_configuration=trigger_configuration,
             duration=args.duration,
             acq_type=args.acq_type,
-            run_id=self._build_spe_run_id(args),
+            run_id=run_id,
             file_format=args.file_format,
         )
 
         if not started:
-            self.poutput("SPE calibration could not start. See log for details.")
+            self.poutput(f"{label} calibration could not start. See log for details.")
             return False
 
-        self.poutput(f"SPE calibration started on {len(targets)} client(s). Use stop_calibration to stop it.")
+        self.poutput(f"{label} calibration started on {len(targets)} client(s), {len(points)} point(s). Use stop_calibration to stop it.")
         return True
+
+    @staticmethod
+    def _optical_point_metadata(args) -> dict:
+        return {
+            "near_wheel": args.near_wheel,
+            "far_wheel": args.far_wheel,
+            "polarizer": args.polarizer,
+            "trigger_input": args.trigger_input,
+            "trigger_polarity": args.polarity,
+            "delay_ns": args.delay_ns,
+            "window_ns": args.window_ns,
+            "duration_s": args.duration,
+        }
+
+    def _build_spe_run_id(self, args) -> str:
+        if args.run_id is not None:
+            return args.run_id
+
+        return (
+            f"spe_near{args.near_wheel}_far{args.far_wheel}_pol{args.polarizer:g}"
+            f"_v{args.voltage}_thr{args.threshold:g}_dur{args.duration:g}"
+            f"_delay{args.delay_ns}_win{args.window_ns}"
+        )
+
+    def spe(self, args) -> bool:
+        """calibration spe: one acquisition with fixed optics, common HV voltage and threshold
+        and the external trigger. Calibration mode only."""
+
+        self.poutput("SPE calibration requested.")
+
+        if not self._check_optical_run_arguments(args, "SPE"):
+            return False
+
+        point = ScanPoint(
+            index=0,
+            suffix=args.suffix,
+            parameters={"voltage": args.voltage, "threshold": args.threshold},
+            metadata=self._optical_point_metadata(args),
+        )
+
+        return self._start_optical_scan(args, "spe", (point,), self._build_spe_run_id(args))
+
+    ############################
+    #GAIN Calibration Procedure#
+    ############################
+
+    def _build_gain_run_id(self, args) -> str:
+        if args.run_id is not None:
+            return args.run_id
+
+        return (
+            f"gain_near{args.near_wheel}_far{args.far_wheel}_pol{args.polarizer:g}"
+            f"_v_start{args.start}_v_stop{args.stop}_v_step{args.step}"
+            f"_thr{args.threshold:g}_dur{args.duration:g}"
+            f"_delay{args.delay_ns}_win{args.window_ns}"
+        )
+
+    def gain(self, args) -> bool:
+        """calibration gain: voltage scan (start..stop, inclusive if reached) with fixed optics,
+        common threshold and the external trigger. Calibration mode only."""
+
+        self.poutput("GAIN calibration requested.")
+
+        if not self._check_optical_run_arguments(args, "GAIN"):
+            return False
+
+        if args.step <= 0:
+            self.poutput("GAIN voltage step must be greater than zero.")
+            return False
+
+        if args.start > args.stop:
+            self.poutput("GAIN initial voltage must not exceed the final voltage.")
+            return False
+
+        voltages = list(range(args.start, args.stop + 1, args.step))
+
+        points = tuple(
+            ScanPoint(
+                index=index,
+                suffix=f"{args.suffix}_{voltage}",
+                parameters={"voltage": voltage, "threshold": args.threshold},
+                metadata=self._optical_point_metadata(args),
+            )
+            for index, voltage in enumerate(voltages)
+        )
+
+        return self._start_optical_scan(args, "gain", points, self._build_gain_run_id(args))
 
     ####################################
     #Time-To-Peak Calibration Procedure#

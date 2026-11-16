@@ -287,12 +287,55 @@ spe_target_group.add_argument("--batch-id", type=str, default=None, help="Target
 spe_target_group.add_argument("--all-clients", action="store_true", help="Run the SPE calibration on all eligible clients. This is also the default when no target selector is specified.")
 
 
+#
+# ==========================
+# GAIN CALIBRATION
+# ==========================
+#
+
+gain_parser = calibration_subparsers.add_parser(
+    "gain",
+    help="Acquire PMT gain spectra while scanning the HV voltage (calibration mode only).",
+)
+
+# Voltage scan.
+gain_parser.add_argument("--start", type=int, default=950, help="Initial PMT voltage in V. Default: 950.")
+gain_parser.add_argument("--stop", type=int, default=1450, help="Final voltage limit in V, inclusive if reached. Default: 1450.")
+gain_parser.add_argument("--step", type=int, default=50, help="Voltage step in V. Default: 50.")
+gain_parser.add_argument("--threshold", type=float, default=400.0, help="Common PMT threshold. Default: 400.")
+
+# Acquisition configuration.
+gain_parser.add_argument("--duration", type=float, default=60.0, help="Acquisition duration of each point in seconds. Default: 60.")
+gain_parser.add_argument("--type", dest="acq_type", type=str, default="gain", help="Acquisition type folder name. Default: gain.")
+gain_parser.add_argument("--suffix", type=str, default="gain", help="Output file suffix (the voltage is appended). Default: gain.")
+gain_parser.add_argument("--run-id", type=str, default=None, help="Optional run ID. If omitted, an automatic ID is generated from the GAIN configuration.")
+gain_parser.add_argument("--file-format", choices=["csv", "bin"], default="csv", help="Output file format. Default: csv.")
+gain_parser.add_argument("--channels", type=str, default="all", help='PMT channels selected. Can be "all" or a comma-separated list.')
+
+# Optical hardware configuration (fixed for the whole run).
+gain_parser.add_argument("--near-wheel", type=int, default=9, help="Near filter-wheel position. Default: 9.")
+gain_parser.add_argument("--far-wheel", type=int, default=9, help="Far filter-wheel position. Default: 9.")
+gain_parser.add_argument("--polarizer", type=float, default=20.0, help="Polarizer position in degrees. Default: 20.")
+
+# Trigger configuration: the GAIN always uses the external trigger.
+gain_parser.add_argument("--input", dest="trigger_input", choices=["differential", "single-ended"], default="single-ended", help="External trigger electrical input. Default: single-ended.")
+gain_parser.add_argument("--polarity", choices=["default", "inverted"], default="default", help="External trigger polarity. Default: default.")
+gain_parser.add_argument("--delay-ns", type=int, default=800, help="External trigger delay in ns. Hardware resolution: 5 ns. Default: 800.")
+gain_parser.add_argument("--window-ns", type=int, default=400, help="Acquisition window in ns. Hardware resolution: 5 ns. Default: 400.")
+
+# Target selection.
+gain_target_group = gain_parser.add_mutually_exclusive_group()
+gain_target_group.add_argument("--multipmt-id", type=str, default=None, help="Target client by multiPMT ID.")
+gain_target_group.add_argument("--batch-id", type=str, default=None, help="Target client by batch ID.")
+gain_target_group.add_argument("--all-clients", action="store_true", help="Run the GAIN calibration on all eligible clients. This is also the default when no target selector is specified.")
+
+
 @cmd2.with_argparser(calibration_parser)
 @cmd2.with_category("Calibration Commands")
 @command_guard([ServerFSM.READY])
 @acquisition_guard([AcquisitionMode.TEST, AcquisitionMode.CALIBRATION, AcquisitionMode.MULTIPMT])
 def do_calibration(self, args: argparse.Namespace) -> None:
-    """Calibration commands: calibration scan_ttp ..., calibration pedestal ..., calibration spe ..."""
+    """Calibration commands: calibration scan_ttp ..., calibration pedestal ..., calibration spe ..., calibration gain ..."""
 
     if args.command == "pedestal":
         self.calibration_orchestrator.pedestal(args)
@@ -300,6 +343,10 @@ def do_calibration(self, args: argparse.Namespace) -> None:
 
     if args.command == "spe":
         self.calibration_orchestrator.spe(args)
+        return
+
+    if args.command == "gain":
+        self.calibration_orchestrator.gain(args)
         return
 
     if args.command == "scan_ttp":
