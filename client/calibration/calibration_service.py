@@ -92,12 +92,77 @@ class CalibrationService:
         channels: logical numbering 0..6 (the HV numbering is obtained here, once).
 
         A channel that cannot be configured or switched on is excluded, the others go on:
-        success is True if at least one channel is ready. A channel that is excluded is not
-        confirmed to be off.
+        success is True if at least one channel is ready. An excluded channel may be left
+        powered (at the previous voltage, or half way), so it is forced off here, and the
+        result says which ones are confirmed off.
 
         Returns {"success": bool, "successful_channels": [...], "excluded_channels": [...],
-        "error": str | None}, with logical channels, serializable.
+        "forced_off_channels": [...], "not_off_channels": [...], "error": str | None},
+        with logical channels, serializable. not_off_channels: excluded channels that are
+        not confirmed off (force-off failed or no answer).
         """
+
+        result = self._configure_and_power_on(
+            channels,
+            voltage=voltage,
+            threshold=threshold,
+            calibration_name=calibration_name,
+        )
+
+        # Only after the HV was actually asked something: the guards (mode, no HVService, no
+        # channels) return with nothing excluded by the hardware.
+        hv_was_commanded = result.pop("_hv_commanded", False)
+
+        if result["excluded_channels"] and hv_was_commanded:
+            self._force_off_excluded(result, calibration_name)
+
+        return result
+
+    def _force_off_excluded(self, result: dict, calibration_name: str) -> None:
+        """Best effort: hv_force_off of the excluded channels (it also acts on the channels that
+        are not OK). Fills forced_off_channels and not_off_channels of the result."""
+
+        excluded_channels = list(result["excluded_channels"])
+        result["not_off_channels"] = excluded_channels
+
+        try:
+            hv_channels = channels_definition(excluded_channels, hv_channels=True)
+
+            self.logger.warning(f"{calibration_name}: forcing OFF the excluded channels {excluded_channels}")
+
+            response = self.runtime.hv_service._submit_command(
+                command="hv_force_off",
+                payload={"channels": hv_channels},
+                sender=f"client_calibration_{calibration_name}",
+                priority=HVMessagePriority.ACQUISITION,
+                timeout_s=client_timeout("hv_force_off"),
+            )
+
+            if response.status != MessageStatus.OK:
+                self.logger.error(f"{calibration_name}: forced HV off of {excluded_channels} failed: {response.error}")
+                return
+
+            failed_hv_channels = set((response.result or {}).get("failed_channels") or [])
+            not_off = sorted(hv_channel - 1 for hv_channel in failed_hv_channels)
+
+            if not_off:
+                self.logger.error(f"{calibration_name}: HV channels that could not be forced OFF: {not_off}")
+
+            result["not_off_channels"] = [channel for channel in excluded_channels if channel in not_off]
+            result["forced_off_channels"] = [channel for channel in excluded_channels if channel not in not_off]
+
+        except Exception:
+            self.logger.exception(f"{calibration_name}: cannot force OFF the excluded channels {excluded_channels}")
+
+    def _configure_and_power_on(
+        self,
+        channels: list[int],
+        *,
+        voltage: float,
+        threshold: float,
+        calibration_name: str,
+    ) -> dict:
+        """Configuration and power on of the channels (see prepare_hv_point); no force-off here."""
 
         requested_channels = sorted(set(channels))
 
@@ -105,6 +170,8 @@ class CalibrationService:
             "success": False,
             "successful_channels": [],
             "excluded_channels": requested_channels,
+            "forced_off_channels": [],
+            "not_off_channels": [],
             "error": None,
         }
 
@@ -131,6 +198,8 @@ class CalibrationService:
                 channel: {"voltage": voltage, "threshold": threshold}
                 for channel in requested_channels
             }
+
+            result["_hv_commanded"] = True  # from here on the channels may have been touched
 
             config_response = self.runtime.hv_service._submit_command(
                 command="set_acquisition_configuration",
@@ -210,3 +279,6 @@ class CalibrationService:
 
     def prepare_spe(self, channels: list[int], *, voltage: float, threshold: float) -> dict:
         return self.prepare_hv_point(channels, voltage=voltage, threshold=threshold, calibration_name="spe")
+
+    def prepare_gain(self, channels: list[int], *, voltage: float, threshold: float) -> dict:
+        return self.prepare_hv_point(channels, voltage=voltage, threshold=threshold, calibration_name="gain")

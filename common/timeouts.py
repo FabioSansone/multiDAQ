@@ -46,6 +46,7 @@ STREAM_RECONCILE_RETRY_S = 5.0
 _RAMP_COMMAND_S = RAMP_WAIT_S + HW_MARGIN_S
 _HV_SYNC_S = 90.0
 _HV_ON_S = 90.0
+_HV_FORCE_OFF_S = 90.0
 
 CLIENT_TIMEOUT_S = {
     # HV
@@ -58,7 +59,7 @@ CLIENT_TIMEOUT_S = {
     "get_power_state_channels": _RAMP_COMMAND_S,
     "hv_on": _HV_ON_S,
     "hv_off": 90.0,
-    "hv_force_off": 90.0,
+    "hv_force_off": _HV_FORCE_OFF_S,
     "set_hv_sync": _HV_SYNC_S,
     "restore_hv_configuration": 2 * _RAMP_COMMAND_S,  # off_and_wait, then on_and_wait
     "hv_on_and_wait": _RAMP_COMMAND_S,
@@ -88,8 +89,9 @@ CLIENT_TIMEOUT_S = {
     "get_multipmt_configuration": _RAMP_COMMAND_S,
     # pedestal preparation: hv_off_and_wait, then rc_write_register (RC12)
     "pedestal_calibration": _RAMP_COMMAND_S + 30.0,
-    # HV of a calibration point: set_acquisition_configuration, then hv_on_and_wait
-    "spe_calibration": 2 * _RAMP_COMMAND_S + 30.0,
+    # HV of a calibration point: set_acquisition_configuration, hv_on_and_wait, then hv_force_off of the excluded channels
+    "spe_calibration": 2 * _RAMP_COMMAND_S + _HV_FORCE_OFF_S + 30.0,
+    "gain_calibration": 2 * _RAMP_COMMAND_S + _HV_FORCE_OFF_S + 30.0,
     # fixed-bad update (off_and_wait + sync), then off_and_wait, set_acquisition_configuration, hv_on
     "set_acq_mode_sync": (
         _RAMP_COMMAND_S + _HV_SYNC_S

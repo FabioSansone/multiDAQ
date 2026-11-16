@@ -47,6 +47,8 @@ def _reply_hv_point(manager, message, result: dict) -> None:
             "status": "ok" if success else "error",
             "successful_channels": list(result.get("successful_channels") or []),
             "excluded_channels": list(result.get("excluded_channels") or []),
+            "forced_off_channels": list(result.get("forced_off_channels") or []),
+            "not_off_channels": list(result.get("not_off_channels") or []),
             "error": None if success else (result.get("error") or "preparation failed"),
         },
         sender="client",
@@ -56,25 +58,36 @@ def _reply_hv_point(manager, message, result: dict) -> None:
     manager.queue_message(reply)
 
 
-def handle_spe_calibration(manager, message):
+def _handle_hv_point_calibration(manager, message, calibration_name: str, prepare) -> None:
+    """Command of a calibration point with common voltage and threshold ('<name>_voltage',
+    '<name>_threshold' in the payload): the HV preparation is done by `prepare`."""
+
     payload = message.payload or {}
 
     channels = payload.get("channels")
-    voltage = payload.get("spe_voltage")
-    threshold = payload.get("spe_threshold")
+    voltage = payload.get(f"{calibration_name}_voltage")
+    threshold = payload.get(f"{calibration_name}_threshold")
 
     if not isinstance(channels, list) or not channels or voltage is None or threshold is None:
-        manager.logger.error(f"Missing or invalid channels, voltage or threshold in spe calibration command: {payload!r}")
+        manager.logger.error(f"Missing or invalid channels, voltage or threshold in {calibration_name} calibration command: {payload!r}")
         _reply_hv_point(manager, message, {"success": False, "error": "Missing channels or common voltage/threshold"})
         return
 
-    manager.logger.info(f"Received spe calibration request: channels={channels}, voltage={voltage}, threshold={threshold}")
+    manager.logger.info(f"Received {calibration_name} calibration request: channels={channels}, voltage={voltage}, threshold={threshold}")
 
-    result = manager.runtime.calibration_service.prepare_spe(channels=channels, voltage=voltage, threshold=threshold)
+    result = prepare(channels=channels, voltage=voltage, threshold=threshold)
 
     if result.get("success"):
-        manager.logger.info("SPE calibration preparation ended successfully")
+        manager.logger.info(f"{calibration_name.upper()} calibration preparation ended successfully")
     else:
-        manager.logger.error(f"Failed to prepare for SPE calibration: {result.get('error')}")
+        manager.logger.error(f"Failed to prepare for {calibration_name.upper()} calibration: {result.get('error')}")
 
     _reply_hv_point(manager, message, result)
+
+
+def handle_spe_calibration(manager, message):
+    _handle_hv_point_calibration(manager, message, "spe", manager.runtime.calibration_service.prepare_spe)
+
+
+def handle_gain_calibration(manager, message):
+    _handle_hv_point_calibration(manager, message, "gain", manager.runtime.calibration_service.prepare_gain)
