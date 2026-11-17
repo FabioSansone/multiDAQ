@@ -484,7 +484,9 @@ class AcquisitionService:
 
         return parser.set_fixed_bad_channels(channels)
 
-    def build_multipmt_configuration(self, client_id: bytes, pe_thr: int | float) -> dict[int, dict[str, float]] | None:
+    def build_multipmt_configuration(
+        self, client_id: bytes, pe_thr: int | float, record_excluded_channels: bool = True,
+    ) -> dict[int, dict[str, float]] | None:
         client_name = client_id.decode(errors="ignore")
         configuration_identity = self.server_state.get_configuration_identity(client_id)
                 
@@ -562,13 +564,14 @@ class AcquisitionService:
             acq_info[real_ch] = {"voltage": ch_config["voltage"], "threshold": ch_config["threshold"],}
         
         if excluded_channels:
-            self.server_state.set_calibration_excluded_channels(client_id, excluded_channels)
             self.logger.warning(
                 f"Client {client_name}: channels excluded from multiPMT configuration "
                 f"(no matching calibration): {sorted(excluded_channels)}"
             )
-        else:
-            self.server_state.set_calibration_excluded_channels(client_id, [])
+        
+        # A read-only caller (e.g. a calibration) must not change the exclusions stored for the acquisition.
+        if record_excluded_channels:
+            self.server_state.set_calibration_excluded_channels(client_id, sorted(excluded_channels))
         
         if not acq_info:
             self.logger.error(f"Cannot build multipmt configuration: no channels matched for client {client_name}")
