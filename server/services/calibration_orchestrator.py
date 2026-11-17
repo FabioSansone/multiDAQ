@@ -298,8 +298,26 @@ class CalibrationOrchestrator:
     def _set_client_hv(self, client_id: bytes, calibration_name: str, voltage: float, threshold: float, where: str) -> bool:
         """Common voltage and threshold on the effective channels of one client (command
         '<calibration_name>_calibration'); `where` says when in the logs ("point 3", "run preparation").
-        Channels that cannot be configured or switched on are dropped from the effective channels
-        (the RC19 mask is built afterwards), so they are not asked again; False only if no channel is ready."""
+        See _send_client_hv for the handling of the reply."""
+
+        effective_channels = self.calibration_service.get_effective_channels(client_id=client_id)
+
+        return self._send_client_hv(
+            client_id=client_id,
+            calibration_name=calibration_name,
+            payload={
+                "channels": list(effective_channels),
+                f"{calibration_name}_voltage": voltage,
+                f"{calibration_name}_threshold": threshold,
+            },
+            where=where,
+        )
+
+    def _send_client_hv(self, client_id: bytes, calibration_name: str, payload: dict, where: str) -> bool:
+        """Sends the command '<calibration_name>_calibration' with a ready payload ("channels" must be the
+        effective channels) and handles the reply. Channels that cannot be configured or switched on are
+        dropped from the effective channels (the RC19 mask is built afterwards), so they are not asked again;
+        False only if no channel is ready."""
 
         label = calibration_name.upper()
         client_name = client_id.decode(errors="ignore")
@@ -312,11 +330,7 @@ class CalibrationOrchestrator:
         reply, reason = self.command_service.send_calibration_command(
             client_id=client_id,
             command=f"{calibration_name}_calibration",
-            payload={
-                "channels": list(effective_channels),
-                f"{calibration_name}_voltage": voltage,
-                f"{calibration_name}_threshold": threshold,
-            },
+            payload=payload,
         )
 
         if reply is None:
@@ -696,6 +710,98 @@ class CalibrationOrchestrator:
     ####################################
     #Time-To-Peak Calibration Procedure#
     ####################################
+
+    def _prepare_ttp_run(self, *, near_wheel: int, far_wheel: int, pol_angle: float, hv_mode: str, voltage: float, threshold: float, pe_thr: float) -> bool:
+        """prepare_run of the TTP scan in calibration mode. Once, in the calibration worker thread:
+        wheels and polarizer (before the HV is switched on), then the voltage and threshold of every
+        active client, per channel: from the calibration JSON (hv_mode "calibrated", thresholds from
+        pe_thr) or the same for all the channels (hv_mode "fixed", voltage and threshold in mV).
+        A client without a usable JSON is failed, the others go on. True if at least one client is
+        ready, or if a stop was requested (the engine then ends the run without failing the clients)."""
+
+        if hv_mode not in ("calibrated", "fixed"):
+            self.logger.error(f"TTP preparation: unknown HV mode {hv_mode!r}")
+            return False
+
+        if self.get_mode() != "calibration":
+            self.logger.error("TTP preparation with optics and HV is available only in calibration mode")
+            return False
+
+        try:
+            if not self._prepare_optics(near_wheel=near_wheel, far_wheel=far_wheel, polarizer=pol_angle):
+                self.logger.error("TTP preparation failed: the wheels or the polarizer did not reach their position")
+                return False
+        except Exception:
+            self.logger.exception("TTP preparation: unexpected error while moving the optical instruments")
+            return False
+
+        # _prepare_optics also returns True when it was interrupted by a stop: no HV in that case.
+        if self.calibration_engine.stop_requested():
+            self.logger.warning("Stop requested during the optics preparation: the HV is not switched on")
+            return True
+
+        clients_to_prepare = list(self.calibration_service.get_active_clients())
+        self.logger.info(f"TTP preparation: {len(clients_to_prepare)} client(s) to prepare, hv_mode={hv_mode}")
+
+        for cid in clients_to_prepare:
+            client_name = cid.decode(errors="ignore")
+
+            if self.calibration_engine.stop_requested():
+                self.logger.warning("Stop requested during the TTP preparation: the remaining clients are not prepared")
+                return True
+
+            # _send_client_hv does not fail the client itself: here it is up to us.
+            error = None
+
+            try:
+                effective_channels = list(self.calibration_service.get_effective_channels(client_id=cid))
+
+                if hv_mode == "calibrated":
+                    # Read-only: the exclusions stored for the acquisition are not touched.
+                    json_configuration = self.acquisition_service.build_multipmt_configuration(
+                        cid, pe_thr, record_excluded_channels=False,
+                    )
+
+                    if json_configuration is None:
+                        error = "calibrated voltages and thresholds not available (calibration JSON missing or not matching the PMT serials)"
+                        self.poutput(f"Client {client_name}: {error}. Client excluded from the TTP calibration.")
+                    else:
+                        configuration_by_channel = {ch: json_configuration[ch] for ch in effective_channels if ch in json_configuration}
+                        without_json = sorted(set(effective_channels) - set(configuration_by_channel))
+
+                        if without_json:
+                            self.logger.warning(f"TTP preparation of {client_name}: channels {without_json} have no calibrated values, the client will exclude them")
+                            self.poutput(f"Client {client_name}: channels {without_json} have no calibrated values and are excluded from the TTP calibration.")
+
+                        if not configuration_by_channel:
+                            error = "no selected channel has calibrated values"
+                else:
+                    configuration_by_channel = {ch: {"voltage": voltage, "threshold": threshold} for ch in effective_channels}
+
+                if error is None and not self._send_client_hv(
+                    client_id=cid,
+                    calibration_name="ttp",
+                    payload={"channels": effective_channels, "ttp_configuration_by_ch": configuration_by_channel},
+                    where="run preparation",
+                ):
+                    error = "HV preparation failed"
+            except Exception as exc:
+                self.logger.exception(f"TTP preparation: unexpected error for client {client_name}")
+                error = f"HV preparation failed: {exc}"
+
+            if error is not None:
+                self.logger.error(f"TTP preparation of {client_name} failed: {error}")
+
+                if not self.calibration_service.mark_client_failed(client_id=cid, error=error):
+                    self.logger.error(f"Client {client_name} could not be marked as failed in the calibration run")
+
+                continue
+
+            self.logger.info(f"TTP preparation of {client_name} completed")
+
+        ready_clients = self.calibration_service.get_active_clients()
+        self.logger.info(f"TTP preparation finished: {len(ready_clients)} client(s) ready")
+        return bool(ready_clients)
 
     def _parse_ttp_values(self, args) -> list[int]:
         if args.values is not None:
