@@ -282,3 +282,6 @@ class CalibrationService:
 
     def prepare_gain(self, channels: list[int], *, voltage: float, threshold: float) -> dict:
         return self.prepare_hv_point(channels, voltage=voltage, threshold=threshold, calibration_name="gain")
+
+    def prepare_polarizer(self, channels: list[int], *, voltage: float, threshold: float) -> dict:
+        return self.prepare_hv_point(channels=channels, voltage=voltage, threshold=threshold, calibration_name="polarizer")

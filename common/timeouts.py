@@ -92,6 +92,7 @@ CLIENT_TIMEOUT_S = {
     # HV of a calibration point: set_acquisition_configuration, hv_on_and_wait, then hv_force_off of the excluded channels
     "spe_calibration": 2 * _RAMP_COMMAND_S + _HV_FORCE_OFF_S + 30.0,
     "gain_calibration": 2 * _RAMP_COMMAND_S + _HV_FORCE_OFF_S + 30.0,
+    "polarizer_calibration": 2 * _RAMP_COMMAND_S + _HV_FORCE_OFF_S + 30.0,
     # fixed-bad update (off_and_wait + sync), then off_and_wait, set_acquisition_configuration, hv_on
     "set_acq_mode_sync": (
         _RAMP_COMMAND_S + _HV_SYNC_S

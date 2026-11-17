@@ -91,3 +91,7 @@ def handle_spe_calibration(manager, message):
 
 def handle_gain_calibration(manager, message):
     _handle_hv_point_calibration(manager, message, "gain", manager.runtime.calibration_service.prepare_gain)
+
+
+def handle_polarizer_calibration(manager, message):
+    _handle_hv_point_calibration(manager=manager, message=message, calibration_name="polarizer", prepare=manager.runtime.calibration_service.prepare_polarizer)
