@@ -85,11 +85,31 @@ class CalibrationService:
         threshold: float,
         calibration_name: str,
     ) -> dict:
+        """HV of a calibration point with a common voltage and threshold (calibration mode only):
+        wrapper of prepare_hv_configuration, which has the same result."""
+
+        return self.prepare_hv_configuration(
+            channels,
+            configuration_by_channel={channel: {"voltage": voltage, "threshold": threshold} for channel in set(channels)},
+            calibration_name=calibration_name,
+        )
+
+    def prepare_hv_configuration(
+        self,
+        channels: list[int],
+        *,
+        configuration_by_channel: dict[int, dict[str, float]],
+        calibration_name: str,
+        allowed_modes: tuple[str, ...] = ("calibration",),
+    ) -> dict:
         """
-        HV of a calibration point with a common voltage and threshold: configuration of the
-        channels, then power on (waits for the ramp). Calibration mode only.
+        HV of a calibration point with a voltage and a threshold for each channel:
+        configuration of the channels, then power on (waits for the ramp).
 
         channels: logical numbering 0..6 (the HV numbering is obtained here, once).
+        configuration_by_channel: {logical channel: {"voltage": V, "threshold": T}}, integer keys.
+        A requested channel without an entry is excluded.
+        allowed_modes: operating modes in which the preparation is allowed.
 
         A channel that cannot be configured or switched on is excluded, the others go on:
         success is True if at least one channel is ready. An excluded channel may be left
@@ -104,9 +124,9 @@ class CalibrationService:
 
         result = self._configure_and_power_on(
             channels,
-            voltage=voltage,
-            threshold=threshold,
+            configuration_by_channel=configuration_by_channel,
             calibration_name=calibration_name,
+            allowed_modes=allowed_modes,
         )
 
         # Only after the HV was actually asked something: the guards (mode, no HVService, no
@@ -158,11 +178,11 @@ class CalibrationService:
         self,
         channels: list[int],
         *,
-        voltage: float,
-        threshold: float,
+        configuration_by_channel: dict[int, dict[str, float]],
         calibration_name: str,
+        allowed_modes: tuple[str, ...] = ("calibration",),
     ) -> dict:
-        """Configuration and power on of the channels (see prepare_hv_point); no force-off here."""
+        """Configuration and power on of the channels (see prepare_hv_configuration); no force-off here."""
 
         requested_channels = sorted(set(channels))
 
@@ -175,8 +195,8 @@ class CalibrationService:
             "error": None,
         }
 
-        if self.runtime.acq_mode != "calibration":
-            result["error"] = f"{calibration_name} preparation requires the calibration mode"
+        if self.runtime.acq_mode not in allowed_modes:
+            result["error"] = f"{calibration_name} preparation requires the mode {' or '.join(allowed_modes)}"
             self.logger.error(result["error"])
             return result
 
@@ -191,12 +211,31 @@ class CalibrationService:
             return result
 
         try:
-            hv_channels = set(channels_definition(requested_channels, hv_channels=True))
+            # A channel without voltage and threshold cannot be configured: it stays excluded.
+            channels_without_configuration = [
+                channel for channel in requested_channels
+                if not isinstance(configuration_by_channel.get(channel), dict)
+                or configuration_by_channel[channel].get("voltage") is None
+                or configuration_by_channel[channel].get("threshold") is None
+            ]
+            configurable_channels = [c for c in requested_channels if c not in channels_without_configuration]
+
+            if channels_without_configuration:
+                self.logger.warning(
+                    f"{calibration_name}: no voltage/threshold for the channels {channels_without_configuration}: excluded"
+                )
+
+            if not configurable_channels:
+                result["error"] = "No voltage and threshold for any selected channel"
+                self.logger.error(f"Cannot prepare {calibration_name}: {result['error']}")
+                return result
+
+            hv_channels = set(channels_definition(configurable_channels, hv_channels=True))
 
             # The keys of the configuration are logical channels, "channels" are HV channels.
             acquisition_configuration = {
-                channel: {"voltage": voltage, "threshold": threshold}
-                for channel in requested_channels
+                channel: configuration_by_channel[channel]
+                for channel in configurable_channels
             }
 
             result["_hv_commanded"] = True  # from here on the channels may have been touched
@@ -267,7 +306,7 @@ class CalibrationService:
 
             self.logger.info(
                 f"{calibration_name} preparation completed: successful_channels={result['successful_channels']}, "
-                f"excluded_channels={result['excluded_channels']}, voltage={voltage}, threshold={threshold}"
+                f"excluded_channels={result['excluded_channels']}"
             )
 
             return result
@@ -285,3 +324,12 @@ class CalibrationService:
 
     def prepare_polarizer(self, channels: list[int], *, voltage: float, threshold: float) -> dict:
         return self.prepare_hv_point(channels=channels, voltage=voltage, threshold=threshold, calibration_name="polarizer")
+
+    def prepare_ttp(self, channels: list[int], *, configuration_by_channel: dict[int, dict[str, float]]) -> dict:
+        """TTP: voltage and threshold of each channel (calibration and multipmt modes)."""
+        return self.prepare_hv_configuration(
+            channels,
+            configuration_by_channel=configuration_by_channel,
+            calibration_name="ttp",
+            allowed_modes=("calibration", "multipmt"),
+        )

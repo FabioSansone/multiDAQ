@@ -95,3 +95,38 @@ def handle_gain_calibration(manager, message):
 
 def handle_polarizer_calibration(manager, message):
     _handle_hv_point_calibration(manager=manager, message=message, calibration_name="polarizer", prepare=manager.runtime.calibration_service.prepare_polarizer)
+
+
+def handle_ttp_calibration(manager, message):
+    """TTP: voltage and threshold of each channel. The keys of 'ttp_configuration_by_ch' arrive
+    as strings (JSON): they are converted here to logical channels."""
+
+    payload = message.payload or {}
+
+    channels = payload.get("channels")
+    raw_configuration = payload.get("ttp_configuration_by_ch")
+
+    if not isinstance(channels, list) or not channels or not isinstance(raw_configuration, dict) or not raw_configuration:
+        manager.logger.error(f"Missing or invalid channels or configuration in ttp calibration command: {payload!r}")
+        _reply_hv_point(manager, message, {"success": False, "error": "Missing channels or per-channel voltage/threshold"})
+        return
+
+    try:
+        configuration_by_channel = {int(channel): values for channel, values in raw_configuration.items()}
+    except (TypeError, ValueError):
+        manager.logger.error(f"Invalid channel keys in ttp calibration configuration: {list(raw_configuration)!r}")
+        _reply_hv_point(manager, message, {"success": False, "error": "Invalid channel keys in the configuration"})
+        return
+
+    manager.logger.info(f"Received ttp calibration request: channels={channels}, configuration={configuration_by_channel}")
+
+    result = manager.runtime.calibration_service.prepare_ttp(
+        channels=channels, configuration_by_channel=configuration_by_channel,
+    )
+
+    if result.get("success"):
+        manager.logger.info("TTP calibration preparation ended successfully")
+    else:
+        manager.logger.error(f"Failed to prepare for TTP calibration: {result.get('error')}")
+
+    _reply_hv_point(manager, message, result)
