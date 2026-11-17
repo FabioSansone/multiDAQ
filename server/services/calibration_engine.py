@@ -972,7 +972,8 @@ class CalibrationEngine:
         result would stay in FINALIZING. The stop never skips this step.
         """
 
-        restore_power_state = self.server_state.get_mode() != "test"
+        # In test mode the HV policy of the client forbids powering the channels: never restore the power state there.
+        power_state_allowed = self.server_state.get_mode() != "test"
 
         for cid in run_clients:
             name = cid.decode(errors="ignore")
@@ -996,6 +997,14 @@ class CalibrationEngine:
                 except Exception:
                     self.logger.exception(f"Marking the restore as not required raised an exception for client {name}")
                 continue
+
+            # The power state is put back only if the calibration asked for it in its snapshot: a run that
+            # leaves the HV on (e.g. in multipmt mode) must not have its channels ramped down and up again.
+            restore_power_state = power_state_allowed and any(
+                "power_state" in parameters for parameters in session.hardware_snapshot.hv_parameters.values()
+            )
+
+            self.logger.info(f"Client {name}: restoring the hardware snapshot ({'with' if restore_power_state else 'without'} the HV power state)")
 
             restored = False
 
