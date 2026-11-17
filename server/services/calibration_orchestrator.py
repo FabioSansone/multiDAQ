@@ -295,18 +295,18 @@ class CalibrationOrchestrator:
 
         return True
 
-    def _apply_hv_point(self, client_id: bytes, point: ScanPoint, calibration_name: str) -> bool:
-        """HV of a point with common voltage and threshold, on one client (command
-        '<calibration_name>_calibration'). Channels that cannot be configured or switched on
-        are dropped from the effective channels (the RC19 mask is built afterwards), so they
-        are not asked again at the next points; False only if no channel is ready."""
+    def _set_client_hv(self, client_id: bytes, calibration_name: str, voltage: float, threshold: float, where: str) -> bool:
+        """Common voltage and threshold on the effective channels of one client (command
+        '<calibration_name>_calibration'); `where` says when in the logs ("point 3", "run preparation").
+        Channels that cannot be configured or switched on are dropped from the effective channels
+        (the RC19 mask is built afterwards), so they are not asked again; False only if no channel is ready."""
 
         label = calibration_name.upper()
         client_name = client_id.decode(errors="ignore")
         effective_channels = self.calibration_service.get_effective_channels(client_id=client_id)
 
         if not effective_channels:
-            self.logger.error(f"Cannot apply the {label} point {point.index} to {client_name}: no effective channels")
+            self.logger.error(f"Cannot set the {label} HV of {client_name} ({where}): no effective channels")
             return False
 
         reply, reason = self.command_service.send_calibration_command(
@@ -314,13 +314,13 @@ class CalibrationOrchestrator:
             command=f"{calibration_name}_calibration",
             payload={
                 "channels": list(effective_channels),
-                f"{calibration_name}_voltage": point.parameters["voltage"],
-                f"{calibration_name}_threshold": point.parameters["threshold"],
+                f"{calibration_name}_voltage": voltage,
+                f"{calibration_name}_threshold": threshold,
             },
         )
 
         if reply is None:
-            self.logger.error(f"{label} preparation of point {point.index} failed for client {client_name}: {reason}")
+            self.logger.error(f"{label} HV preparation ({where}) failed for client {client_name}: {reason}")
             return False
 
         payload = reply.payload or {}
@@ -330,28 +330,28 @@ class CalibrationOrchestrator:
         not_off_channels = sorted(set(payload.get("not_off_channels") or []) & set(effective_channels))
 
         if not_off_channels:
-            self.logger.error(f"{label} point {point.index} of client {client_name}: channels {not_off_channels} are not confirmed off")
+            self.logger.error(f"{label} ({where}) of client {client_name}: channels {not_off_channels} are not confirmed off")
             self.poutput(f"WARNING: client {client_name}: channels {not_off_channels} could not be confirmed off.")
 
             if not self.calibration_service.add_channels_not_confirmed_off(client_id=client_id, channels=not_off_channels):
                 self.logger.error(f"Cannot record the channels not confirmed off of client {client_name}")
 
         if payload.get("status") != "ok":
-            self.logger.error(f"{label} preparation of point {point.index} rejected by client {client_name}: {payload.get('error')}")
+            self.logger.error(f"{label} HV preparation ({where}) rejected by client {client_name}: {payload.get('error')}")
             return False
 
         # Only channels that were requested can be ready.
         ready_channels = sorted(set(payload.get("successful_channels") or []) & set(effective_channels))
 
         if not ready_channels:
-            self.logger.error(f"{label} preparation of point {point.index} of client {client_name}: no channel is ready")
+            self.logger.error(f"{label} HV preparation ({where}) of client {client_name}: no channel is ready")
             return False
 
         excluded_channels = sorted(set(effective_channels) - set(ready_channels))
 
         if excluded_channels:
             forced_off_channels = sorted(set(payload.get("forced_off_channels") or []) & set(excluded_channels))
-            self.logger.warning(f"{label} point {point.index} of client {client_name}: channels {excluded_channels} excluded (forced off: {forced_off_channels}), ready: {ready_channels}")
+            self.logger.warning(f"{label} ({where}) of client {client_name}: channels {excluded_channels} excluded (forced off: {forced_off_channels}), ready: {ready_channels}")
             self.poutput(f"Client {client_name}: channels {excluded_channels} excluded from the {label} calibration.")
 
             if not self.calibration_service.set_effective_channels(client_id=client_id, channels=ready_channels):
@@ -360,9 +360,20 @@ class CalibrationOrchestrator:
 
         return True
 
-    def _start_optical_scan(self, args, calibration_name: str, points: tuple[ScanPoint, ...], run_id: str) -> bool:
-        """Common part of spe and gain: targets, external trigger, snapshot, optics in
-        prepare_run (fixed for the whole run), HV of the point in apply_point."""
+    def _apply_hv_point(self, client_id: bytes, point: ScanPoint, calibration_name: str) -> bool:
+        """apply_point of the calibrations whose point sets the HV (spe, gain)."""
+
+        return self._set_client_hv(
+            client_id,
+            calibration_name,
+            voltage=point.parameters["voltage"],
+            threshold=point.parameters["threshold"],
+            where=f"point {point.index}",
+        )
+
+    def _start_scan_with_external_trigger(self, args, calibration_name: str, points: tuple[ScanPoint, ...], run_id: str, prepare_run=None, prepare_point=None, apply_point=None) -> bool:
+        """Common part of the calibrations with optics, HV and external trigger (spe, gain, polarizer):
+        targets, trigger, snapshot and start of the scan; the callbacks say what each calibration does."""
 
         label = calibration_name.upper()
 
@@ -406,12 +417,9 @@ class CalibrationOrchestrator:
             calibration_type=calibration_name,
             points=points,
             snapshot_spec=snapshot_spec,
-            prepare_run=lambda: self._prepare_optics(
-                near_wheel=args.near_wheel,
-                far_wheel=args.far_wheel,
-                polarizer=args.polarizer,
-            ),
-            apply_point=lambda client_id, point: self._apply_hv_point(client_id, point, calibration_name),
+            prepare_run=prepare_run,
+            prepare_point=prepare_point,
+            apply_point=apply_point,
         )
 
         started = self.calibration_engine.start_scan(
@@ -431,6 +439,22 @@ class CalibrationOrchestrator:
 
         self.poutput(f"{label} calibration started on {len(targets)} client(s), {len(points)} point(s). Use stop_calibration to stop it.")
         return True
+
+    def _start_optical_scan(self, args, calibration_name: str, points: tuple[ScanPoint, ...], run_id: str) -> bool:
+        """spe and gain: the optics are fixed for the whole run (prepare_run), the HV of the point is applied per client."""
+
+        return self._start_scan_with_external_trigger(
+            args,
+            calibration_name,
+            points,
+            run_id,
+            prepare_run=lambda: self._prepare_optics(
+                near_wheel=args.near_wheel,
+                far_wheel=args.far_wheel,
+                polarizer=args.polarizer,
+            ),
+            apply_point=lambda client_id, point: self._apply_hv_point(client_id, point, calibration_name),
+        )
 
     @staticmethod
     def _optical_point_metadata(args) -> dict:
@@ -518,6 +542,156 @@ class CalibrationOrchestrator:
         )
 
         return self._start_optical_scan(args, "gain", points, self._build_gain_run_id(args))
+
+    ###############################
+    #Polarizer Scan Procedure#
+    ###############################
+
+    def _prepare_polarizer_run(self, *, near_wheel: int, far_wheel: int, first_angle: float, voltage: float, threshold: float) -> bool:
+        """prepare_run of the polarizer scan. Once, in the calibration worker thread: wheels and
+        polarizer at the first angle (before the HV is switched on), then the common voltage and
+        threshold of every active client. True if at least one client is ready, or if a stop was
+        requested (the engine then ends the run without marking the clients as failed)."""
+
+        try:
+            if not self._prepare_optics(near_wheel=near_wheel, far_wheel=far_wheel, polarizer=first_angle):
+                self.logger.error("Polarizer preparation failed: the wheels or the polarizer did not reach their position")
+                return False
+        except Exception:
+            self.logger.exception("Polarizer preparation: unexpected error while moving the optical instruments")
+            return False
+
+        # _prepare_optics also returns True when it was interrupted by a stop: no HV in that case.
+        if self.calibration_engine.stop_requested():
+            self.logger.warning("Stop requested during the optics preparation: the HV is not switched on")
+            return True
+
+        clients_to_prepare = list(self.calibration_service.get_active_clients())
+        self.logger.info(f"Polarizer preparation: {len(clients_to_prepare)} client(s) to prepare, voltage={voltage}, threshold={threshold}")
+
+        for cid in clients_to_prepare:
+            client_name = cid.decode(errors="ignore")
+
+            if self.calibration_engine.stop_requested():
+                self.logger.warning("Stop requested during the polarizer preparation: the remaining clients are not prepared")
+                return True
+
+            # _set_client_hv does not fail the client itself (in apply_point the engine does it): here it is up to us.
+            error = None
+
+            try:
+                if not self._set_client_hv(client_id=cid, calibration_name="polarizer", voltage=voltage, threshold=threshold, where="run preparation"):
+                    error = "HV preparation failed"
+            except Exception as exc:
+                self.logger.exception(f"Polarizer preparation: unexpected error for client {client_name}")
+                error = f"HV preparation failed: {exc}"
+
+            if error is not None:
+                self.logger.error(f"Polarizer preparation of {client_name} failed: {error}")
+
+                if not self.calibration_service.mark_client_failed(client_id=cid, error=error):
+                    self.logger.error(f"Client {client_name} could not be marked as failed in the calibration run")
+
+                continue
+
+            self.logger.info(f"Polarizer preparation of {client_name} completed")
+
+        ready_clients = self.calibration_service.get_active_clients()
+        self.logger.info(f"Polarizer preparation finished: {len(ready_clients)} client(s) ready")
+        return bool(ready_clients)
+
+    def _prepare_polarizer_point(self, point: ScanPoint) -> bool:
+        """prepare_point of the polarizer scan: the polarizer goes to the angle of the point, once for all the
+        clients. True also if a stop was requested (the engine checks it right after); False if it did not
+        reach the angle (the engine then fails every active client)."""
+
+        if self.calibration_engine.stop_requested():
+            self.logger.warning(f"Stop requested before the polarizer moves for point {point.index}")
+            return True
+
+        angle = point.parameters["polarizer"]
+
+        try:
+            if not self.optical_service.move_polarizer(position=angle):
+                self.logger.error(f"Point {point.index}: the polarizer did not reach {angle} degrees")
+                return False
+        except Exception:
+            self.logger.exception(f"Point {point.index}: unexpected error while moving the polarizer to {angle} degrees")
+            return False
+
+        self.logger.info(f"Point {point.index}: polarizer at {angle} degrees")
+        return True
+
+    def _build_polarizer_run_id(self, args) -> str:
+        if args.run_id is not None:
+            return args.run_id
+
+        return (
+            f"polarizer_near{args.near_wheel}_far{args.far_wheel}_v{args.voltage}_thr{args.threshold:g}"
+            f"_start{args.start:g}_stop{args.stop:g}_step{args.step:g}_dur{args.duration:g}"
+            f"_delay{args.delay_ns}_win{args.window_ns}"
+        )
+
+    @staticmethod
+    def _polarizer_angles(start: float, stop: float, step: float) -> list[float]:
+        """start, start+step, ... up to stop, included if reached (a tolerance absorbs the float rounding)."""
+
+        count = int((stop - start) / step + 1e-9) + 1
+        return [round(start + index * step, 6) for index in range(count)]
+
+    def polarizer(self, args) -> bool:
+        """calibration polarizer: scan of the polarizer angle with fixed wheels, common HV voltage and
+        threshold, and the external trigger. Calibration mode only."""
+
+        self.poutput("Polarizer calibration requested.")
+
+        if not self._check_optical_run_arguments(args, "Polarizer"):
+            return False
+
+        if args.step <= 0:
+            self.poutput("Polarizer angle step must be greater than zero.")
+            return False
+
+        if args.start > args.stop:
+            self.poutput("Polarizer initial angle must not exceed the final angle.")
+            return False
+
+        angles = self._polarizer_angles(args.start, args.stop, args.step)
+
+        points = tuple(
+            ScanPoint(
+                index=index,
+                suffix=f"{args.suffix}_{angle:g}",
+                parameters={"polarizer": angle},
+                metadata={
+                    "near_wheel": args.near_wheel,
+                    "far_wheel": args.far_wheel,
+                    "voltage": args.voltage,
+                    "threshold": args.threshold,
+                    "trigger_input": args.trigger_input,
+                    "trigger_polarity": args.polarity,
+                    "delay_ns": args.delay_ns,
+                    "window_ns": args.window_ns,
+                    "duration_s": args.duration,
+                },
+            )
+            for index, angle in enumerate(angles)
+        )
+
+        return self._start_scan_with_external_trigger(
+            args,
+            "polarizer",
+            points,
+            self._build_polarizer_run_id(args),
+            prepare_run=lambda: self._prepare_polarizer_run(
+                near_wheel=args.near_wheel,
+                far_wheel=args.far_wheel,
+                first_angle=angles[0],
+                voltage=args.voltage,
+                threshold=args.threshold,
+            ),
+            prepare_point=self._prepare_polarizer_point,
+        )
 
     ####################################
     #Time-To-Peak Calibration Procedure#

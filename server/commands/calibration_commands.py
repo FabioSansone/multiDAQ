@@ -330,12 +330,57 @@ gain_target_group.add_argument("--batch-id", type=str, default=None, help="Targe
 gain_target_group.add_argument("--all-clients", action="store_true", help="Run the GAIN calibration on all eligible clients. This is also the default when no target selector is specified.")
 
 
+#
+# ==========================
+# POLARIZER CALIBRATION
+# ==========================
+#
+
+polarizer_parser = calibration_subparsers.add_parser(
+    "polarizer",
+    help="Acquire spectra while scanning the polarizer angle, with fixed wheels, voltage and threshold (calibration mode only).",
+)
+
+# Polarizer scan.
+polarizer_parser.add_argument("--start", type=float, default=0.0, help="Initial polarizer angle in degrees. Default: 0.")
+polarizer_parser.add_argument("--stop", type=float, default=110.0, help="Final polarizer angle in degrees, inclusive if reached. Default: 110.")
+polarizer_parser.add_argument("--step", type=float, default=10.0, help="Polarizer angle step in degrees. Default: 10.")
+
+# HV configuration (common to all channels, fixed for the whole run).
+polarizer_parser.add_argument("--voltage", type=int, default=1200, help="Common PMT voltage in V. Default: 1200.")
+polarizer_parser.add_argument("--threshold", type=float, default=400.0, help="Common PMT threshold. Default: 400.")
+
+# Acquisition configuration.
+polarizer_parser.add_argument("--duration", type=float, default=60.0, help="Acquisition duration of each point in seconds. Default: 60.")
+polarizer_parser.add_argument("--type", dest="acq_type", type=str, default="polarizer", help="Acquisition type folder name. Default: polarizer.")
+polarizer_parser.add_argument("--suffix", type=str, default="polarizer", help="Output file suffix (the angle is appended). Default: polarizer.")
+polarizer_parser.add_argument("--run-id", type=str, default=None, help="Optional run ID. If omitted, an automatic ID is generated from the configuration.")
+polarizer_parser.add_argument("--file-format", choices=["csv", "bin"], default="csv", help="Output file format. Default: csv.")
+polarizer_parser.add_argument("--channels", type=str, default="all", help='PMT channels selected. Can be "all" or a comma-separated list.')
+
+# Filter wheels (fixed for the whole run).
+polarizer_parser.add_argument("--near-wheel", type=int, default=7, help="Near filter-wheel position. Default: 7.")
+polarizer_parser.add_argument("--far-wheel", type=int, default=10, help="Far filter-wheel position. Default: 10.")
+
+# Trigger configuration: external trigger.
+polarizer_parser.add_argument("--input", dest="trigger_input", choices=["differential", "single-ended"], default="single-ended", help="External trigger electrical input. Default: single-ended.")
+polarizer_parser.add_argument("--polarity", choices=["default", "inverted"], default="default", help="External trigger polarity. Default: default.")
+polarizer_parser.add_argument("--delay-ns", type=int, default=800, help="External trigger delay in ns. Hardware resolution: 5 ns. Default: 800.")
+polarizer_parser.add_argument("--window-ns", type=int, default=400, help="Acquisition window in ns. Hardware resolution: 5 ns. Default: 400.")
+
+# Target selection.
+polarizer_target_group = polarizer_parser.add_mutually_exclusive_group()
+polarizer_target_group.add_argument("--multipmt-id", type=str, default=None, help="Target client by multiPMT ID.")
+polarizer_target_group.add_argument("--batch-id", type=str, default=None, help="Target client by batch ID.")
+polarizer_target_group.add_argument("--all-clients", action="store_true", help="Run the polarizer calibration on all eligible clients. This is also the default when no target selector is specified.")
+
+
 @cmd2.with_argparser(calibration_parser)
 @cmd2.with_category("Calibration Commands")
 @command_guard([ServerFSM.READY])
 @acquisition_guard([AcquisitionMode.TEST, AcquisitionMode.CALIBRATION, AcquisitionMode.MULTIPMT])
 def do_calibration(self, args: argparse.Namespace) -> None:
-    """Calibration commands: calibration scan_ttp ..., calibration pedestal ..., calibration spe ..., calibration gain ..."""
+    """Calibration commands: calibration scan_ttp ..., calibration pedestal ..., calibration spe ..., calibration gain ..., calibration polarizer ..."""
 
     if args.command == "pedestal":
         self.calibration_orchestrator.pedestal(args)
@@ -347,6 +392,10 @@ def do_calibration(self, args: argparse.Namespace) -> None:
 
     if args.command == "gain":
         self.calibration_orchestrator.gain(args)
+        return
+
+    if args.command == "polarizer":
+        self.calibration_orchestrator.polarizer(args)
         return
 
     if args.command == "scan_ttp":

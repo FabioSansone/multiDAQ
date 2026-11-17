@@ -202,7 +202,7 @@ class Polarizer:
             final_position = self.get_position()
 
             if final_position is not None:
-                position_error = final_position - target_position
+                position_error = abs(final_position - target_position)
                 if position_error <= POSITION_TOLERANCE:
                     logger.info(
                         "Polarizer moved successfully: "
