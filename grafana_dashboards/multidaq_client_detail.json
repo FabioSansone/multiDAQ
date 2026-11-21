@@ -1,0 +1,3773 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__elements": {},
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "13.2.1"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "13.2.7"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "status-history",
+      "name": "Status history",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 25,
+      "panels": [],
+      "title": "MAIN",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 26,
+      "title": "Environment",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "dark-red",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "T",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "max": 30,
+          "min": 25,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "dark-red",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 2
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_main_temperature_celsius{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_main_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"main\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"main\"\r\n  } == 1\r\n)",
+          "legendFormat": "Main Temperature",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Temperature",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "dark-blue",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "H",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "max": 38,
+          "min": 34,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 75
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_main_humidity_percent{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_main_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"main\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"main\"\r\n  } == 1\r\n)",
+          "legendFormat": "Main Humidity",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Relative Humidity",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "dark-green",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "P",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "pressurehpa"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_main_pressure_hectopascals{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_main_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"main\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"main\"\r\n  } == 1\r\n)",
+          "legendFormat": "Main Pressure",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pressure",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "id": 27,
+      "title": "Board Status",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#f59e0b",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "V",
+            "axisPlacement": "auto",
+            "axisSoftMax": 4.71,
+            "axisSoftMin": 4.66,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 5.4
+              }
+            ]
+          },
+          "unit": "volt"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_main_voltage_5v_volts{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_main_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"main\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"main\"\r\n  } == 1\r\n)",
+          "legendFormat": "5V",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "5V",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#8b5cf6",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "V",
+            "axisPlacement": "auto",
+            "axisSoftMax": 3.4,
+            "axisSoftMin": 3.3,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 3.4
+              }
+            ]
+          },
+          "unit": "volt"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_main_voltage_3v3_volts{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_main_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"main\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"main\"\r\n  } == 1\r\n)",
+          "legendFormat": "3V3",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "3V3",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#14b8a6",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "I",
+            "axisPlacement": "auto",
+            "axisSoftMax": 0.68,
+            "axisSoftMin": 0.64,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "amp"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 51
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_main_current_amperes{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_main_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"main\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"main\"\r\n  } == 1\r\n)",
+          "legendFormat": "Main Current",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Current",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#ef4444",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "T",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_main_fpga_temperature_celsius{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_main_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"main\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"main\"\r\n  } == 1\r\n)",
+          "legendFormat": "FPGA Temperature",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "FPGA Temperature",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "id": 28,
+      "title": "HV",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#ad46ff",
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 70,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#ef4444",
+                  "index": 1,
+                  "text": "BAD"
+                },
+                "1": {
+                  "color": "#22c55e",
+                  "index": 0,
+                  "text": "OK"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 70
+      },
+      "id": 11,
+      "options": {
+        "colWidth": 0.9,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_hv_channel_enabled{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{\r\n      client_id=\"$client_id\"\r\n    }\r\n  )\r\n  <\r\n  on(client_id, multipmt_id,batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{\r\n      client_id=\"$client_id\",\r\n      section=\"hv\"\r\n    }\r\n  )\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "timeFrom": "5m",
+      "title": "Channel Status",
+      "transparent": true,
+      "type": "status-history"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 70,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#808080",
+                  "index": 1,
+                  "text": "OFF"
+                },
+                "1": {
+                  "color": "#facc15",
+                  "index": 0,
+                  "text": "ON"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 70
+      },
+      "id": 12,
+      "options": {
+        "colWidth": 0.9,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_hv_power_enabled{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{\r\n      client_id=\"$client_id\"\r\n    }\r\n  )\r\n  <\r\n  on(client_id, multipmt_id,batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{\r\n      client_id=\"$client_id\",\r\n      section=\"hv\"\r\n    }\r\n  )\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "timeFrom": "5m",
+      "title": "Power Status",
+      "transparent": true,
+      "type": "status-history"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "dark-red",
+                  "index": 1,
+                  "text": "BAD"
+                },
+                "1": {
+                  "color": "dark-green",
+                  "index": 0,
+                  "text": "OK"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 70
+      },
+      "id": 13,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_hv_ok{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id,batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)\r\nand on(client_id, multipmt_id,batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{\r\n      client_id=\"$client_id\"\r\n    }\r\n  )\r\n  <\r\n  on(client_id, multipmt_id,batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{\r\n      client_id=\"$client_id\",\r\n      section=\"hv\"\r\n    }\r\n  )\r\n)",
+          "legendFormat": "HV Ok",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "HV Status",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "V",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": 3600000,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "volt"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 78
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_hv_voltage_volts{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"hv\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Voltage",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "I",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "µA"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 87
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_hv_current_amperes{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"hv\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Current",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "T",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "celsius"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_hv_temperature_celsius{\r\n  client_id=\"$client_id\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"hv\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Temperature",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "V/<V>",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 105
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\r\n  multidaq_hv_voltage_volts{\r\n    client_id=\"$client_id\"\r\n  }\r\n  /\r\n  avg_over_time(\r\n    multidaq_hv_voltage_volts{\r\n      client_id=\"$client_id\"\r\n    }[${__range}] @ end()\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"hv\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Voltage Stability",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "[V/<V> - 1] * 100",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 105
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\r\n  (\r\n    multidaq_hv_voltage_volts{\r\n      client_id=\"$client_id\"\r\n    }\r\n    /\r\n    avg_over_time(\r\n      multidaq_hv_voltage_volts{\r\n        client_id=\"$client_id\"\r\n      }[${__range}] @ end()\r\n    )\r\n    - 1\r\n  ) * 100\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"hv\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Voltage relative variation",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "I/<I>",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 114
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\r\n  multidaq_hv_current_amperes{\r\n    client_id=\"$client_id\"\r\n  }\r\n  /\r\n  avg_over_time(\r\n    multidaq_hv_current_amperes{\r\n      client_id=\"$client_id\"\r\n    }[${__range}] @ end()\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"hv\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Current Stability",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "[I / <I> - 1] * 100",
+            "axisPlacement": "auto",
+            "axisSoftMax": 5,
+            "axisSoftMin": -5,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 114
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\r\n  (\r\n    multidaq_hv_current_amperes{\r\n      client_id=\"$client_id\"\r\n    }\r\n    /\r\n    avg_over_time(\r\n      multidaq_hv_current_amperes{\r\n        client_id=\"$client_id\"\r\n      }[${__range}] @ end()\r\n    )\r\n    - 1\r\n  ) * 100\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_hv_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"hv\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"hv\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch {{channel}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Current relative variation",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 122
+      },
+      "id": 29,
+      "title": "RC",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [
+            {
+              "options": {
+                "pattern": "register 20",
+                "result": {
+                  "index": 0,
+                  "text": "Ch 0"
+                }
+              },
+              "type": "regex"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "hertz"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 123
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"20\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 0",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"21\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 1",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"22\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 2",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"23\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 3",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"24\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 4",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"25\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 5",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"26\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 6",
+          "range": true,
+          "refId": "G"
+        }
+      ],
+      "title": "Free Rates",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "hertz"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ext Trigger",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#dc2626",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Auto Trigger",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#7c3aed",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "__systemRef": "hideSeriesFrom",
+            "matcher": {
+              "id": "byNames",
+              "options": {
+                "mode": "exclude",
+                "names": [
+                  "Auto Trigger"
+                ],
+                "prefix": "All except:",
+                "readOnly": true
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": true,
+                  "viz": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 131
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"27\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ext Trigger",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"28\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Auto Trigger",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Trigger Rates",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "hertz"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 0 Triggered",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3b82f6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 1 Triggered",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#10b981",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 2 Triggered",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#f59e0b",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 3 Triggered",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8b5cf6",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 4 Triggered",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ec4899",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 5 Triggered",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#06b6d4",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ch 6 Triggered",
+              "scope": "series"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ea580c",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 139
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"32\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "legendFormat": "Ch 0 Triggered",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"33\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 1 Triggered",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"34\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 2 Triggered",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"35\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 3 Triggered",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"36\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 4 Triggered",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"37\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 5 Triggered",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "multidaq_rc_rate_hertz{\r\n  client_id=\"$client_id\",\r\n  register=\"38\"\r\n}\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  (\r\n    time()\r\n    -\r\n    multidaq_rc_sample_timestamp_seconds{client_id=\"$client_id\"}\r\n  )\r\n  <\r\n  on(client_id, multipmt_id, batch_id)\r\n  (\r\n    2 *\r\n    multidaq_monitor_stream_interval_seconds{client_id=\"$client_id\", section=\"rc\"}\r\n  )\r\n)\r\nand on(client_id, multipmt_id, batch_id)\r\n(\r\n  multidaq_monitor_stream_active{\r\n    client_id=\"$client_id\",\r\n    section=\"rc\"\r\n  } == 1\r\n)",
+          "instant": false,
+          "legendFormat": "Ch 6 Triggered",
+          "range": true,
+          "refId": "G"
+        }
+      ],
+      "title": "Triggered Channel Rates",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 147
+      },
+      "id": 30,
+      "title": "Time Sync",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "dark-red",
+                  "index": 1,
+                  "text": "0"
+                },
+                "1": {
+                  "color": "dark-green",
+                  "index": 0,
+                  "text": "1"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 148
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "builder",
+          "expr": "multidaq_time_sync_ok{client_id=\"$client_id\"}",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Time Sync Status",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 148
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "builder",
+          "expr": "multidaq_time_sync_rtt_seconds{client_id=\"$client_id\"}",
+          "legendFormat": "RTT",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "RTT",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 156
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "builder",
+          "expr": "multidaq_time_sync_uncertainty_seconds{client_id=\"$client_id\"}",
+          "legendFormat": "Uncertainty",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Time Sync Uncertainty",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 156
+      },
+      "id": 24,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "builder",
+          "expr": "multidaq_time_sync_age_seconds{client_id=\"$client_id\"}",
+          "legendFormat": "Age",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Time Sync Age",
+      "transparent": true,
+      "type": "timeseries"
+    }
+  ],
+  "preload": false,
+  "refresh": "1m",
+  "schemaVersion": 42,
+  "tags": [],
+  "templating": {
+    "list": [
+      {
+        "allowCustomValue": true,
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(multidaq_client_operational,batch_id)",
+        "includeAll": false,
+        "label": "Batch Id",
+        "multi": true,
+        "name": "batch_id",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(multidaq_client_operational,batch_id)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "regexApplyTo": "value",
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(multidaq_client_operational{batch_id=\"$batch_id\"},multipmt_id)",
+        "includeAll": true,
+        "label": "multiPMT ID",
+        "multi": true,
+        "name": "multipmt_id",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(multidaq_client_operational{batch_id=\"$batch_id\"},multipmt_id)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "regexApplyTo": "value",
+        "type": "query"
+      },
+      {
+        "allowCustomValue": true,
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(multidaq_client_operational{batch_id=\"$batch_id\", multipmt_id=\"$multipmt_id\"},client_id)",
+        "includeAll": true,
+        "label": "Client ID",
+        "multi": true,
+        "name": "client_id",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(multidaq_client_operational{batch_id=\"$batch_id\", multipmt_id=\"$multipmt_id\"},client_id)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "regexApplyTo": "value",
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ]
+  },
+  "timezone": "browser",
+  "title": "multiDAQ Client Detail",
+  "uid": "adxxdt8",
+  "version": 13,
+  "weekStart": ""
+}
