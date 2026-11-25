@@ -52,6 +52,16 @@ Nothing is configured on the boards. The client sends the MAC address of its net
 - Moving a Main Board to another multiPMT means changing its `multipmt_id`/`batch_id` here; its
   `numeric_id` stays with the board.
 
+To use a board with another set of PMTs only for a while, select their configuration file from the
+server prompt instead of editing the registry. The choice is kept in RAM for that board (its MAC), also
+if it disconnects and reconnects, until `configuration reset` or the restart of the server:
+
+```
+configuration set --client-id auger-batch_4-e5f8be --multipmt-id cile1 --batch-id batch_1
+configuration show
+configuration reset --client-id auger-batch_4-e5f8be
+```
+
 The client keeps only a local cache (the I2C bus of the Main Board sensors) in
 `/var/lib/multidaq/client_state.json` (`~/.local/state/multidaq/` when not run as root).
 

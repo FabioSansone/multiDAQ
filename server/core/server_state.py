@@ -395,6 +395,11 @@ class ServerState:
 
         self.client_id_by_mac: dict[str, bytes] = {}
 
+        # Detector configuration chosen by hand (configuration set), by MAC of the board: it
+        # survives a disconnection of the client and lasts until configuration reset or the
+        # restart of the server (RAM only; the registry is never changed).
+        self.configuration_override_by_mac: dict[str, dict] = {}
+
         self.logger.debug("Server State initialized")
 
     def set_mode(self, mode: str) -> None:
@@ -1237,6 +1242,15 @@ class ServerState:
                         str(mac)
                     ] = client_id
 
+                    override = self.configuration_override_by_mac.get(str(mac))
+                    if override is not None:
+                        record.configuration_identity = dict(override)
+                        self.logger.warning(
+                            f"Client {client_id.decode(errors='ignore')} (MAC {mac}): keeping the "
+                            f"configuration selected by hand {override['multipmt_id']}/{override['batch_id']} "
+                            f"instead of the registry one {identity.get('multipmt_id')}/{identity.get('batch_id')}"
+                        )
+
     def add_client(self, client_id: bytes, identity: Optional[dict] = None) -> None:
         self.add_control_client(client_id, identity)
 
@@ -1701,7 +1715,34 @@ class ServerState:
                 "batch_id": str(batch_id),
             }
 
+            mac = (record.identity or {}).get("mac_address")
+            if mac:
+                self.configuration_override_by_mac[str(mac)] = dict(record.configuration_identity)
+
         return True
+
+    def reset_configuration_identity(self, client_id: bytes) -> bool:
+        """Back to the configuration of the registry (the identity of the client)."""
+        with self._lock:
+            record = self.clients.get(client_id)
+
+            if record is None:
+                self.logger.error(f"Cannot reset configuration identity: unknown client {client_id!r}")
+                return False
+
+            record.configuration_identity = None
+
+            mac = (record.identity or {}).get("mac_address")
+            if mac:
+                self.configuration_override_by_mac.pop(str(mac), None)
+
+        return True
+
+    def is_configuration_overridden(self, client_id: bytes) -> bool:
+        """True if the configuration of the client was selected by hand (configuration set)."""
+        with self._lock:
+            record = self.clients.get(client_id)
+            return record is not None and record.configuration_identity is not None
 
     def get_configuration_id(self, client_id: bytes) -> str | None:
         """Etichetta "multipmt_id:batch_id" della configurazione del client."""
