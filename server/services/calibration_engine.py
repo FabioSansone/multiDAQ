@@ -347,7 +347,7 @@ class CalibrationEngine:
             "end_time_utc": datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
             "run_outcome": run.outcome.value if run.outcome is not None else None,
             "run_status": run.status.value,
-            "client_id": client_id.decode(errors="ignore"),
+            "client_id": self.server_state.get_client_label(client_id),
             "configuration_identity": {
                 "multipmt_id": configuration_identity.get("multipmt_id"),
                 "batch_id": configuration_identity.get("batch_id"),
