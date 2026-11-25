@@ -51,7 +51,7 @@ DEFAULT_MONITOR_SHOW_INTERVAL_S = 60
 # Parser root
 # =====================================================================
 
-monitor_parser = argparse.ArgumentParser(
+monitor_parser = cmd2.Cmd2ArgumentParser(
     description="Monitoring commands."
 )
 

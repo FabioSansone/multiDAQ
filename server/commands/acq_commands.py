@@ -80,7 +80,7 @@ def _add_common_acquisition_arguments(parser: argparse.ArgumentParser) -> None:
     threshold_group.add_argument("--threshold-pe-map", type=str, default=None, help='Per-channel threshold in PE, e.g. "0:2,1:2.5".')
 
 
-acquisition_parser = argparse.ArgumentParser()
+acquisition_parser = cmd2.Cmd2ArgumentParser()
 
 acquisition_subparsers = acquisition_parser.add_subparsers(
     dest="command",
