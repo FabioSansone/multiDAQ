@@ -360,8 +360,8 @@ class MonitoringOrchestrator:
             },
 
             "client": {
-                "client_id": client_id.decode(
-                    errors="ignore"
+                "client_id": self.server_state.get_client_label(
+                    client_id
                 ),
                 "identity": copy.deepcopy(
                     identity
