@@ -39,7 +39,7 @@ tank_table *create_table(size_t num_buckets){
 
 }
 
-tank_node *create_node(const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, char *file_path){
+tank_node *create_node(const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, const char *file_path){
     tank_node *new_node;
     new_node = malloc(sizeof(tank_node));
     if(!new_node){
@@ -75,7 +75,7 @@ size_t key_index(const unsigned char *key, size_t key_len, size_t num_buckets){
 }
 
 
-int add_node(tank_table *table, const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, char *file_path){
+int add_node(tank_table *table, const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, const char *file_path){
 
     if (!table){
         return 0;
