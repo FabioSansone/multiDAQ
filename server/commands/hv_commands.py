@@ -135,7 +135,7 @@ def _resolve_hv_targets(self, args, connected_client_ids: list[bytes], command_l
 
     for raw_id in raw_ids:
         if group_name == "client_ids":
-            candidate = raw_id.encode()
+            candidate = self.server_state.find_client(raw_id)
             resolved = candidate if candidate in connected_client_ids else None
         elif group_name == "batch_ids":
             resolved = self.server_state.get_client_id_by_batch_id(raw_id)

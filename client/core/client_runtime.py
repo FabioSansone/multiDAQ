@@ -85,15 +85,6 @@ class ClientRunTime:
 
         self.logger.info("ClientRuntime initialized")
 
-    def _sanitize_identity_part(self, value: str) -> str:
-        return (
-            str(value)
-            .strip()
-            .lower()
-            .replace(" ", "_")
-            .replace("/", "_")
-        )
-    
     @staticmethod
     def _read_boot_id() -> str:
         with open(
@@ -104,15 +95,9 @@ class ClientRunTime:
             return f.read().strip()
 
     def zmq_identity(self) -> str:
-        multipmt_id = self._sanitize_identity_part(
-            self.identity.multipmt_id or "unknown"
-        )
-        batch_id = self._sanitize_identity_part(
-            self.identity.batch_id or "unknown"
-        )
-        mac_suffix = self.identity.mac.replace(":", "")[-6:]
-
-        return f"{multipmt_id}-{batch_id}-{mac_suffix}"
+        """Routing identity on the three planes: chosen before connecting (batch_id and
+        multipmt_id arrive only at the end of the handshake), so it is the MAC only."""
+        return f"mpmt-{self.identity.mac.replace(':', '')}"
 
     def ensure_hv_service(self, fixed_bad_channels: list[int] | None = None, hv_policy: str | None = None) -> bool:
         """hv_policy is used only if the service has to be created: an existing one keeps its own."""

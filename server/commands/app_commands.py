@@ -498,7 +498,8 @@ def do_list_clients(self, _) -> None:
         state_name = state.value if state else "unknown"
         op_flag = "yes" if client_id in operational else "no"
 
-        lines.append(f"  {client_name}")
+        lines.append(f"  {self.server_state.get_client_label(client_id)}   ({client_name})")
+        lines.append(f"    MAC address: {identity.get('mac_address', '-')}")
         lines.append(f"    multipmt_id: {multipmt_id}")
         lines.append(f"    batch_id:    {batch_id}")
         lines.append(f"    configuration: {configuration.get('multipmt_id', '-')}/{configuration.get('batch_id', '-')}")
@@ -822,7 +823,10 @@ configuration_set_parser = configuration_subparsers.add_parser(
     "set",
     help="Select the detector configuration applied to a client",
 )
-configuration_set_parser.add_argument("--client-id", required=True, type=str)
+configuration_set_parser.add_argument(
+    "--client-id", required=True, type=str,
+    help="Client: name shown by list_clients (e.g. auger-batch_4-e5f8be), routing identity or MAC",
+)
 configuration_set_parser.add_argument("--multipmt-id", required=True, type=str)
 configuration_set_parser.add_argument("--batch-id", required=True, type=str)
 
@@ -845,15 +849,15 @@ def do_configuration(self, args: argparse.Namespace) -> None:
             configuration = self.server_state.get_configuration_identity(client_id) or {}
 
             self.poutput(
-                f"{client_id.decode(errors='ignore')}: "
+                f"{self.server_state.get_client_label(client_id)}: "
                 f"identity={identity.get('multipmt_id')}/{identity.get('batch_id')} | "
                 f"configuration={configuration.get('multipmt_id')}/{configuration.get('batch_id')}"
             )
         return
 
-    requested_client_id = args.client_id.encode()
+    requested_client_id = self.server_state.find_client(args.client_id)
 
-    if requested_client_id not in self.server_state.list_common_plane_clients():
+    if requested_client_id is None or requested_client_id not in self.server_state.list_common_plane_clients():
         self.poutput(f"Unknown client connected on both planes: {args.client_id}")
         return
 

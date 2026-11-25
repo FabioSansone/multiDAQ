@@ -24,9 +24,34 @@ The Python libraries are listed in `pyproject.toml` and are installed together. 
 
 ```
 multidaq-server [test|calibration|multipmt]      # add --no-web to skip the web control panel
-multidaq-client --server-ip <server address> --hv-port /dev/ttyPS1
+multidaq-client --server-ip <server address> --hv-port /dev/ttyPS1      # --iface eth0 (default)
 ```
 
 The default mode of the server is `test` (acquisition without high voltage).
 
 At the server prompt, `connect --num_clients <n>` opens the ports the clients connect to: 8888 (control), 8889 (acquisition) and 8890 (monitoring). The client has the same defaults.
+
+## multiPMT registry (identity of the boards)
+
+Nothing is configured on the boards. The client sends the MAC address of its network interface
+(`eth0`, the one the DHCP server knows; `--iface` to change it) and the server assigns `batch_id`,
+`multipmt_id` and the numeric id of the data stream (evproducer) from
+`server/multipmt_config_files/multipmt_registry.json`, written by hand:
+
+```
+{
+  "fc:0f:e7:e5:f8:be": {"multipmt_id": "cile247", "batch_id": "batch_1", "numeric_id": 0}
+}
+```
+
+- One entry per Main Board. `numeric_id` is written in the data files: never reuse or change it.
+- MAC, `numeric_id` and `multipmt_id` must be unique: a file with errors is refused as a whole (the
+  server keeps the previous valid version and logs the reason).
+- A board whose MAC is not in the file is rejected at the handshake, with the reason on both sides;
+  the client retries every 30 s. The server reads the file again when it changes: no restart needed.
+- Moving a Main Board to another multiPMT means changing its `multipmt_id`/`batch_id` here; its
+  `numeric_id` stays with the board.
+
+The client keeps only a local cache (the I2C bus of the Main Board sensors) in
+`/var/lib/multidaq/client_state.json` (`~/.local/state/multidaq/` when not run as root).
+

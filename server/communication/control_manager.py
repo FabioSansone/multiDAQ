@@ -7,7 +7,7 @@ from common.reply_handler import ReplyHandler
 from server.communication.liveness_probe import LivenessProbe
 from server.utils.logger import get_logger
 from server.core.server_state import ServerState
-from server.core.mac_id_registry import MacIdentityRegistry
+from server.core.mac_id_registry import MacIdentityRegistry, normalize_mac
 from common.timeouts import HANDSHAKE_STEP_TIMEOUT_S, CONNECT_CLIENT_WAIT_S
 import threading
 import queue
@@ -299,36 +299,18 @@ class ControlPlaneManager:
             self.logger.error(f"Handshake with {client_id!r} failed on startup_ack: {error}")
             return False
 
-        identity_payload = startup_message.payload.get("identity")
-
-        error = self._validate_handshake_identity(client_id, identity_payload)
+        identity_payload, error = self._resolve_client_identity(
+            client_id, startup_message.payload.get("identity")
+        )
         if error:
-            self.logger.error(f"Handshake with {client_id!r} failed on identity: {error}")
+            self.logger.error(f"Handshake with {client_id!r} rejected: {error}")
+            self._send_handshake_rejection(client_id, startup_message.request_id, error)
             return False
 
         multipmt_id = identity_payload.get("multipmt_id")
         batch_id = identity_payload.get("batch_id")
-        mac_id = identity_payload.get("mac_address")
 
-        mac_client_id = self.mac_register.get_id_from_mac(mac_id)
-
-        if mac_client_id is None:
-            self.logger.error(
-                f"Failed to assign/retrieve numeric id for MAC {mac_id} "
-                f"(client {client_id!r}); aborting handshake."
-            )
-            return False
-
-        end_mode_message = self.message_handler.create_handshake(
-            phase="end",
-            payload={
-                "message": "End",
-                "mac_client_id": int(mac_client_id),
-            },
-            in_reply_to=startup_message.request_id,
-            sender="server",
-            status=MessageStatus.OK,
-        )
+        end_mode_message = self._create_end_message(identity_payload, startup_message.request_id)
 
         if not self.send_message(client_id=client_id, message=end_mode_message):
             self.logger.error(f"Failed to send mac client id for evproducer client {client_id!r}")
@@ -387,6 +369,67 @@ class ControlPlaneManager:
         return None
 
 
+    def _resolve_client_identity(self, client_id: bytes, client_payload) -> tuple[dict | None, str | None]:
+        """The client sends only its MAC (and hostname): batch_id, multipmt_id and the numeric id
+        of evproducer come from the multiPMT registry of the server. Returns (identity, None) or
+        (None, reason of the rejection)."""
+        if not isinstance(client_payload, dict):
+            return None, f"Invalid identity payload: {client_payload!r}"
+
+        mac = normalize_mac(client_payload.get("mac_address"))
+        if mac is None:
+            return None, f"Missing or invalid mac_address in identity payload: {client_payload}"
+
+        entry = self.mac_register.lookup(mac)
+        if entry is None:
+            return None, (
+                f"MAC {mac} is not in the multiPMT registry ({self.mac_register.describe_path()}): "
+                "add it with its multipmt_id, batch_id and numeric_id"
+            )
+
+        identity = {
+            "mac_address": mac,
+            "hostname": client_payload.get("hostname"),
+            "client_version": client_payload.get("client_version"),
+            "multipmt_id": entry["multipmt_id"],
+            "batch_id": entry["batch_id"],
+            "numeric_id": entry["numeric_id"],
+        }
+
+        error = self._validate_handshake_identity(client_id, identity)
+        if error:
+            return None, error
+
+        return identity, None
+
+    def _create_end_message(self, identity: dict, in_reply_to: str) -> ProtocolMessage:
+        return self.message_handler.create_handshake(
+            phase="end",
+            payload={
+                "message": "End",
+                "mac_client_id": int(identity["numeric_id"]),
+                "identity": {
+                    "multipmt_id": identity["multipmt_id"],
+                    "batch_id": identity["batch_id"],
+                },
+            },
+            in_reply_to=in_reply_to,
+            sender="server",
+            status=MessageStatus.OK,
+        )
+
+    def _send_handshake_rejection(self, client_id: bytes, in_reply_to: str, reason: str) -> None:
+        """Tell the client why it is not admitted, instead of letting its handshake time out."""
+        rejection = self.message_handler.create_handshake(
+            phase="end",
+            payload={"message": "Rejected", "reason": reason},
+            in_reply_to=in_reply_to,
+            sender="server",
+            status=MessageStatus.REJECTED,
+        )
+        if not self.send_message(client_id=client_id, message=rejection):
+            self.logger.error(f"Failed to send the handshake rejection to client {client_id!r}")
+
     def _validate_handshake_identity(self, client_id: bytes, identity_payload: dict) -> str | None:
 
         if not isinstance(identity_payload, dict):
@@ -409,6 +452,11 @@ class ControlPlaneManager:
 
         if existing_client_id is not None and existing_client_id != client_id:
             return f"Duplicate multipmt_id received: {multipmt_id}. Already mapped to {existing_client_id!r}"
+
+        existing_client_id = self.server_state.get_client_id_by_mac(mac_id)
+
+        if existing_client_id is not None and existing_client_id != client_id:
+            return f"Duplicate MAC address received: {mac_id}. Already mapped to {existing_client_id!r}"
 
         return None
 
@@ -534,38 +582,17 @@ class ControlPlaneManager:
             self._handshake_sessions.pop(client_id, None)
             return
 
-        identity_payload = message.payload.get("identity")
-        
-        error = self._validate_handshake_identity(client_id, identity_payload)
+        identity_payload, error = self._resolve_client_identity(client_id, message.payload.get("identity"))
         if error:
-            self.logger.error(f"Handshake with {client_id!r} failed on identity: {error}")
+            self.logger.error(f"Handshake with {client_id!r} rejected: {error}")
+            self._send_handshake_rejection(client_id, message.request_id, error)
             self._handshake_sessions.pop(client_id, None)
-            return 
+            return
 
         session.identity = identity_payload
+        session.mac_client_id = identity_payload["numeric_id"]
 
-        mac_id = identity_payload.get("mac_address")
-
-        mac_client_id = self.mac_register.get_id_from_mac(mac_id)
-
-        if mac_client_id is None:
-            self.logger.error(
-                f"Failed to assign/retrieve numeric id for MAC {mac_id} "
-                f"(client {client_id!r}); aborting handshake."
-            )
-            self._handshake_sessions.pop(client_id, None)
-            return 
-
-        end_mode_message = self.message_handler.create_handshake(
-            phase="end",
-            payload={
-                "message": "End",
-                "mac_client_id": int(mac_client_id),
-            },
-            in_reply_to=message.request_id,
-            sender="server",
-            status=MessageStatus.OK,
-        )
+        end_mode_message = self._create_end_message(identity_payload, message.request_id)
 
         if not self.send_message(client_id=client_id, message=end_mode_message):
             self.logger.error(f"Failed to send mac client id for evproducer client {client_id!r}")

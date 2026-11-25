@@ -22,10 +22,18 @@ def main() -> int:
     parser.add_argument("--acq-port", type=int, default=8889, help="Acquisition plane port")
     parser.add_argument("--mon-port", type=int, default=8890, help="Monitoring plane port",)
     parser.add_argument("--hv-port", type=str, default="/dev/ttyPS1", help="HV port")
+    parser.add_argument(
+        "--iface", type=str, default="eth0",
+        help="Network interface whose MAC identifies this board in the multiPMT registry of the server",
+    )
     args = parser.parse_args()
 
     context = zmq.Context()
-    identity = ClientIdentity()
+    try:
+        identity = ClientIdentity(iface=args.iface)
+    except RuntimeError as e:
+        logger.error(str(e))
+        return 1
 
     runtime = ClientRunTime(
         identity=identity,

@@ -20,6 +20,8 @@ from client.communication.connection_monitor import ConnectionMonitor
 
 
 MAX_RETRIES = 10
+# After a rejection (MAC not in the registry of the server) do not hammer the server
+REJECTED_RETRY_DELAY_S = 30.0
 
 
 class ControlPlaneManager:
@@ -35,6 +37,7 @@ class ControlPlaneManager:
         self.runtime = runtime
         self.server_ip = runtime.server_ip
         self.identity = runtime.identity
+        self.rejected_by_server = False
 
         self.stop_listening = threading.Event()
         self.incoming_queue = queue.Queue()
@@ -363,6 +366,14 @@ class ControlPlaneManager:
             )
             return False
 
+        if message.status == MessageStatus.REJECTED or message.payload.get("message") == "Rejected":
+            self.rejected_by_server = True
+            self.logger.error(
+                f"Server {self.server_endpoint} rejected this client "
+                f"(MAC {self.identity.mac}): {message.payload.get('reason', 'no reason given')}"
+            )
+            return False
+
         if message.payload.get("message") != "End":
             self.logger.error(
                 f"Unexpected handshake payload from server "
@@ -383,6 +394,12 @@ class ControlPlaneManager:
                 f"Missing mac_client_id in handshake End payload: {message.payload}"
             )
             return False
+        try:
+            self.identity.set_from_server(message.payload.get("identity") or {})
+        except ValueError as e:
+            self.logger.error(f"Invalid identity in handshake End payload: {e}")
+            return False
+
         self.runtime.set_mac_to_id(mac_to_id=mac_to_id)
         
         conclusion_message = self.message_handler.create_handshake(
@@ -404,7 +421,8 @@ class ControlPlaneManager:
         self.logger.info(
             f"Handshake completed successfully with server {self.server_endpoint}. "
             f"Acquisition mode: {self.runtime.acq_mode}, "
-            f"identity: {self.identity.hostname}"
+            f"identity: {self.identity.multipmt_id}/{self.identity.batch_id} "
+            f"(MAC {self.identity.mac}, host {self.identity.hostname})"
         )
 
         return True
@@ -437,6 +455,7 @@ class ControlPlaneManager:
             else:
                 self.logger.info(f"Handshake attempt {attempt}/{max_retries}")
 
+            self.rejected_by_server = False
             if self.handshake_core(timeout_ms=timeout_ms):
                 # return self.runtime.acquisition_service.apply_acquisition_mode(
                 #     new_mode=self.runtime.acq_mode,
@@ -445,8 +464,15 @@ class ControlPlaneManager:
                 # )
                 return True
 
-            self.logger.warning("Handshake attempt failed, retrying...")
-            time.sleep(retry_delay_s)
+            if self.rejected_by_server:
+                self.logger.warning(
+                    f"Rejected by the server: retrying in {REJECTED_RETRY_DELAY_S:.0f} s "
+                    "(the server reads its multiPMT registry again when it changes)"
+                )
+                time.sleep(REJECTED_RETRY_DELAY_S)
+            else:
+                self.logger.warning("Handshake attempt failed, retrying...")
+                time.sleep(retry_delay_s)
 
         self.logger.error("Handshake failed after maximum number of attempts")
         return False
