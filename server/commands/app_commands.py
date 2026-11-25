@@ -494,7 +494,8 @@ def do_list_clients(self, _) -> None:
         lines.append(f"    MAC address: {identity.get('mac_address', '-')}")
         lines.append(f"    multipmt_id: {multipmt_id}")
         lines.append(f"    batch_id:    {batch_id}")
-        lines.append(f"    configuration: {configuration.get('multipmt_id', '-')}/{configuration.get('batch_id', '-')}")
+        origin = " (selected by hand)" if self.server_state.is_configuration_overridden(client_id) else ""
+        lines.append(f"    configuration: {configuration.get('multipmt_id', '-')}/{configuration.get('batch_id', '-')}{origin}")
         lines.append(f"    state:       {state_name}")
         lines.append(f"    operational: {op_flag}")
         lines.append("-" * 70)
@@ -822,6 +823,15 @@ configuration_set_parser.add_argument(
 configuration_set_parser.add_argument("--multipmt-id", required=True, type=str)
 configuration_set_parser.add_argument("--batch-id", required=True, type=str)
 
+configuration_reset_parser = configuration_subparsers.add_parser(
+    "reset",
+    help="Go back to the detector configuration of the multiPMT registry",
+)
+configuration_reset_parser.add_argument(
+    "--client-id", required=True, type=str,
+    help="Client: name shown by list_clients (e.g. auger-batch_4-e5f8be), routing identity or MAC",
+)
+
 configuration_subparsers.add_parser(
     "show",
     help="Show identity and detector configuration of the connected clients",
@@ -832,18 +842,21 @@ configuration_subparsers.add_parser(
 @cmd2.with_category("Generic Commands")
 @command_guard([ServerFSM.CONNECTED, ServerFSM.READY])
 def do_configuration(self, args: argparse.Namespace) -> None:
-    """The identity says which MainBoard is connected; the configuration says
-    which detector (multipmt_id/batch_id) the calibration files refer to."""
+    """The identity says which MainBoard is connected (multiPMT registry, by MAC); the
+    configuration says which detector (multipmt_id/batch_id) the calibration files refer to.
+    A configuration selected with "set" stays with the board (its MAC) also across a
+    disconnection, until "reset" or the restart of the server: it is never saved."""
 
     if args.command == "show":
         for client_id in self.server_state.list_connected_clients():
             identity = self.server_state.get_identity(client_id) or {}
             configuration = self.server_state.get_configuration_identity(client_id) or {}
+            origin = "selected by hand" if self.server_state.is_configuration_overridden(client_id) else "registry"
 
             self.poutput(
                 f"{self.server_state.get_client_label(client_id)}: "
                 f"identity={identity.get('multipmt_id')}/{identity.get('batch_id')} | "
-                f"configuration={configuration.get('multipmt_id')}/{configuration.get('batch_id')}"
+                f"configuration={configuration.get('multipmt_id')}/{configuration.get('batch_id')} ({origin})"
             )
         return
 
@@ -853,21 +866,36 @@ def do_configuration(self, args: argparse.Namespace) -> None:
         self.poutput(f"Unknown client connected on both planes: {args.client_id}")
         return
 
-    parser = JsonParser(multipmt_id=args.multipmt_id, batch_id=args.batch_id)
-
-    if parser.config_file_path is None:
-        self.poutput("Cannot select configuration: matching detector configuration file not found.")
-        return
-
     old_configuration = self.server_state.get_configuration_identity(requested_client_id)
 
-    if not self.server_state.set_configuration_identity(
-        requested_client_id,
-        multipmt_id=args.multipmt_id,
-        batch_id=args.batch_id,
-    ):
-        self.poutput("Failed to update the configuration identity.")
-        return
+    if args.command == "reset":
+        identity = self.server_state.get_identity(requested_client_id) or {}
+        parser = JsonParser(multipmt_id=identity.get("multipmt_id"), batch_id=identity.get("batch_id"))
+
+        if parser.config_file_path is None:
+            self.poutput(
+                "Cannot go back to the registry configuration "
+                f"{identity.get('multipmt_id')}/{identity.get('batch_id')}: detector configuration file not found."
+            )
+            return
+
+        if not self.server_state.reset_configuration_identity(requested_client_id):
+            self.poutput("Failed to reset the configuration identity.")
+            return
+    else:
+        parser = JsonParser(multipmt_id=args.multipmt_id, batch_id=args.batch_id)
+
+        if parser.config_file_path is None:
+            self.poutput("Cannot select configuration: matching detector configuration file not found.")
+            return
+
+        if not self.server_state.set_configuration_identity(
+            requested_client_id,
+            multipmt_id=args.multipmt_id,
+            batch_id=args.batch_id,
+        ):
+            self.poutput("Failed to update the configuration identity.")
+            return
 
     # configure_clients() replaces the whole operational set with the clients
     # it configures, so every common-plane client is configured again.
