@@ -1,7 +1,7 @@
 {
   "created_at": "2026-11-20T15:39:41.000634+00:00",
   "detector": {
-    "multipmt_id": "cile248",
+    "multipmt_id": "cile2",
     "batch_id": "batch_2",
     "fixed_bad_channels": []
   },
@@ -17,7 +17,7 @@
       "6": "KM81342"
     },
     "metadata": {
-      "multipmt_id": "cile248",
+      "multipmt_id": "cile2",
       "batch_id": "batch_2",
       "source": "manual entry (placeholder) -- to be produced by analysis framework"
     }
@@ -62,7 +62,7 @@
       }
     },
     "metadata": {
-      "multipmt_id": "cile248",
+      "multipmt_id": "cile2",
       "batch_id": "batch_2",
       "pedestal_file": "/swgo/Test/SWGO_Testbench_old/multiPMT/calibration/batch_2/pedestal_characterisation/2025_04_18/acq_1/daq_2025_04_18_21_34_pedestal.csv"
     }
@@ -71,7 +71,7 @@
     "updated_at": "2026-11-21T13:32:37.227931+00:00",
     "data": {},
     "metadata": {
-      "multipmt_id": "cile248",
+      "multipmt_id": "cile2",
       "batch_id": "batch_2"
     }
   },
@@ -192,7 +192,7 @@
       }
     },
     "metadata": {
-      "multipmt_id": "cile248",
+      "multipmt_id": "cile2",
       "batch_id": "batch_2",
       "single_photo_file": "/swgo/Test/SWGO_Testbench_old/multiPMT/calibration/batch_2/single_photoelectron/2025_04_03/run_spe_v_1450_thr_40_pol_90_whe_10_8_win_130/daq_2025_04_03_13_08_1450.csv"
     }
@@ -244,7 +244,7 @@
       }
     },
     "metadata": {
-      "multipmt_id": "cile248",
+      "multipmt_id": "cile2",
       "batch_id": "batch_2",
       "gain_folder": "/swgo/Test/SWGO_Testbench_old/multiPMT/calibration/batch_2/gain_curve/2025_04_03/run_gain_800_1450_thr_400_pol_75_whe_9_9_win_130"
     }
@@ -310,7 +310,7 @@
       }
     },
     "metadata": {
-      "multipmt_id": "cile248",
+      "multipmt_id": "cile2",
       "batch_id": "batch_2",
       "gain_folder": "/swgo/Test/SWGO_Testbench_old/multiPMT/calibration/batch_2/threshold_calibration/2025_04_04/run_threshold_cali_25_60_pol_90_whe_10_8_equ_gains"
     }
@@ -355,7 +355,7 @@
       }
     },
     "metadata": {
-      "multipmt_id": "cile248",
+      "multipmt_id": "cile2",
       "batch_id": "batch_2",
       "gain_folder": "/swgo/Test/SWGO_Testbench_old/multiPMT/calibration/batch_2/spe_equal_gains/2025_04_04/run_spe_equ_gains_thr_cut_16/daq_2025_04_04_11_37_spe_equal_gains.csv"
     }
