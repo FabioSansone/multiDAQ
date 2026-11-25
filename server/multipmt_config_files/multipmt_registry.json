@@ -1,0 +1,6 @@
+{
+  "fc:0f:e7:e5:f8:be": {"multipmt_id": "auger", "batch_id": "batch_4", "numeric_id": 0},
+  "fc:0f:e7:e6:03:21": {"multipmt_id": "cile1", "batch_id": "batch_1", "numeric_id": 1},
+  "fc:0f:e7:e6:20:d0": {"multipmt_id": "cile2", "batch_id": "batch_2", "numeric_id": 2},
+  "fc:0f:e7:e6:17:63": {"multipmt_id": "milano", "batch_id": "batch_3", "numeric_id": 3}
+}

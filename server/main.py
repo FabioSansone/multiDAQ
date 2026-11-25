@@ -97,7 +97,7 @@ class Server(cmd2.Cmd):
         )
         
         self.monitor_persistence_service = (
-            MonitorPersistenceService()
+            MonitorPersistenceService(client_label=self.server_state.get_client_label)
         )
         
         registered = (

@@ -145,8 +145,11 @@ class PersistenceBuffer:
 
 class MonitorPersistenceService:
     
-    def __init__(self):
+    def __init__(self, client_label=None):
         
+        # client_id -> readable folder name (ServerState.get_client_label); None: the client_id
+        self.client_label = client_label
+
         self._persistence_streams: dict[tuple[bytes, Channel], PersistenceStreamState] = {}
         self._persistence_lock = threading.Lock()
         self._stream_idle_condition = threading.Condition(self._persistence_lock)
@@ -2360,10 +2363,13 @@ class MonitorPersistenceWriter:
             return None
 
         try:
-            client_identity = client_id.decode(
-                "utf-8",
-                errors="strict",
-            )
+            if self.persistence_service.client_label is not None:
+                client_identity = self.persistence_service.client_label(client_id)
+            else:
+                client_identity = client_id.decode(
+                    "utf-8",
+                    errors="strict",
+                )
         except UnicodeDecodeError:
             client_identity = client_id.hex()
 

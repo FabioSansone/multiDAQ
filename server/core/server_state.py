@@ -1236,6 +1236,34 @@ class ServerState:
                 return None
             return dict(record.identity)
 
+    def get_client_label(self, client_id: bytes) -> str:
+        """Readable name of a client for data folders and Prometheus labels:
+        <multipmt_id>-<batch_id>-<last 6 hex digits of the MAC>, the same name the clients
+        used as ZMQ identity before the identity moved to the server (the routing identity is
+        now mpmt-<MAC>). Before the handshake (no identity yet) the routing identity itself."""
+        identity = self.get_identity(client_id) or {}
+        multipmt_id = identity.get("multipmt_id")
+        batch_id = identity.get("batch_id")
+        mac = identity.get("mac_address")
+        if multipmt_id and batch_id and mac:
+            def part(value) -> str:
+                return str(value).strip().lower().replace(" ", "_").replace("/", "_")
+            return f"{part(multipmt_id)}-{part(batch_id)}-{str(mac).replace(':', '')[-6:]}"
+        return client_id.decode(errors="ignore")
+
+    def find_client(self, name: str) -> Optional[bytes]:
+        """Connected client by any of its names: routing identity (mpmt-<MAC>), readable
+        label (<multipmt_id>-<batch_id>-<MAC suffix>) or MAC address."""
+        target = str(name).strip()
+        mac = target.lower().replace("-", ":")
+        for client_id in self.list_connected_clients():
+            if target == client_id.decode(errors="ignore") or target.lower() == self.get_client_label(client_id):
+                return client_id
+            identity = self.get_identity(client_id) or {}
+            if mac == str(identity.get("mac_address", "")).lower():
+                return client_id
+        return None
+
     def get_client_id_by_multipmt_id(self, multipmt_id: str) -> Optional[bytes]:
         """Ricerca lineare deliberata: nessun indice separato da tenere
         sincronizzato. A qualche migliaio di client il costo è trascurabile

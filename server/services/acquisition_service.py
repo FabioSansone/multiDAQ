@@ -1122,7 +1122,7 @@ class AcquisitionService:
         if numeric_id is None:
             return None
 
-        client_identity = client_id.decode(errors="ignore")
+        client_identity = self.server_state.get_client_label(client_id)
 
         return self.data_receiver_service.open_file(
             client_id=numeric_id,
@@ -1928,7 +1928,7 @@ class AcquisitionService:
     def get_client_run_folder(self, client_ids: List[bytes], acq_type: str, run_id: str | int | None):
         client_run_folder: dict[bytes, "Path"] = {}
         for client_id in client_ids:
-            client_identity = client_id.decode(errors="ignore")
+            client_identity = self.server_state.get_client_label(client_id)
             client_run_folder[client_id] = self.data_receiver_service.get_run_folder(
                 acq_type=acq_type, client_identity=client_identity, run_id=run_id
             )

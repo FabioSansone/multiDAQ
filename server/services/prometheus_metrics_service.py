@@ -84,21 +84,16 @@ class PrometheusRuntimeCollector:
     # Generic helpers
     # ================================================================
 
-    @staticmethod
     def _client_id_to_string(
+        self,
         client_id: bytes,
     ) -> str:
+        """client_id label: readable name multipmt-batch-MAC (ServerState.get_client_label),
+        the same values the dashboards had before the routing identity became mpmt-<MAC>."""
 
-        try:
-
-            return client_id.decode(
-                "utf-8",
-                errors="strict",
-            )
-
-        except UnicodeDecodeError:
-
-            return client_id.hex()
+        return self.server_state.get_client_label(
+            client_id
+        )
 
 
     def _get_client_label_values(
@@ -1111,16 +1106,9 @@ class PrometheusMetricsService:
         client_id: bytes,
     ) -> dict[str, str]:
 
-        try:
-
-            client_label = client_id.decode(
-                "utf-8",
-                errors="strict",
-            )
-
-        except UnicodeDecodeError:
-
-            client_label = client_id.hex()
+        client_label = self._client_id_to_string(
+            client_id
+        )
 
         identity = (
             self.server_state.get_identity(
