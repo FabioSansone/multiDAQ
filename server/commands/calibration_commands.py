@@ -10,7 +10,7 @@ logger = get_logger("calibration_commands")
 # CALIBRATION COMMANDS #
 ########################
 
-calibration_parser = argparse.ArgumentParser()
+calibration_parser = cmd2.Cmd2ArgumentParser()
 
 calibration_subparsers = calibration_parser.add_subparsers(
     dest="command",
@@ -406,7 +406,7 @@ def do_calibration(self, args: argparse.Namespace) -> None:
 
 
 
-recheck_parser = argparse.ArgumentParser()
+recheck_parser = cmd2.Cmd2ArgumentParser()
 recheck_parser.add_argument(
     "--multipmt-id",
     dest="multipmt_id",

@@ -16,7 +16,7 @@ logger = get_logger('generic_commands')
 #GENERIC COMMANDS#
 ##################
 
-mode_parser = argparse.ArgumentParser()
+mode_parser = cmd2.Cmd2ArgumentParser()
 mode_parser.add_argument(
     "mode",
     action="store",
@@ -309,7 +309,7 @@ def do_snapshot(self, _) -> None:
 ##################
 
 
-force_parser = argparse.ArgumentParser()
+force_parser = cmd2.Cmd2ArgumentParser()
 force_subparsers = force_parser.add_subparsers(dest="command", required=True)
 
 force_subparsers.add_parser(
@@ -793,7 +793,7 @@ def _run_connect(self, args) -> None:
     self.startup_service.configure_clients(client_ids=client_ids, mode=self.mode)
 
 
-connect_parser = argparse.ArgumentParser()
+connect_parser = cmd2.Cmd2ArgumentParser()
 connect_parser.add_argument("--num_clients", type=int, help="The number of clients expected to connect", default=None)
 connect_parser.add_argument("--control_port", type=int, help="Selects the port to establish the connection", default=8888)
 connect_parser.add_argument("--acq_port", type=int, help="Selects the port to establish the acquisition connection", default=8889)
@@ -815,7 +815,7 @@ def do_connect(self, args: argparse.Namespace) -> None:
 #DETECTOR CONFIGURATION#
 ########################
 
-configuration_parser = argparse.ArgumentParser()
+configuration_parser = cmd2.Cmd2ArgumentParser()
 configuration_subparsers = configuration_parser.add_subparsers(dest="command", required=True)
 
 configuration_set_parser = configuration_subparsers.add_parser(

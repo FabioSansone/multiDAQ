@@ -190,7 +190,7 @@ def _print_serial_map(self, client_name: str, result: dict) -> None:
 # HV COMMANDS
 #################
 
-hv_parser = argparse.ArgumentParser()
+hv_parser = cmd2.Cmd2ArgumentParser()
 hv_subparsers = hv_parser.add_subparsers(
     dest="command_group",
     required=True,

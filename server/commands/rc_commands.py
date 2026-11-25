@@ -12,7 +12,7 @@ logger = get_logger("rc_commands")
 # COMMON RC COMMANDS
 ####################
 
-rc_parser = argparse.ArgumentParser()
+rc_parser = cmd2.Cmd2ArgumentParser()
 rc_subparsers = rc_parser.add_subparsers(dest="parameter", required=True)
 
 read_parser = rc_subparsers.add_parser("read")
