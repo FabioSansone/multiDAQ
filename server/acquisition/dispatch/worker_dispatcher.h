@@ -98,11 +98,11 @@ uint64_t hash_fnv1a(const unsigned char *data, size_t len_data);
 
 tank_table *create_table(size_t num_buckets);
 
-tank_node *create_node(const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, char *file_path);
+tank_node *create_node(const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, const char *file_path);
 
 size_t key_index(const unsigned char *key, size_t key_len, size_t num_buckets);
 
-int add_node(tank_table *table, const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, char *file_path);
+int add_node(tank_table *table, const char *source_id, FILE *output_file, meta_data_t metadata, int output_format, const char *file_path);
 
 tank_node *get_node(const tank_table *table, const char *source_id);
 
